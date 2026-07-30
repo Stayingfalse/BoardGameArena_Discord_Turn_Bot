@@ -249,6 +249,10 @@ If `DISCORD_GUILD_ID` is set, slash commands are synced to that guild. Otherwise
 
 If you previously used global slash commands and now see duplicates together with guild-scoped commands, set `DISCORD_CLEAR_GLOBAL_COMMANDS=1` for one startup, let the bot delete the stale global commands, then set it back to `0`.
 
+On startup, the bot now prints a ready-to-use Discord invite URL in the logs with the permissions it needs.
+
+If you want the bot to auto-watch tables from posted BGA links in chat, also enable the **Message Content Intent** for the bot in the Discord Developer Portal.
+
 ### License
 
 This repository is distributed under the MIT license. See `LICENSE`.
@@ -647,6 +651,6 @@ Responsibilities:
 - the bot only works for BGA tables publicly accessible in spectator mode
 - the bot is self-hosted: it must keep running on your machine to keep watching tables
 - Discord voice warnings (`PyNaCl`, `davey`) are not relevant for this project
-- the `message content intent` warning is not blocking here because the bot relies on slash commands
+- without the **Message Content Intent**, slash commands still work but automatic watching from posted BGA links stays disabled
 - displayed game names come from the BGA slug or public bootstrap, so they are not always perfectly formatted
 - the project currently ships without a unit test suite; validation is kept lightweight through packaging and compilation checks

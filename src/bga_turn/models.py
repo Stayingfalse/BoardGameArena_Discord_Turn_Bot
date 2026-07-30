@@ -46,6 +46,21 @@ class BgaTableInfo:
 
 
 @dataclass(slots=True)
+class BgaTableSnapshot:
+    table_id: str
+    status: str
+    game_name: str
+    gameserver: str
+    player_names: dict[str, str] = field(default_factory=dict)
+    seats_taken: int = 0
+    seats_total: int | None = None
+    seats_remaining: int | None = None
+    is_finished: bool = False
+    can_watch_turns: bool = False
+    table_url: str | None = None
+
+
+@dataclass(slots=True)
 class BgaNotificationState:
     highest_packet_id: int | None
     waiting_ids: list[str] | None

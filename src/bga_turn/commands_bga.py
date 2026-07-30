@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import re
+from dataclasses import dataclass
 
 import discord
 from discord import app_commands
@@ -11,9 +13,18 @@ from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaPlayerN
 from .database import Database
 from .i18n import tr
 from .monitor import BgaMonitor
+from .models import WatchSubscription
 from .utils import build_table_url, format_game_name, parse_public_table_url, parse_table_id
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class WatchRegistrationResult:
+    subscription: WatchSubscription
+    source: str
+    detected_player_names: dict[str, str]
+    init_state: str
 
 
 class BgaCommands(commands.Cog):
@@ -22,6 +33,7 @@ class BgaCommands(commands.Cog):
     _HELP_SEPARATOR = "⎯" * 24
     # Discord caps an embed description at 4096 characters (vs 2000 for content).
     _EMBED_DESCRIPTION_LIMIT = 4096
+    _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
     def __init__(self, database: Database, bga_client: BgaClient, monitor: BgaMonitor) -> None:
         self.database = database
@@ -32,6 +44,48 @@ class BgaCommands(commands.Cog):
         """Log every ``/bga`` command invocation. Never blocks the command."""
         self._log_command_invocation(interaction)
         return True
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or message.guild is None:
+            return
+        if not message.content or not any(host in message.content.lower() for host in ("boardgamearena.com", "bga.li/")):
+            return
+
+        table_references = self._extract_table_references(message.content)
+        if not table_references:
+            return
+
+        registered_any = False
+        for table_reference in table_references:
+            try:
+                await self._register_watch(
+                    guild_id=str(message.guild.id),
+                    channel_id=str(message.channel.id),
+                    created_by_discord_user_id=str(message.author.id),
+                    table_or_url=table_reference,
+                )
+            except (BgaClientError, BgaNotPublicError, ValueError) as exc:
+                LOGGER.debug(
+                    tr(
+                        "auto_watch_skipped",
+                        table_reference=table_reference,
+                        channel_id=message.channel.id,
+                        error=exc,
+                    )
+                )
+                continue
+            registered_any = True
+
+        if registered_any:
+            LOGGER.info(
+                tr(
+                    "auto_watch_registered",
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                )
+            )
+            await self.monitor.refresh_now()
 
     @staticmethod
     def _flatten_command_options(options: list[dict] | None) -> list[str]:
@@ -354,115 +408,46 @@ class BgaCommands(commands.Cog):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        if gameserver and game_name:
-            table_info = self.bga_client.build_public_table_info(
-                table_id=table_id,
-                table_url=table_url,
-                base_url=base_url,
-                gameserver=gameserver,
-                game_name=game_name,
-            )
-        else:
-            # `tableview`/`table` link or bare table id: resolve the game server
-            # and game name anonymously before probing.
-            try:
-                table_info = await asyncio.to_thread(
-                    self.bga_client.resolve_public_table_info, table_id, base_url
-                )
-            except BgaNotPublicError as exc:
-                await interaction.followup.send(
-                    tr("error_watch_not_public", table_id=table_id, error=exc),
-                    ephemeral=True,
-                )
-                return
-            except BgaClientError as exc:
-                await interaction.followup.send(
-                    tr("error_watch_verify_failed", table_id=table_id, error=exc),
-                    ephemeral=True,
-                )
-                return
-
         try:
-            state = await self.bga_client.probe_public_table(table_info, known_player_names={})
+            result = await self._register_watch(
+                guild_id=str(interaction.guild_id),
+                channel_id=str(interaction.channel_id),
+                created_by_discord_user_id=str(interaction.user.id),
+                table_or_url=table_or_url,
+            )
         except BgaNotPublicError as exc:
             await interaction.followup.send(
-                tr("error_watch_not_public", table_id=table_info.table_id, error=exc),
+                tr("error_watch_not_public", table_id=table_id, error=exc),
                 ephemeral=True,
             )
             return
         except BgaClientError as exc:
             await interaction.followup.send(
-                tr("error_watch_verify_failed", table_id=table_info.table_id, error=exc),
+                tr("error_watch_verify_failed", table_id=table_id, error=exc),
                 ephemeral=True,
             )
             return
-
-        subscription = self.database.upsert_watch_subscription(
-            table_id=table_info.table_id,
-            table_url=table_info.table_url,
-            base_url=table_info.base_url,
-            gameserver=table_info.gameserver,
-            guild_id=str(interaction.guild_id),
-            channel_id=str(interaction.channel_id),
-            created_by_discord_user_id=str(interaction.user.id),
-            game_name=table_info.game_name,
-        )
-        persisted_player_names = dict(subscription.player_names)
-        persisted_player_names.update(state.player_names)
-        self.database.update_watch_state(
-            subscription_id=subscription.subscription_id,
-            last_packet_id=subscription.last_packet_id,
-            waiting_ids=subscription.last_waiting_ids,
-            player_names=persisted_player_names,
-            is_initialized=subscription.is_initialized,
-            game_name=table_info.game_name,
-        )
-        guild_id = str(interaction.guild_id)
-        await asyncio.to_thread(
-            self.database.enrich_linked_users_from_players, guild_id, persisted_player_names
-        )
-        linked_users = await asyncio.to_thread(
-            self.database.get_linked_users_for_players, guild_id, state.player_names
-        )
-        linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
-        linked_by_name = {
-            item.bga_player_name.casefold(): item
-            for item in linked_users
-            if item.bga_player_name
-        }
-        detected_players = []
-        for player_id, player_name in sorted(state.player_names.items()):
-            linked_user = linked_by_bga_id.get(player_id)
-            if linked_user is None and player_name:
-                linked_user = linked_by_name.get(player_name.casefold())
-            if linked_user is not None:
-                detected_players.append(
-                    f"<@{linked_user.discord_user_id}> {player_name} ({player_id})"
-                )
-            else:
-                detected_players.append(f"{player_name} ({player_id})")
-        init_status = (
-            tr("watch_init_active")
-            if subscription.is_initialized
-            else tr("watch_init_waiting_event")
-        )
         message_kwargs = {
             "game_label": tr("label_game"),
-            "game_name": format_game_name(table_info.game_name),
+            "game_name": format_game_name(result.subscription.game_name),
             "table_label": tr("label_table"),
-            "table_id": table_info.table_id,
+            "table_id": result.subscription.table_id,
             "channel_label": tr("label_channel"),
             "channel_id": interaction.channel_id,
             "public_source_label": tr("label_public_source_initial"),
-            "source": state.source,
+            "source": result.source,
             "players_detected_label": tr("label_players_detected_currently"),
             "url_label": tr("label_url"),
-            "table_url": table_info.table_url,
+            "table_url": result.subscription.table_url or build_table_url(result.subscription.table_id),
             "init_state_label": tr("label_init_state"),
-            "init_state": init_status,
+            "init_state": result.init_state,
         }
         message_overhead = len(tr("watch_registered", players="", **message_kwargs))
         max_players_length = max(0, 2000 - message_overhead)
+        detected_players = await self._format_detected_players(
+            guild_id=str(interaction.guild_id),
+            player_names=result.detected_player_names,
+        )
         detected_players_text = self._format_bounded_list(
             detected_players,
             tr("watch_detected_none"),
@@ -476,6 +461,146 @@ class BgaCommands(commands.Cog):
 
         await interaction.followup.send(message_content, ephemeral=True)
         await self.monitor.refresh_now()
+
+    async def _register_watch(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        created_by_discord_user_id: str,
+        table_or_url: str,
+    ) -> WatchRegistrationResult:
+        table_id, table_url, base_url, gameserver, game_name = parse_public_table_url(table_or_url)
+
+        snapshot = None
+        state = None
+        resolved_table_url = table_url
+        resolved_gameserver = gameserver
+        resolved_game_name = game_name
+        detected_player_names: dict[str, str] = {}
+        init_state = tr("watch_init_waiting_event")
+        source = "manual_registration"
+
+        if not gameserver or not game_name:
+            snapshot = await asyncio.to_thread(
+                self.bga_client.fetch_public_table_snapshot, table_id, base_url
+            )
+            if snapshot.is_finished:
+                raise BgaNotPublicError(tr("error_resolve_missing_game_server", table_id=table_id))
+            resolved_table_url = snapshot.table_url or build_table_url(table_id)
+            resolved_gameserver = snapshot.gameserver
+            resolved_game_name = snapshot.game_name
+            detected_player_names = dict(snapshot.player_names)
+            if snapshot.can_watch_turns:
+                table_url = resolved_table_url
+                gameserver = resolved_gameserver
+                game_name = resolved_game_name
+            else:
+                init_state = tr("watch_init_waiting_players")
+                source = f"tableinfos:{snapshot.status or 'pending'}"
+
+        if gameserver and game_name:
+            table_info = self.bga_client.build_public_table_info(
+                table_id=table_id,
+                table_url=table_url,
+                base_url=base_url,
+                gameserver=gameserver,
+                game_name=game_name,
+            )
+            state = await self.bga_client.probe_public_table(table_info, known_player_names={})
+            resolved_table_url = table_info.table_url
+            resolved_gameserver = table_info.gameserver
+            resolved_game_name = table_info.game_name
+            detected_player_names = dict(state.player_names)
+            source = state.source
+
+        subscription = self.database.upsert_watch_subscription(
+            table_id=table_id,
+            table_url=resolved_table_url or build_table_url(table_id),
+            base_url=base_url,
+            gameserver=resolved_gameserver,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            created_by_discord_user_id=created_by_discord_user_id,
+            game_name=resolved_game_name or None,
+        )
+        persisted_player_names = dict(subscription.player_names)
+        persisted_player_names.update(detected_player_names)
+        self.database.update_watch_state(
+            subscription_id=subscription.subscription_id,
+            last_packet_id=subscription.last_packet_id,
+            waiting_ids=[] if state is None else subscription.last_waiting_ids,
+            player_names=persisted_player_names,
+            is_initialized=subscription.is_initialized if state is not None else False,
+            game_name=resolved_game_name or subscription.game_name,
+        )
+        await asyncio.to_thread(
+            self.database.enrich_linked_users_from_players, guild_id, persisted_player_names
+        )
+        if state is None:
+            subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+            return WatchRegistrationResult(
+                subscription=subscription,
+                source=source,
+                detected_player_names=detected_player_names,
+                init_state=init_state,
+            )
+
+        subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+        return WatchRegistrationResult(
+            subscription=subscription,
+            source=source,
+            detected_player_names=detected_player_names,
+            init_state=(
+                tr("watch_init_active")
+                if subscription.is_initialized
+                else tr("watch_init_waiting_event")
+            ),
+        )
+
+    async def _format_detected_players(
+        self,
+        *,
+        guild_id: str,
+        player_names: dict[str, str],
+    ) -> list[str]:
+        linked_users = await asyncio.to_thread(
+            self.database.get_linked_users_for_players, guild_id, player_names
+        )
+        linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
+        linked_by_name = {
+            item.bga_player_name.casefold(): item
+            for item in linked_users
+            if item.bga_player_name
+        }
+        detected_players = []
+        for player_id, player_name in sorted(player_names.items()):
+            linked_user = linked_by_bga_id.get(player_id)
+            if linked_user is None and player_name:
+                linked_user = linked_by_name.get(player_name.casefold())
+            if linked_user is not None:
+                detected_players.append(
+                    f"<@{linked_user.discord_user_id}> {player_name} ({player_id})"
+                )
+            else:
+                detected_players.append(f"{player_name} ({player_id})")
+        return detected_players
+
+    @classmethod
+    def _extract_table_references(cls, message_content: str) -> list[str]:
+        references: list[str] = []
+        seen: set[str] = set()
+        for match in cls._URL_PATTERN.finditer(message_content):
+            candidate = match.group(0).rstrip(".,!?)]}>\"'")
+            try:
+                table_id = parse_table_id(candidate)
+            except ValueError:
+                continue
+            if table_id in seen:
+                continue
+            seen.add(table_id)
+            references.append(candidate)
+        return references
 
     @bga.command(name="follow-tables", description=tr("command_follow_tables_description"))
     @app_commands.describe(member=tr("command_follow_tables_member"))
@@ -701,6 +826,8 @@ class BgaCommands(commands.Cog):
                     state=(
                         tr("watch_state_initialized")
                         if subscription.is_initialized
+                        else tr("watch_state_waiting_players")
+                        if not (subscription.gameserver or "").strip()
                         else tr("watch_state_waiting_first_event")
                     ),
                     url_label=tr("label_url"),
@@ -732,7 +859,9 @@ class BgaCommands(commands.Cog):
 
         lines = []
         for subscription in subscriptions:
-            if not subscription.is_initialized:
+            if not subscription.is_initialized and not (subscription.gameserver or "").strip():
+                state = tr("status_waiting_for_start")
+            elif not subscription.is_initialized:
                 state = tr("status_unknown")
             elif subscription.last_waiting_ids:
                 linked_users = self.database.get_linked_users_by_bga_ids(

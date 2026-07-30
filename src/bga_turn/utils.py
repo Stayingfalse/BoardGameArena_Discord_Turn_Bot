@@ -24,11 +24,14 @@ def parse_table_id(value: str) -> str:
 
     parsed = urlparse(candidate)
     if parsed.scheme and parsed.netloc:
+        short_link_match = re.search(r"^/t/(\d+)/?$", parsed.path, re.IGNORECASE)
+        if parsed.netloc.lower() in {"bga.li", "www.bga.li"} and short_link_match:
+            return short_link_match.group(1)
         table_values = parse_qs(parsed.query).get("table")
         if table_values and table_values[0].isdigit():
             return table_values[0]
 
-    match = re.search(r"table=(\d+)", candidate)
+    match = re.search(r"(?:table=|/t/)(\d+)", candidate, re.IGNORECASE)
     if match:
         return match.group(1)
 
@@ -50,12 +53,20 @@ def parse_public_table_url(value: str) -> tuple[str, str, str, str, str]:
     if not parsed.scheme or not parsed.netloc:
         raise ValueError(tr("error_watch_requires_full_public_url"))
 
+    if parsed.netloc.lower() in {"bga.li", "www.bga.li"}:
+        short_link_match = re.search(r"^/t/(\d+)/?$", parsed.path, re.IGNORECASE)
+        if short_link_match:
+            return short_link_match.group(1), "", BASE_URL, "", ""
+
     table_values = parse_qs(parsed.query).get("table")
     if not table_values or not table_values[0].isdigit():
         raise ValueError(tr("error_url_missing_table_param"))
     table_id = table_values[0]
 
-    base_url = BASE_URL
+    base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    if "boardgamearena.com" not in parsed.netloc.lower():
+        base_url = BASE_URL
+
     path_parts = [part for part in parsed.path.split("/") if part]
 
     # `tableview?table=` / `table?table=` links do not embed the game server or

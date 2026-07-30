@@ -339,6 +339,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "state will be published on the next public websocket event",
         "FR": "publication de l'etat au prochain evenement websocket public",
     },
+    "watch_init_waiting_players": {
+        "EN": "waiting for enough players to join before turn tracking can start",
+        "FR": "en attente de suffisamment de joueurs avant de lancer le suivi des tours",
+    },
     "unwatch_not_found": {
         "EN": "No active watch for table `{table_id}` in this channel.",
         "FR": "Aucune watch active pour la table `{table_id}` dans ce salon.",
@@ -375,6 +379,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "waiting for the first websocket event",
         "FR": "en attente du premier evenement websocket",
     },
+    "watch_state_waiting_players": {
+        "EN": "waiting for players / game start",
+        "FR": "en attente des joueurs / du debut de partie",
+    },
     "status_none": {
         "EN": "No BGA table is watched on this server.",
         "FR": "Aucune table BGA n'est surveillee sur ce serveur.",
@@ -390,6 +398,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "status_unknown": {
         "EN": "unknown",
         "FR": "inconnu",
+    },
+    "status_waiting_for_start": {
+        "EN": "waiting for players before the game starts",
+        "FR": "en attente de joueurs avant le debut de la partie",
     },
     "status_waiting_for": {
         "EN": "waiting for {mentions}",
@@ -418,6 +430,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "label_url": {
         "EN": "URL",
         "FR": "URL",
+    },
+    "label_status": {
+        "EN": "Status",
+        "FR": "Statut",
+    },
+    "label_seats": {
+        "EN": "Seats",
+        "FR": "Places",
+    },
+    "label_players_joined": {
+        "EN": "Players joined",
+        "FR": "Joueurs inscrits",
     },
     "label_state": {
         "EN": "State",
@@ -615,6 +639,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Skipping global slash command cleanup because DISCORD_GUILD_ID is not set.",
         "FR": "Nettoyage des slash commands globales ignore car DISCORD_GUILD_ID n'est pas renseigne.",
     },
+    "bot_invite_url": {
+        "EN": "Bot invite URL: {invite_url}",
+        "FR": "URL d'invitation du bot : {invite_url}",
+    },
     "tableinfos_status": {
         "EN": "Tableinfos {table_id} | status={status} | cancelled={cancelled} | time_end={time_end} | endgame_reason={endgame_reason} | finished={finished}",
         "FR": "Tableinfos {table_id} | status={status} | cancelled={cancelled} | time_end={time_end} | endgame_reason={endgame_reason} | finished={finished}",
@@ -691,6 +719,46 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Failed to send Discord notification for table {table_id} to channel {channel_id}: {error}",
         "FR": "Echec d'envoi Discord pour la table {table_id} sur le salon {channel_id}: {error}",
     },
+    "invite_message_title": {
+        "EN": "BGA table waiting for players",
+        "FR": "Table BGA en attente de joueurs",
+    },
+    "invite_message_description": {
+        "EN": "{game_label}: {game_name}\n{table_label}: {table_id}",
+        "FR": "{game_label} : {game_name}\n{table_label} : {table_id}",
+    },
+    "invite_message_seats_value": {
+        "EN": "{seats_taken}/{seats_total} joined — {seats_remaining} seat(s) remaining",
+        "FR": "{seats_taken}/{seats_total} inscrits — {seats_remaining} place(s) restante(s)",
+    },
+    "invite_message_seats_unknown": {
+        "EN": "{seats_taken} joined — remaining seats unknown",
+        "FR": "{seats_taken} inscrits — places restantes inconnues",
+    },
+    "invite_message_footer": {
+        "EN": "Turn notifications will replace this message automatically once the game starts.",
+        "FR": "Les notifications de tour remplaceront automatiquement ce message quand la partie commencera.",
+    },
+    "invite_message_sent": {
+        "EN": "Invite snapshot sent for table {table_id}.",
+        "FR": "Snapshot d'invitation envoye pour la table {table_id}.",
+    },
+    "invite_message_send_failed": {
+        "EN": "Failed to send invite snapshot for table {table_id} to channel {channel_id}: {error}",
+        "FR": "Echec d'envoi du snapshot d'invitation pour la table {table_id} sur le salon {channel_id}: {error}",
+    },
+    "invite_message_updated": {
+        "EN": "Invite snapshot updated for table {table_id}.",
+        "FR": "Snapshot d'invitation mis a jour pour la table {table_id}.",
+    },
+    "invite_message_missing_update": {
+        "EN": "Invite snapshot already missing while updating table {table_id}.",
+        "FR": "Snapshot d'invitation deja introuvable pendant la mise a jour de la table {table_id}.",
+    },
+    "invite_message_update_failed": {
+        "EN": "Failed to update invite snapshot for table {table_id}: {error}",
+        "FR": "Echec de mise a jour du snapshot d'invitation pour la table {table_id}: {error}",
+    },
     "turn_message_updated": {
         "EN": "Turn message updated for table {table_id} (waiting_ids={waiting_ids}).",
         "FR": "Message de tour mis a jour pour la table {table_id} (waiting_ids={waiting_ids}).",
@@ -703,25 +771,33 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Failed to update Discord message for table {table_id}: {error}",
         "FR": "Echec de mise a jour du message Discord pour la table {table_id}: {error}",
     },
-    "turn_message_deleted": {
-        "EN": "Turn message deleted for table {table_id}.",
-        "FR": "Message de tour supprime pour la table {table_id}.",
+    "watch_message_deleted": {
+        "EN": "{message_kind} message deleted for table {table_id}.",
+        "FR": "Message {message_kind} supprime pour la table {table_id}.",
     },
-    "turn_message_missing_delete": {
-        "EN": "Turn message already missing while deleting table {table_id}.",
-        "FR": "Message de tour deja introuvable pendant la suppression pour la table {table_id}.",
+    "watch_message_missing_delete": {
+        "EN": "{message_kind} message already missing while deleting table {table_id}.",
+        "FR": "Message {message_kind} deja introuvable pendant la suppression de la table {table_id}.",
     },
-    "turn_message_delete_failed": {
-        "EN": "Failed to delete Discord message for table {table_id}: {error}",
-        "FR": "Echec de suppression du message Discord pour la table {table_id}: {error}",
+    "watch_message_delete_failed": {
+        "EN": "Failed to delete {message_kind} Discord message for table {table_id}: {error}",
+        "FR": "Echec de suppression du message Discord {message_kind} pour la table {table_id}: {error}",
     },
-    "orphan_turn_message_deleted": {
-        "EN": "Orphan turn message deleted for subscription {subscription_id}.",
-        "FR": "Message de tour orphelin supprime pour la souscription {subscription_id}.",
+    "orphan_watch_message_deleted": {
+        "EN": "Orphan {message_kind} message deleted for subscription {subscription_id}.",
+        "FR": "Message {message_kind} orphelin supprime pour la souscription {subscription_id}.",
     },
-    "orphan_turn_message_delete_failed": {
-        "EN": "Failed to delete orphan turn message for subscription {subscription_id}: {error}",
-        "FR": "Echec de suppression du message de tour orphelin pour la souscription {subscription_id}: {error}",
+    "orphan_watch_message_delete_failed": {
+        "EN": "Failed to delete orphan {message_kind} message for subscription {subscription_id}: {error}",
+        "FR": "Echec de suppression du message {message_kind} orphelin pour la souscription {subscription_id}: {error}",
+    },
+    "auto_watch_skipped": {
+        "EN": "Skipping auto-watch for {table_reference} in channel {channel_id}: {error}",
+        "FR": "Auto-watch ignoree pour {table_reference} dans le salon {channel_id} : {error}",
+    },
+    "auto_watch_registered": {
+        "EN": "Auto-watch registered from a posted BGA link in guild {guild_id} channel {channel_id}.",
+        "FR": "Auto-watch enregistree depuis un lien BGA poste dans le serveur {guild_id} salon {channel_id}.",
     },
     "stale_message_delete_failed": {
         "EN": "Failed to delete an old message for table {table_id} in channel {channel_id}: {error}",

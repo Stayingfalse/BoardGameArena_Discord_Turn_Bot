@@ -46,6 +46,7 @@ class BgaDiscordBot(commands.Bot):
         clear_global_commands: bool,
     ) -> None:
         intents = discord.Intents.default()
+        intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.database = database
         self.bga_client = bga_client
@@ -85,6 +86,7 @@ class BgaDiscordBot(commands.Bot):
             synced = await self.tree.sync()
             self.logger.info(tr("global_sync", count=len(synced)))
 
+        self._log_invite_url()
         self.monitor.start()
         self._startup_completed = True
 
@@ -92,6 +94,24 @@ class BgaDiscordBot(commands.Bot):
         self.monitor.stop()
         self.database.close()
         await super().close()
+
+    def _log_invite_url(self) -> None:
+        application_id = self.application_id or getattr(self.user, "id", None)
+        if application_id is None:
+            return
+        permissions = discord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True,
+            read_message_history=True,
+        )
+        invite_url = (
+            "https://discord.com/oauth2/authorize"
+            f"?client_id={application_id}"
+            "&scope=bot%20applications.commands"
+            f"&permissions={permissions.value}"
+        )
+        self.logger.info(tr("bot_invite_url", invite_url=invite_url))
 
 
 def main() -> None:

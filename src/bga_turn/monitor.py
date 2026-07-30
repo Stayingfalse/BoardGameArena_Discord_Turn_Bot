@@ -11,15 +11,16 @@ from discord.ext import tasks
 from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaTableUnavailableError
 from .database import Database
 from .i18n import tr
-from .models import BgaTableInfo, LinkedUser, WatchSubscription
-from .utils import build_table_url, format_game_name
+from .models import BgaTableInfo, BgaTableSnapshot, LinkedUser, WatchSubscription
+from .utils import BASE_URL, build_table_url, format_game_name
 
 LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class ActiveTurnMessage:
+class ActiveTableMessage:
     message: discord.Message
+    kind: str
     waiting_ids: list[str]
 
 
@@ -50,12 +51,13 @@ class BgaMonitor:
         self.bot = bot
         self.database = database
         self.bga_client = bga_client
+        self._poll_seconds = max(5, poll_seconds)
         self._table_tasks: dict[str, asyncio.Task[None]] = {}
-        self._active_turn_messages: dict[int, ActiveTurnMessage] = {}
+        self._active_messages: dict[int, ActiveTableMessage] = {}
         self._last_player_name_refresh_at: dict[str, float] = {}
         self._last_follow_sync_at: dict[tuple[str, str, str], float] = {}
         self._recently_finished_tables: dict[str, float] = {}
-        self.sync_tables.change_interval(seconds=max(5, poll_seconds))
+        self.sync_tables.change_interval(seconds=self._poll_seconds)
 
     def start(self) -> None:
         if not self.sync_tables.is_running():
@@ -67,7 +69,7 @@ class BgaMonitor:
         for task in self._table_tasks.values():
             task.cancel()
         self._table_tasks.clear()
-        self._active_turn_messages.clear()
+        self._active_messages.clear()
         self._last_player_name_refresh_at.clear()
         self._last_follow_sync_at.clear()
         self._recently_finished_tables.clear()
@@ -88,17 +90,30 @@ class BgaMonitor:
         active_table_ids = {subscription.table_id for subscription in subscriptions}
         active_subscription_ids = {subscription.subscription_id for subscription in subscriptions}
 
-        for subscription_id in list(self._active_turn_messages):
+        for subscription_id in list(self._active_messages):
             if subscription_id not in active_subscription_ids:
-                active_message = self._active_turn_messages.pop(subscription_id, None)
+                active_message = self._active_messages.pop(subscription_id, None)
                 if active_message is not None:
                     try:
                         await active_message.message.delete()
-                        LOGGER.info(tr("orphan_turn_message_deleted", subscription_id=subscription_id))
+                        LOGGER.info(
+                            tr(
+                                "orphan_watch_message_deleted",
+                                subscription_id=subscription_id,
+                                message_kind=active_message.kind,
+                            )
+                        )
                     except discord.NotFound:
                         pass
                     except discord.DiscordException as exc:
-                        LOGGER.error(tr("orphan_turn_message_delete_failed", subscription_id=subscription_id, error=exc))
+                        LOGGER.error(
+                            tr(
+                                "orphan_watch_message_delete_failed",
+                                subscription_id=subscription_id,
+                                message_kind=active_message.kind,
+                                error=exc,
+                            )
+                        )
 
         for table_id in list(self._table_tasks):
             if table_id not in active_table_ids:
@@ -245,40 +260,37 @@ class BgaMonitor:
                     return
 
                 reference = subscriptions[0]
-                if not reference.table_url or not reference.base_url:
-                    LOGGER.warning(tr("legacy_watch_without_url", table_id=table_id))
-                    return
-
-                table_info = self.bga_client.build_public_table_info(
-                    table_id=reference.table_id,
-                    table_url=reference.table_url,
-                    base_url=reference.base_url,
-                    gameserver=reference.gameserver or "",
-                    game_name=reference.game_name or "unknown",
-                )
                 if not did_cleanup:
                     await self._cleanup_stale_table_messages(subscriptions, table_id)
                     did_cleanup = True
-                finished_publicly = False
-                if self.bga_client.enable_tableinfos_fallback:
-                    try:
-                        finished_publicly = await asyncio.to_thread(
-                            self.bga_client.fetch_public_table_finished_status,
-                            table_info,
-                        )
-                    except BgaClientError as exc:
-                        LOGGER.warning(
-                            tr(
-                                "startup_tableinfos_check_failed",
-                                table_id=table_id,
-                                error=exc,
-                            )
-                        )
-                if finished_publicly:
+                base_url = reference.base_url or BASE_URL
+                snapshot = await asyncio.to_thread(
+                    self.bga_client.fetch_public_table_snapshot,
+                    table_id,
+                    base_url,
+                )
+                subscriptions = await self._sync_subscriptions_from_snapshot(subscriptions, snapshot)
+                reference = subscriptions[0]
+                if snapshot.is_finished:
                     await self._finalize_finished_table(subscriptions, table_id)
                     return
+                if not snapshot.can_watch_turns:
+                    await self._apply_invite_state(table_id, subscriptions, snapshot)
+                    backoff_seconds = 5
+                    await asyncio.sleep(self._poll_seconds)
+                    continue
+
+                table_info = self.bga_client.build_public_table_info(
+                    table_id=reference.table_id,
+                    table_url=snapshot.table_url or reference.table_url or build_table_url(table_id),
+                    base_url=reference.base_url or base_url,
+                    gameserver=snapshot.gameserver or reference.gameserver or "",
+                    game_name=snapshot.game_name or reference.game_name or "unknown",
+                )
+                await self._clear_active_invite_messages(subscriptions, table_id)
                 current_waiting_ids = self._select_previous_waiting_ids(subscriptions)
                 known_player_names = self._merge_player_names(subscriptions)
+                known_player_names.update(snapshot.player_names)
 
                 async for state in self.bga_client.watch_table(
                     table_info,
@@ -368,6 +380,15 @@ class BgaMonitor:
                 )
 
                 if waiting_ids:
+                    invite_message = self._active_messages.get(subscription.subscription_id)
+                    if invite_message is not None and invite_message.kind == "invite":
+                        deleted = await self._delete_tracked_message(
+                            subscription=subscription,
+                            active_message=invite_message,
+                            table_id=table_id,
+                        )
+                        if deleted:
+                            self._active_messages.pop(subscription.subscription_id, None)
                     message = await self._publish_turn_snapshot(
                         subscription=subscription,
                         table_id=table_id,
@@ -376,13 +397,23 @@ class BgaMonitor:
                         game_label=format_game_name(game_name),
                     )
                     if message is not None:
-                        self._active_turn_messages[subscription.subscription_id] = ActiveTurnMessage(
+                        self._active_messages[subscription.subscription_id] = ActiveTableMessage(
                             message=message,
+                            kind="turn",
                             waiting_ids=list(waiting_ids),
                         )
                 continue
 
-            active_message = self._active_turn_messages.get(subscription.subscription_id)
+            active_message = self._active_messages.get(subscription.subscription_id)
+            if active_message is not None and active_message.kind != "turn":
+                deleted = await self._delete_tracked_message(
+                    subscription=subscription,
+                    active_message=active_message,
+                    table_id=table_id,
+                )
+                if deleted:
+                    self._active_messages.pop(subscription.subscription_id, None)
+                active_message = None
             if active_message is None and waiting_ids:
                 message = await self._publish_turn_snapshot(
                     subscription=subscription,
@@ -392,8 +423,9 @@ class BgaMonitor:
                     game_label=format_game_name(game_name),
                 )
                 if message is not None:
-                    self._active_turn_messages[subscription.subscription_id] = ActiveTurnMessage(
+                    self._active_messages[subscription.subscription_id] = ActiveTableMessage(
                         message=message,
+                        kind="turn",
                         waiting_ids=list(waiting_ids),
                     )
             elif waiting_ids != previous_waiting_ids:
@@ -424,15 +456,15 @@ class BgaMonitor:
         # still advertises it as being played.
         self._remember_finished_table(table_id)
         for subscription in subscriptions:
-            active_message = self._active_turn_messages.get(subscription.subscription_id)
+            active_message = self._active_messages.get(subscription.subscription_id)
             if active_message is not None:
-                deleted = await self._delete_turn_message(
+                deleted = await self._delete_tracked_message(
                     subscription=subscription,
                     active_message=active_message,
                     table_id=table_id,
                 )
                 if deleted:
-                    self._active_turn_messages.pop(subscription.subscription_id, None)
+                    self._active_messages.pop(subscription.subscription_id, None)
 
             self.database.remove_watch_subscription(
                 table_id=subscription.table_id,
@@ -453,19 +485,19 @@ class BgaMonitor:
         player_names: dict[str, str],
         game_label: str,
     ) -> None:
-        active_message = self._active_turn_messages.get(subscription.subscription_id)
+        active_message = self._active_messages.get(subscription.subscription_id)
         previous_set = set(previous_waiting_ids)
         waiting_set = set(waiting_ids)
         is_same_turn_progress = bool(previous_waiting_ids) and waiting_set.issubset(previous_set)
 
         if active_message is not None and not waiting_ids:
-            deleted = await self._delete_turn_message(
+            deleted = await self._delete_tracked_message(
                 subscription=subscription,
                 active_message=active_message,
                 table_id=table_id,
             )
             if deleted:
-                self._active_turn_messages.pop(subscription.subscription_id, None)
+                self._active_messages.pop(subscription.subscription_id, None)
             return
 
         if active_message is not None and waiting_ids and is_same_turn_progress:
@@ -482,13 +514,13 @@ class BgaMonitor:
                 return
 
         if active_message is not None and waiting_ids and not is_same_turn_progress:
-            deleted = await self._delete_turn_message(
+            deleted = await self._delete_tracked_message(
                 subscription=subscription,
                 active_message=active_message,
                 table_id=table_id,
             )
             if deleted:
-                self._active_turn_messages.pop(subscription.subscription_id, None)
+                self._active_messages.pop(subscription.subscription_id, None)
 
         if not waiting_ids:
             return
@@ -501,8 +533,9 @@ class BgaMonitor:
             game_label=game_label,
         )
         if message is not None:
-            self._active_turn_messages[subscription.subscription_id] = ActiveTurnMessage(
+            self._active_messages[subscription.subscription_id] = ActiveTableMessage(
                 message=message,
+                kind="turn",
                 waiting_ids=list(waiting_ids),
             )
 
@@ -546,7 +579,7 @@ class BgaMonitor:
         self,
         *,
         subscription: WatchSubscription,
-        active_message: ActiveTurnMessage,
+        active_message: ActiveTableMessage,
         table_id: str,
         waiting_ids: list[str],
         player_names: dict[str, str],
@@ -576,11 +609,11 @@ class BgaMonitor:
             LOGGER.error(tr("turn_message_update_failed", table_id=table_id, error=exc))
             return False
 
-    async def _delete_turn_message(
+    async def _delete_tracked_message(
         self,
         *,
         subscription: WatchSubscription,
-        active_message: ActiveTurnMessage,
+        active_message: ActiveTableMessage,
         table_id: str,
     ) -> bool:
         channel = await self._resolve_channel(subscription, table_id)
@@ -590,13 +623,132 @@ class BgaMonitor:
         message = active_message.message
         try:
             await message.delete()
-            LOGGER.info(tr("turn_message_deleted", table_id=table_id))
+            LOGGER.info(
+                tr(
+                    "watch_message_deleted",
+                    table_id=table_id,
+                    message_kind=active_message.kind,
+                )
+            )
             return True
         except discord.NotFound:
-            LOGGER.info(tr("turn_message_missing_delete", table_id=table_id))
+            LOGGER.info(
+                tr(
+                    "watch_message_missing_delete",
+                    table_id=table_id,
+                    message_kind=active_message.kind,
+                )
+            )
             return True
         except discord.DiscordException as exc:
-            LOGGER.error(tr("turn_message_delete_failed", table_id=table_id, error=exc))
+            LOGGER.error(
+                tr(
+                    "watch_message_delete_failed",
+                    table_id=table_id,
+                    message_kind=active_message.kind,
+                    error=exc,
+                )
+            )
+            return False
+
+    async def _apply_invite_state(
+        self,
+        table_id: str,
+        subscriptions: list[WatchSubscription],
+        snapshot: BgaTableSnapshot,
+    ) -> None:
+        for subscription in subscriptions:
+            player_names = dict(subscription.player_names)
+            player_names.update(snapshot.player_names)
+            self.database.update_watch_state(
+                subscription_id=subscription.subscription_id,
+                last_packet_id=subscription.last_packet_id,
+                waiting_ids=[],
+                player_names=player_names,
+                is_initialized=False,
+                game_name=snapshot.game_name or subscription.game_name,
+            )
+            active_message = self._active_messages.get(subscription.subscription_id)
+            if active_message is not None and active_message.kind != "invite":
+                deleted = await self._delete_tracked_message(
+                    subscription=subscription,
+                    active_message=active_message,
+                    table_id=table_id,
+                )
+                if deleted:
+                    self._active_messages.pop(subscription.subscription_id, None)
+                active_message = None
+
+            if active_message is None:
+                message = await self._publish_invite_snapshot(
+                    subscription=subscription,
+                    table_id=table_id,
+                    snapshot=snapshot,
+                )
+                if message is not None:
+                    self._active_messages[subscription.subscription_id] = ActiveTableMessage(
+                        message=message,
+                        kind="invite",
+                        waiting_ids=[],
+                    )
+                continue
+
+            await self._edit_invite_message(
+                subscription=subscription,
+                active_message=active_message,
+                table_id=table_id,
+                snapshot=snapshot,
+            )
+
+    async def _publish_invite_snapshot(
+        self,
+        *,
+        subscription: WatchSubscription,
+        table_id: str,
+        snapshot: BgaTableSnapshot,
+    ) -> discord.Message | None:
+        channel = await self._resolve_channel(subscription, table_id)
+        if channel is None:
+            return None
+
+        embed = self._build_invite_embed(table_id=table_id, subscription=subscription, snapshot=snapshot)
+        try:
+            message = await channel.send(embed=embed)
+            LOGGER.info(tr("invite_message_sent", table_id=table_id))
+            return message
+        except discord.DiscordException as exc:
+            LOGGER.error(
+                tr(
+                    "invite_message_send_failed",
+                    table_id=table_id,
+                    channel_id=subscription.channel_id,
+                    error=exc,
+                )
+            )
+            return None
+
+    async def _edit_invite_message(
+        self,
+        *,
+        subscription: WatchSubscription,
+        active_message: ActiveTableMessage,
+        table_id: str,
+        snapshot: BgaTableSnapshot,
+    ) -> bool:
+        channel = await self._resolve_channel(subscription, table_id)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            return False
+
+        embed = self._build_invite_embed(table_id=table_id, subscription=subscription, snapshot=snapshot)
+        try:
+            await active_message.message.edit(content=None, embed=embed)
+            LOGGER.info(tr("invite_message_updated", table_id=table_id))
+            return True
+        except discord.NotFound:
+            LOGGER.info(tr("invite_message_missing_update", table_id=table_id))
+            return False
+        except discord.DiscordException as exc:
+            LOGGER.error(tr("invite_message_update_failed", table_id=table_id, error=exc))
             return False
 
     async def _cleanup_stale_table_messages(
@@ -624,7 +776,7 @@ class BgaMonitor:
                 async for message in channel.history(limit=100):
                     if message.author.id != self.bot.user.id:
                         continue
-                    if not any(marker in message.content for marker in table_markers):
+                    if not self._message_contains_table_marker(message, table_markers):
                         continue
                     try:
                         await message.delete()
@@ -652,6 +804,23 @@ class BgaMonitor:
 
         if deleted_count:
             LOGGER.info(tr("startup_cleanup", deleted_count=deleted_count, table_id=table_id))
+
+    @staticmethod
+    def _message_contains_table_marker(message: discord.Message, table_markers: set[str]) -> bool:
+        content_parts = [message.content]
+        for embed in message.embeds:
+            content_parts.extend(
+                filter(
+                    None,
+                    [
+                        embed.title,
+                        embed.description,
+                        *(field.name for field in embed.fields),
+                        *(field.value for field in embed.fields),
+                    ],
+                )
+            )
+        return any(marker in "\n".join(content_parts) for marker in table_markers)
 
     async def _build_turn_message_content(
         self,
@@ -698,6 +867,47 @@ class BgaMonitor:
             url_label=tr("label_url"),
             table_url=subscription.table_url or build_table_url(table_id),
         )
+
+    def _build_invite_embed(
+        self,
+        *,
+        table_id: str,
+        subscription: WatchSubscription,
+        snapshot: BgaTableSnapshot,
+    ) -> discord.Embed:
+        players = sorted(snapshot.player_names.values(), key=str.casefold)
+        players_text = ", ".join(players) if players else tr("value_none")
+        if snapshot.seats_total is not None and snapshot.seats_remaining is not None:
+            seats_text = tr(
+                "invite_message_seats_value",
+                seats_taken=snapshot.seats_taken,
+                seats_total=snapshot.seats_total,
+                seats_remaining=snapshot.seats_remaining,
+            )
+        else:
+            seats_text = tr("invite_message_seats_unknown", seats_taken=snapshot.seats_taken)
+
+        embed = discord.Embed(
+            title=tr("invite_message_title"),
+            description=tr(
+                "invite_message_description",
+                game_label=tr("label_game"),
+                game_name=format_game_name(snapshot.game_name or subscription.game_name),
+                table_label=tr("label_table"),
+                table_id=table_id,
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name=tr("label_status"), value=snapshot.status or tr("value_unknown"), inline=True)
+        embed.add_field(name=tr("label_seats"), value=seats_text, inline=True)
+        embed.add_field(name=tr("label_players_joined"), value=players_text, inline=False)
+        embed.add_field(
+            name=tr("label_url"),
+            value=subscription.table_url or build_table_url(table_id),
+            inline=False,
+        )
+        embed.set_footer(text=tr("invite_message_footer"))
+        return embed
 
     async def _refresh_missing_player_names(
         self,
@@ -782,6 +992,56 @@ class BgaMonitor:
             )
             return None
         return channel
+
+    async def _clear_active_invite_messages(
+        self,
+        subscriptions: list[WatchSubscription],
+        table_id: str,
+    ) -> None:
+        for subscription in subscriptions:
+            active_message = self._active_messages.get(subscription.subscription_id)
+            if active_message is None or active_message.kind != "invite":
+                continue
+            deleted = await self._delete_tracked_message(
+                subscription=subscription,
+                active_message=active_message,
+                table_id=table_id,
+            )
+            if deleted:
+                self._active_messages.pop(subscription.subscription_id, None)
+
+    async def _sync_subscriptions_from_snapshot(
+        self,
+        subscriptions: list[WatchSubscription],
+        snapshot: BgaTableSnapshot,
+    ) -> list[WatchSubscription]:
+        updated = False
+        for subscription in subscriptions:
+            desired_url = snapshot.table_url or subscription.table_url or build_table_url(snapshot.table_id)
+            desired_gameserver = snapshot.gameserver or subscription.gameserver or ""
+            desired_game_name = snapshot.game_name or subscription.game_name
+            desired_base_url = subscription.base_url or BASE_URL
+            if (
+                subscription.table_url == desired_url
+                and (subscription.gameserver or "") == desired_gameserver
+                and subscription.game_name == desired_game_name
+                and (subscription.base_url or "") == desired_base_url
+            ):
+                continue
+            self.database.upsert_watch_subscription(
+                table_id=subscription.table_id,
+                table_url=desired_url,
+                base_url=desired_base_url,
+                gameserver=desired_gameserver,
+                guild_id=subscription.guild_id,
+                channel_id=subscription.channel_id,
+                created_by_discord_user_id=subscription.created_by_discord_user_id,
+                game_name=desired_game_name,
+            )
+            updated = True
+        if updated:
+            return self._subscriptions_for_table(snapshot.table_id)
+        return subscriptions
 
     def _subscriptions_for_table(self, table_id: str) -> list[WatchSubscription]:
         return [item for item in self.database.list_watch_subscriptions() if item.table_id == table_id]

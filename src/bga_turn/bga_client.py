@@ -17,7 +17,7 @@ from websockets import ConnectionClosed
 from websockets.exceptions import InvalidStatus
 
 from .i18n import tr
-from .models import BgaNotificationState, BgaTableInfo
+from .models import BgaNotificationState, BgaTableInfo, BgaTableSnapshot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,8 +156,23 @@ class BgaClient:
     # Table states worth watching from a player's public table list. Anything else
     # (`finished`, `open`, ...) has no turn to notify about.
     _FOLLOWABLE_TABLE_STATUSES = {"asyncplay", "play"}
+    _WAITING_TABLE_STATUSES = {"new", "open", "pending", "setup"}
     # `tablemanager` reports an unknown/invalid player id with this payload code.
     _UNKNOWN_PLAYER_CODE = 100
+    _SEAT_TOTAL_KEYS = (
+        "maxplayers",
+        "maxplayer",
+        "maxplayernbr",
+        "maxplayernumber",
+        "maximumnumberofplayers",
+        "maximumplayernumber",
+        "nbplayermax",
+        "nbplayersmax",
+        "playermax",
+        "playernumbermax",
+        "tablemaxplayernbr",
+        "tablemaxplayers",
+    )
 
     def __init__(
         self,
@@ -410,6 +425,26 @@ class BgaClient:
         )
         return is_finished
 
+    def fetch_public_table_snapshot(self, table_id: str, base_url: str | None = None) -> BgaTableSnapshot:
+        base = (base_url or BASE_URL).rstrip("/")
+        tableview_url = f"{base}/tableview?table={table_id}"
+        try:
+            response = self._http_get(tableview_url, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise BgaClientError(
+                tr("error_load_public_page", table_url=tableview_url, error=exc)
+            ) from exc
+
+        if response.status_code >= 400:
+            raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
+
+        data = self._fetch_tableinfos_with_token(
+            table_id=table_id,
+            base_url=base,
+            html=response.text,
+        )
+        return self._build_table_snapshot(table_id=table_id, base_url=base, data=data)
+
     def fetch_public_player_names(self, table_info: BgaTableInfo) -> dict[str, str]:
         try:
             response = self._http_get(table_info.table_url, timeout=self.timeout)
@@ -508,6 +543,60 @@ class BgaClient:
         if not isinstance(data, dict):
             raise BgaClientError(tr("error_tableinfos_missing_data", table_id=table_id))
         return data
+
+    def _build_table_snapshot(
+        self,
+        *,
+        table_id: str,
+        base_url: str,
+        data: dict[str, Any],
+    ) -> BgaTableSnapshot:
+        status_value = str(data.get("status") or "").strip().lower()
+        result = data.get("result")
+        result_dict = result if isinstance(result, dict) else {}
+        endgame_reason = str(result_dict.get("endgame_reason") or "").strip()
+        time_end = str(result_dict.get("time_end") or "").strip()
+        cancelled = str(data.get("cancelled") or "").strip()
+        is_finished = (
+            status_value == "finished"
+            or bool(endgame_reason)
+            or bool(time_end)
+            or cancelled == "1"
+        )
+        gameserver = str(data.get("gameserver") or "").strip()
+        game_name = str(data.get("game_name") or "").strip()
+        player_names = self._extract_roster_from_tableinfos(data)
+        seats_taken = len(player_names)
+        seats_total = self._extract_seat_total(data)
+        seats_remaining = (
+            max(seats_total - seats_taken, 0)
+            if seats_total is not None
+            else None
+        )
+        can_watch_turns = (
+            not is_finished
+            and status_value in self._FOLLOWABLE_TABLE_STATUSES
+            and gameserver.isdigit()
+            and bool(game_name)
+        )
+        table_url = (
+            f"{base_url}/{gameserver}/{game_name}?table={table_id}"
+            if gameserver.isdigit() and game_name
+            else None
+        )
+        return BgaTableSnapshot(
+            table_id=table_id,
+            status=status_value,
+            game_name=game_name,
+            gameserver=gameserver,
+            player_names=player_names,
+            seats_taken=seats_taken,
+            seats_total=seats_total,
+            seats_remaining=seats_remaining,
+            is_finished=is_finished,
+            can_watch_turns=can_watch_turns,
+            table_url=table_url,
+        )
 
     async def probe_public_table(
         self,
@@ -761,6 +850,35 @@ class BgaClient:
             # not filtered out of waiting_ids; fall back to their raw handle or id.
             roster[player_id] = cls._clean_player_name(raw_name) or raw_name or player_id
         return roster
+
+    @classmethod
+    def _extract_seat_total(cls, data: dict[str, Any]) -> int | None:
+        for value in cls._walk_values_for_keys(data, cls._SEAT_TOTAL_KEYS):
+            parsed = cls._coerce_int(value)
+            if parsed is not None and parsed > 0:
+                return parsed
+        return None
+
+    @classmethod
+    def _walk_values_for_keys(cls, value: Any, normalized_keys: tuple[str, ...]) -> list[Any]:
+        wanted = set(normalized_keys)
+        matches: list[Any] = []
+
+        def visit(node: Any, depth: int) -> None:
+            if depth > 4:
+                return
+            if isinstance(node, dict):
+                for key, child in node.items():
+                    normalized_key = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
+                    if normalized_key in wanted:
+                        matches.append(child)
+                    visit(child, depth + 1)
+            elif isinstance(node, list):
+                for child in node:
+                    visit(child, depth + 1)
+
+        visit(value, 0)
+        return matches
 
     @classmethod
     def _sanitize_state_with_roster(
