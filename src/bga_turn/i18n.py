@@ -467,6 +467,26 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Players still waiting",
         "FR": "Joueurs encore attendus",
     },
+    "label_current_turn": {
+        "EN": "Current turn",
+        "FR": "Tour en cours",
+    },
+    "label_winner": {
+        "EN": "Winner",
+        "FR": "Vainqueur",
+    },
+    "label_final_standings": {
+        "EN": "Final standings",
+        "FR": "Classement final",
+    },
+    "label_finish_reason": {
+        "EN": "Finish reason",
+        "FR": "Raison de fin",
+    },
+    "label_finished_at": {
+        "EN": "Finished at",
+        "FR": "Terminee a",
+    },
     "value_none": {
         "EN": "none",
         "FR": "aucun",
@@ -738,6 +758,38 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "invite_message_footer": {
         "EN": "Turn notifications will replace this message automatically once the game starts.",
         "FR": "Les notifications de tour remplaceront automatiquement ce message quand la partie commencera.",
+    },
+    "button_join_table": {
+        "EN": "Join table",
+        "FR": "Rejoindre la table",
+    },
+    "lifecycle_common_description": {
+        "EN": "{game_label}: {game_name}\n{table_label}: {table_id}",
+        "FR": "{game_label} : {game_name}\n{table_label} : {table_id}",
+    },
+    "lifecycle_recruiting_title": {
+        "EN": "BGA table recruiting",
+        "FR": "Table BGA en recrutement",
+    },
+    "lifecycle_in_progress_title": {
+        "EN": "BGA game in progress",
+        "FR": "Partie BGA en cours",
+    },
+    "lifecycle_in_progress_footer": {
+        "EN": "This message updates live during the game.",
+        "FR": "Ce message se met a jour en direct pendant la partie.",
+    },
+    "turn_ping_prefix": {
+        "EN": "Current turn: {mentions}",
+        "FR": "Tour en cours : {mentions}",
+    },
+    "lifecycle_finished_title": {
+        "EN": "BGA game finished",
+        "FR": "Partie BGA terminee",
+    },
+    "lifecycle_finished_footer": {
+        "EN": "Watch closed automatically after game completion.",
+        "FR": "Watch fermee automatiquement apres la fin de partie.",
     },
     "invite_message_sent": {
         "EN": "Invite snapshot sent for table {table_id}.",

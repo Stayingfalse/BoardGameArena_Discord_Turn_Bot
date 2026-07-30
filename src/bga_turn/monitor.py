@@ -32,6 +32,14 @@ class FollowSyncResult:
 
 
 class BgaMonitor:
+    LIFECYCLE_RECRUITING = "recruiting"
+    LIFECYCLE_IN_PROGRESS = "in_progress"
+    LIFECYCLE_FINISHED = "finished"
+    _LIFECYCLE_ORDER = {
+        LIFECYCLE_RECRUITING: 0,
+        LIFECYCLE_IN_PROGRESS: 1,
+        LIFECYCLE_FINISHED: 2,
+    }
     # Followed players are re-scanned far less often than tables are polled: each
     # scan costs two HTTP round-trips to BGA and a new table only appears when a
     # player joins one, which is a human-scale event.
@@ -272,7 +280,7 @@ class BgaMonitor:
                 subscriptions = await self._sync_subscriptions_from_snapshot(subscriptions, snapshot)
                 reference = subscriptions[0]
                 if snapshot.is_finished:
-                    await self._finalize_finished_table(subscriptions, table_id)
+                    await self._finalize_finished_table(subscriptions, table_id, snapshot=snapshot)
                     return
                 if not snapshot.can_watch_turns:
                     await self._apply_invite_state(table_id, subscriptions, snapshot)
@@ -287,7 +295,6 @@ class BgaMonitor:
                     gameserver=snapshot.gameserver or reference.gameserver or "",
                     game_name=snapshot.game_name or reference.game_name or "unknown",
                 )
-                await self._clear_active_invite_messages(subscriptions, table_id)
                 current_waiting_ids = self._select_previous_waiting_ids(subscriptions)
                 known_player_names = self._merge_player_names(subscriptions)
                 known_player_names.update(snapshot.player_names)
@@ -363,80 +370,24 @@ class BgaMonitor:
         )
 
         for subscription in subscriptions:
-            previous_waiting_ids = subscription.last_waiting_ids
-            waiting_ids = state.waiting_ids if state.waiting_ids is not None else previous_waiting_ids
+            waiting_ids = state.waiting_ids if state.waiting_ids is not None else subscription.last_waiting_ids
             current_player_names = dict(subscription.player_names)
             current_player_names.update(state.player_names)
             game_name = subscription.game_name or fallback_game_name
 
-            if not subscription.is_initialized:
-                self.database.update_watch_state(
-                    subscription_id=subscription.subscription_id,
-                    last_packet_id=table_packet_id,
-                    waiting_ids=waiting_ids,
-                    player_names=current_player_names,
-                    is_initialized=True,
-                    game_name=game_name,
-                )
-
-                if waiting_ids:
-                    invite_message = self._active_messages.get(subscription.subscription_id)
-                    if invite_message is not None and invite_message.kind == "invite":
-                        deleted = await self._delete_tracked_message(
-                            subscription=subscription,
-                            active_message=invite_message,
-                            table_id=table_id,
-                        )
-                        if deleted:
-                            self._active_messages.pop(subscription.subscription_id, None)
-                    message = await self._publish_turn_snapshot(
-                        subscription=subscription,
-                        table_id=table_id,
-                        waiting_ids=waiting_ids,
-                        player_names=current_player_names,
-                        game_label=format_game_name(game_name),
-                    )
-                    if message is not None:
-                        self._active_messages[subscription.subscription_id] = ActiveTableMessage(
-                            message=message,
-                            kind="turn",
-                            waiting_ids=list(waiting_ids),
-                        )
+            if not self._can_transition_lifecycle(
+                subscription.lifecycle_state, self.LIFECYCLE_IN_PROGRESS
+            ):
                 continue
 
-            active_message = self._active_messages.get(subscription.subscription_id)
-            if active_message is not None and active_message.kind != "turn":
-                deleted = await self._delete_tracked_message(
-                    subscription=subscription,
-                    active_message=active_message,
-                    table_id=table_id,
-                )
-                if deleted:
-                    self._active_messages.pop(subscription.subscription_id, None)
-                active_message = None
-            if active_message is None and waiting_ids:
-                message = await self._publish_turn_snapshot(
-                    subscription=subscription,
-                    table_id=table_id,
-                    waiting_ids=waiting_ids,
-                    player_names=current_player_names,
-                    game_label=format_game_name(game_name),
-                )
-                if message is not None:
-                    self._active_messages[subscription.subscription_id] = ActiveTableMessage(
-                        message=message,
-                        kind="turn",
-                        waiting_ids=list(waiting_ids),
-                    )
-            elif waiting_ids != previous_waiting_ids:
-                await self._handle_waiting_ids_transition(
-                    subscription=subscription,
-                    table_id=table_id,
-                    previous_waiting_ids=previous_waiting_ids,
-                    waiting_ids=waiting_ids,
-                    player_names=current_player_names,
-                    game_label=format_game_name(game_name),
-                )
+            await self._publish_or_update_lifecycle_message(
+                subscription=subscription,
+                table_id=table_id,
+                lifecycle_state=self.LIFECYCLE_IN_PROGRESS,
+                waiting_ids=waiting_ids,
+                player_names=current_player_names,
+                snapshot=None,
+            )
 
             self.database.update_watch_state(
                 subscription_id=subscription.subscription_id,
@@ -445,32 +396,59 @@ class BgaMonitor:
                 player_names=current_player_names,
                 is_initialized=True,
                 game_name=game_name,
+                lifecycle_state=self.LIFECYCLE_IN_PROGRESS,
             )
 
     async def _finalize_finished_table(
         self,
         subscriptions: list[WatchSubscription],
         table_id: str,
+        *,
+        snapshot: BgaTableSnapshot | None = None,
     ) -> None:
         # Block the follow scan from immediately re-watching this table while BGA
         # still advertises it as being played.
         self._remember_finished_table(table_id)
-        for subscription in subscriptions:
-            active_message = self._active_messages.get(subscription.subscription_id)
-            if active_message is not None:
-                deleted = await self._delete_tracked_message(
-                    subscription=subscription,
-                    active_message=active_message,
-                    table_id=table_id,
+        if snapshot is None and subscriptions:
+            reference = subscriptions[0]
+            try:
+                snapshot = await asyncio.to_thread(
+                    self.bga_client.fetch_public_table_snapshot,
+                    table_id,
+                    reference.base_url or BASE_URL,
                 )
-                if deleted:
-                    self._active_messages.pop(subscription.subscription_id, None)
+            except BgaClientError:
+                snapshot = None
+        for subscription in subscriptions:
+            if not self._can_transition_lifecycle(
+                subscription.lifecycle_state, self.LIFECYCLE_FINISHED
+            ):
+                continue
+
+            await self._publish_or_update_lifecycle_message(
+                subscription=subscription,
+                table_id=table_id,
+                lifecycle_state=self.LIFECYCLE_FINISHED,
+                waiting_ids=[],
+                player_names=dict(subscription.player_names),
+                snapshot=snapshot,
+            )
+            self.database.update_watch_state(
+                subscription_id=subscription.subscription_id,
+                last_packet_id=subscription.last_packet_id,
+                waiting_ids=[],
+                player_names=dict(subscription.player_names),
+                is_initialized=True,
+                game_name=subscription.game_name,
+                lifecycle_state=self.LIFECYCLE_FINISHED,
+            )
 
             self.database.remove_watch_subscription(
                 table_id=subscription.table_id,
                 guild_id=subscription.guild_id,
                 channel_id=subscription.channel_id,
             )
+            self._active_messages.pop(subscription.subscription_id, None)
 
         self._table_tasks.pop(table_id, None)
         LOGGER.info(tr("table_finished_cleanup", table_id=table_id))
@@ -658,6 +636,10 @@ class BgaMonitor:
         snapshot: BgaTableSnapshot,
     ) -> None:
         for subscription in subscriptions:
+            if not self._can_transition_lifecycle(
+                subscription.lifecycle_state, self.LIFECYCLE_RECRUITING
+            ):
+                continue
             player_names = dict(subscription.player_names)
             player_names.update(snapshot.player_names)
             self.database.update_watch_state(
@@ -667,38 +649,388 @@ class BgaMonitor:
                 player_names=player_names,
                 is_initialized=False,
                 game_name=snapshot.game_name or subscription.game_name,
+                lifecycle_state=self.LIFECYCLE_RECRUITING,
             )
-            active_message = self._active_messages.get(subscription.subscription_id)
-            if active_message is not None and active_message.kind != "invite":
-                deleted = await self._delete_tracked_message(
-                    subscription=subscription,
-                    active_message=active_message,
-                    table_id=table_id,
-                )
-                if deleted:
-                    self._active_messages.pop(subscription.subscription_id, None)
-                active_message = None
-
-            if active_message is None:
-                message = await self._publish_invite_snapshot(
-                    subscription=subscription,
-                    table_id=table_id,
-                    snapshot=snapshot,
-                )
-                if message is not None:
-                    self._active_messages[subscription.subscription_id] = ActiveTableMessage(
-                        message=message,
-                        kind="invite",
-                        waiting_ids=[],
-                    )
-                continue
-
-            await self._edit_invite_message(
+            await self._publish_or_update_lifecycle_message(
                 subscription=subscription,
-                active_message=active_message,
                 table_id=table_id,
+                lifecycle_state=self.LIFECYCLE_RECRUITING,
+                waiting_ids=[],
+                player_names=player_names,
                 snapshot=snapshot,
             )
+
+    async def _publish_or_update_lifecycle_message(
+        self,
+        *,
+        subscription: WatchSubscription,
+        table_id: str,
+        lifecycle_state: str,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        snapshot: BgaTableSnapshot | None,
+    ) -> None:
+        channel = await self._resolve_channel(subscription, table_id)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            return
+
+        message = await self._resolve_tracked_message(subscription, channel)
+        content, embed, view = await self._build_lifecycle_message_payload(
+            lifecycle_state=lifecycle_state,
+            table_id=table_id,
+            subscription=subscription,
+            waiting_ids=waiting_ids,
+            player_names=player_names,
+            snapshot=snapshot,
+        )
+
+        if message is None:
+            try:
+                message = await channel.send(content=content, embed=embed, view=view)
+            except discord.DiscordException as exc:
+                LOGGER.error(
+                    tr(
+                        "notification_send_failed",
+                        table_id=table_id,
+                        channel_id=subscription.channel_id,
+                        error=exc,
+                    )
+                )
+                return
+        else:
+            try:
+                await message.edit(content=content, embed=embed, view=view)
+            except discord.NotFound:
+                self.database.update_watch_message_tracking(
+                    subscription_id=subscription.subscription_id,
+                    lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
+                    tracked_message_id=None,
+                    tracked_message_kind=None,
+                )
+                self._active_messages.pop(subscription.subscription_id, None)
+                return await self._publish_or_update_lifecycle_message(
+                    subscription=subscription,
+                    table_id=table_id,
+                    lifecycle_state=lifecycle_state,
+                    waiting_ids=waiting_ids,
+                    player_names=player_names,
+                    snapshot=snapshot,
+                )
+            except discord.DiscordException as exc:
+                LOGGER.error(tr("turn_message_update_failed", table_id=table_id, error=exc))
+                return
+
+        self._active_messages[subscription.subscription_id] = ActiveTableMessage(
+            message=message,
+            kind=lifecycle_state,
+            waiting_ids=list(waiting_ids),
+        )
+        self.database.update_watch_message_tracking(
+            subscription_id=subscription.subscription_id,
+            lifecycle_state=lifecycle_state,
+            tracked_message_id=message.id,
+            tracked_message_kind=lifecycle_state,
+        )
+
+    async def _resolve_tracked_message(
+        self,
+        subscription: WatchSubscription,
+        channel: discord.TextChannel,
+    ) -> discord.Message | None:
+        active = self._active_messages.get(subscription.subscription_id)
+        if active is not None:
+            return active.message
+        if subscription.tracked_message_id is None:
+            return None
+        try:
+            message = await channel.fetch_message(subscription.tracked_message_id)
+        except discord.NotFound:
+            self.database.update_watch_message_tracking(
+                subscription_id=subscription.subscription_id,
+                lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
+                tracked_message_id=None,
+                tracked_message_kind=None,
+            )
+            return None
+        except discord.DiscordException:
+            return None
+        self._active_messages[subscription.subscription_id] = ActiveTableMessage(
+            message=message,
+            kind=subscription.tracked_message_kind or subscription.lifecycle_state,
+            waiting_ids=list(subscription.last_waiting_ids),
+        )
+        return message
+
+    async def _build_lifecycle_message_payload(
+        self,
+        *,
+        lifecycle_state: str,
+        table_id: str,
+        subscription: WatchSubscription,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        snapshot: BgaTableSnapshot | None,
+    ) -> tuple[str | None, discord.Embed, discord.ui.View | None]:
+        if lifecycle_state == self.LIFECYCLE_RECRUITING:
+            embed = await self._build_recruiting_embed(
+                table_id=table_id,
+                subscription=subscription,
+                player_names=player_names,
+                snapshot=snapshot,
+            )
+            return None, embed, self._build_join_view(table_id, subscription)
+        if lifecycle_state == self.LIFECYCLE_FINISHED:
+            embed = self._build_finished_embed(
+                table_id=table_id,
+                subscription=subscription,
+                snapshot=snapshot,
+            )
+            return None, embed, None
+        mention_line = await self._build_turn_mentions(
+            waiting_ids=waiting_ids,
+            player_names=player_names,
+            subscription=subscription,
+        )
+        embed = await self._build_in_progress_embed(
+            table_id=table_id,
+            subscription=subscription,
+            waiting_ids=waiting_ids,
+            player_names=player_names,
+        )
+        return mention_line or None, embed, self._build_join_view(table_id, subscription)
+
+    def _build_join_view(self, table_id: str, subscription: WatchSubscription) -> discord.ui.View:
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label=tr("button_join_table"),
+                url=subscription.table_url or build_table_url(table_id),
+            )
+        )
+        return view
+
+    async def _build_recruiting_embed(
+        self,
+        *,
+        table_id: str,
+        subscription: WatchSubscription,
+        player_names: dict[str, str],
+        snapshot: BgaTableSnapshot | None,
+    ) -> discord.Embed:
+        game_name = format_game_name(
+            (snapshot.game_name if snapshot is not None else None) or subscription.game_name
+        )
+        embed = discord.Embed(
+            title=tr("lifecycle_recruiting_title"),
+            description=tr(
+                "lifecycle_common_description",
+                game_label=tr("label_game"),
+                game_name=game_name,
+                table_label=tr("label_table"),
+                table_id=table_id,
+            ),
+            color=discord.Color.gold(),
+        )
+        if snapshot is not None and snapshot.cover_image_url:
+            embed.set_image(url=snapshot.cover_image_url)
+
+        players_value = await self._build_player_lines(
+            guild_id=subscription.guild_id,
+            player_names=player_names,
+            player_avatars={} if snapshot is None else snapshot.player_avatars,
+        )
+        embed.add_field(
+            name=tr("label_players_joined"),
+            value=players_value or tr("value_none"),
+            inline=False,
+        )
+        if snapshot is not None and snapshot.seats_total is not None and snapshot.seats_remaining is not None:
+            seats_value = tr(
+                "invite_message_seats_value",
+                seats_taken=snapshot.seats_taken,
+                seats_total=snapshot.seats_total,
+                seats_remaining=snapshot.seats_remaining,
+            )
+        else:
+            joined_count = len(player_names)
+            seats_value = tr("invite_message_seats_unknown", seats_taken=joined_count)
+        embed.add_field(name=tr("label_seats"), value=seats_value, inline=True)
+        embed.add_field(
+            name=tr("label_status"),
+            value=(snapshot.status if snapshot is not None else "") or tr("value_unknown"),
+            inline=True,
+        )
+        embed.add_field(
+            name=tr("label_url"),
+            value=subscription.table_url or build_table_url(table_id),
+            inline=False,
+        )
+        embed.set_footer(text=tr("invite_message_footer"))
+        return embed
+
+    async def _build_in_progress_embed(
+        self,
+        *,
+        table_id: str,
+        subscription: WatchSubscription,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+    ) -> discord.Embed:
+        game_name = format_game_name(subscription.game_name)
+        embed = discord.Embed(
+            title=tr("lifecycle_in_progress_title"),
+            description=tr(
+                "lifecycle_common_description",
+                game_label=tr("label_game"),
+                game_name=game_name,
+                table_label=tr("label_table"),
+                table_id=table_id,
+            ),
+            color=discord.Color.blurple(),
+        )
+        waiting_players = await self._build_waiting_players_text(
+            waiting_ids=waiting_ids,
+            player_names=player_names,
+            subscription=subscription,
+        )
+        embed.add_field(
+            name=tr("label_current_turn"),
+            value=waiting_players or tr("value_none"),
+            inline=False,
+        )
+        embed.add_field(
+            name=tr("label_players_still_waiting"),
+            value=waiting_players or tr("value_none"),
+            inline=False,
+        )
+        embed.add_field(
+            name=tr("label_url"),
+            value=subscription.table_url or build_table_url(table_id),
+            inline=False,
+        )
+        embed.set_footer(text=tr("lifecycle_in_progress_footer"))
+        return embed
+
+    def _build_finished_embed(
+        self,
+        *,
+        table_id: str,
+        subscription: WatchSubscription,
+        snapshot: BgaTableSnapshot | None,
+    ) -> discord.Embed:
+        game_name = format_game_name(
+            (snapshot.game_name if snapshot is not None else None) or subscription.game_name
+        )
+        embed = discord.Embed(
+            title=tr("lifecycle_finished_title"),
+            description=tr(
+                "lifecycle_common_description",
+                game_label=tr("label_game"),
+                game_name=game_name,
+                table_label=tr("label_table"),
+                table_id=table_id,
+            ),
+            color=discord.Color.dark_green(),
+        )
+        if snapshot is not None and snapshot.winner_names:
+            embed.add_field(
+                name=tr("label_winner"),
+                value=", ".join(snapshot.winner_names),
+                inline=False,
+            )
+        if snapshot is not None and snapshot.final_standings:
+            standings_value = "\n".join(snapshot.final_standings[:10])
+            embed.add_field(name=tr("label_final_standings"), value=standings_value, inline=False)
+        if snapshot is not None and snapshot.finish_reason:
+            embed.add_field(name=tr("label_finish_reason"), value=snapshot.finish_reason, inline=False)
+        if snapshot is not None and snapshot.finished_at:
+            embed.add_field(name=tr("label_finished_at"), value=snapshot.finished_at, inline=False)
+        embed.add_field(
+            name=tr("label_url"),
+            value=subscription.table_url or build_table_url(table_id),
+            inline=False,
+        )
+        embed.set_footer(text=tr("lifecycle_finished_footer"))
+        return embed
+
+    async def _build_turn_mentions(
+        self,
+        *,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        subscription: WatchSubscription,
+    ) -> str:
+        linked_users = await asyncio.to_thread(
+            self.database.get_linked_users_for_players,
+            subscription.guild_id,
+            {player_id: player_names.get(player_id, "") for player_id in waiting_ids},
+        )
+        mentions = [f"<@{item.discord_user_id}>" for item in linked_users]
+        if not mentions:
+            return ""
+        return tr("turn_ping_prefix", mentions=" ".join(sorted(set(mentions))))
+
+    async def _build_waiting_players_text(
+        self,
+        *,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        subscription: WatchSubscription,
+    ) -> str:
+        observed_waiting_players = {
+            player_id: player_names.get(player_id, "")
+            for player_id in waiting_ids
+        }
+        linked_users = await asyncio.to_thread(
+            self.database.get_linked_users_for_players,
+            subscription.guild_id,
+            observed_waiting_players,
+        )
+        linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
+        linked_users_by_name = {
+            user.bga_player_name.casefold(): user
+            for user in linked_users
+            if user.bga_player_name
+        }
+        waiting_descriptions = ", ".join(
+            self._format_waiting_player(
+                player_id,
+                player_names,
+                linked_users_by_bga_id,
+                linked_users_by_name,
+            )
+            for player_id in waiting_ids
+        )
+        return waiting_descriptions
+
+    async def _build_player_lines(
+        self,
+        *,
+        guild_id: str,
+        player_names: dict[str, str],
+        player_avatars: dict[str, str],
+    ) -> str:
+        linked_users = await asyncio.to_thread(
+            self.database.get_linked_users_for_players,
+            guild_id,
+            player_names,
+        )
+        linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
+        linked_by_name = {
+            item.bga_player_name.casefold(): item
+            for item in linked_users
+            if item.bga_player_name
+        }
+        lines: list[str] = []
+        for player_id, player_name in sorted(player_names.items(), key=lambda item: item[1].casefold()):
+            linked = linked_by_bga_id.get(player_id)
+            if linked is None and player_name:
+                linked = linked_by_name.get(player_name.casefold())
+            mention = f"<@{linked.discord_user_id}> " if linked is not None else ""
+            avatar = player_avatars.get(player_id)
+            avatar_suffix = f" • [avatar]({avatar})" if avatar else ""
+            lines.append(f"{mention}{player_name} ({player_id}){avatar_suffix}")
+        return "\n".join(lines)
 
     async def _publish_invite_snapshot(
         self,
@@ -1045,6 +1377,17 @@ class BgaMonitor:
 
     def _subscriptions_for_table(self, table_id: str) -> list[WatchSubscription]:
         return [item for item in self.database.list_watch_subscriptions() if item.table_id == table_id]
+
+    @classmethod
+    def _normalize_lifecycle_state(cls, lifecycle_state: str | None) -> str:
+        if lifecycle_state in cls._LIFECYCLE_ORDER:
+            return lifecycle_state
+        return cls.LIFECYCLE_RECRUITING
+
+    @classmethod
+    def _can_transition_lifecycle(cls, current: str | None, target: str) -> bool:
+        current_state = cls._normalize_lifecycle_state(current)
+        return cls._LIFECYCLE_ORDER[target] >= cls._LIFECYCLE_ORDER[current_state]
 
     @staticmethod
     def _format_player_reference(player_id: str, player_names: dict[str, str]) -> str:

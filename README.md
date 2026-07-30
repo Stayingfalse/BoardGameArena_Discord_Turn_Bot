@@ -12,8 +12,8 @@ Target workflow:
 - the bot fills the missing field automatically when it observes a table
 - you add a BGA table with `/bga watch <game_url | tableview_link | table_id>`, or let the bot find them for you with `/bga follow-tables @discord`
 - the bot detects whose turn it is
-- it creates, updates, deletes, then recreates Discord messages as turns evolve
-- when the game is over, it removes the last active message and automatically removes the watch
+- it keeps one lifecycle message per watched table and updates it across 3 states: recruiting → in progress → finished
+- when the game is over, it posts the final state (winner / standings when available) and automatically removes the watch
 
 ## Quick start
 
@@ -567,11 +567,10 @@ In practice:
 ### Discord message behavior
 
 For each watched table:
-- the bot creates a message when an active turn starts
-- it edits that message while the waiting list shrinks
-- it deletes that message when the turn is over
-- it creates a new message for the next turn
-- if the BGA game is detected as finished, it deletes the last active message and automatically removes the watch
+- **State 1 — Recruiting**: the bot posts/updates one embed with game identity, joined players, seats, and a join button
+- **State 2 — In progress**: the same message is updated live with current waiting players and Discord mentions when linked
+- **State 3 — Finished**: the same message is updated to a final summary (winner / standings when available)
+- after State 3 is posted, the watch is automatically removed
 
 On bot startup:
 - it removes old bot messages linked to each watched table in the channel
@@ -635,9 +634,10 @@ Responsibilities:
 Responsibilities:
 - start one websocket worker per watched table
 - compare old and new states
-- decide when to create, update, or delete Discord messages
+- drive one-way lifecycle transitions (recruiting → in progress → finished)
+- update a single persisted Discord message per watch across restarts
 - clean old messages on startup
-- automatically delete the active message and remove the watch when a game is over
+- publish a final summary and remove the watch when a game is over
 
 #### `src/bga_turn/utils.py`
 
