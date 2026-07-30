@@ -17,7 +17,37 @@ Target workflow:
 
 ## Quick start
 
-After cloning the repository and installing `requirements.txt`, you can start the bot directly with `python -m bga_turn`.
+### Docker (recommended)
+
+The easiest way to run the bot is with Docker Compose. The container starts automatically when Docker starts and restarts itself if it ever crashes.
+
+```bash
+cp .env.example .env
+# Edit .env and set at least DISCORD_TOKEN
+docker compose up -d
+```
+
+The SQLite database is stored in a named Docker volume (`bga_data`) so it survives container restarts and upgrades.
+
+To view logs:
+
+```bash
+docker compose logs -f
+```
+
+To stop the bot:
+
+```bash
+docker compose down
+```
+
+To rebuild after a code change:
+
+```bash
+docker compose up -d --build
+```
+
+After cloning the repository and installing `requirements.txt`, you can also start the bot directly with `python -m bga_turn`.
 
 ### Windows PowerShell
 
@@ -43,13 +73,31 @@ python -m bga_turn
 
 ### Requirements
 
-- Python 3.11 or newer recommended
+- Docker and Docker Compose (recommended), **or** Python 3.11 or newer
 - a Discord bot created in the Discord developer portal
 - the bot invited to your Discord server
 - one or more BGA tables publicly accessible in spectator mode
 
+### Docker deployment
+
+The project ships with a `Dockerfile` and a `docker-compose.yml` that run the bot in a single container with automatic restart.
+
+```bash
+cp .env.example .env
+# Edit .env – set at least DISCORD_TOKEN
+docker compose up -d
+```
+
+Key behaviours:
+- `restart: unless-stopped` — the container starts automatically when the Docker daemon starts and restarts on crash.
+- `init: true` — uses an init process inside the container for correct signal forwarding and zombie-process reaping.
+- The SQLite database is stored in the named volume `bga_data` (mounted at `/data` inside the container). You do **not** need to set `BGA_DB_PATH` in `.env`; the image defaults it to `/data/bga_bot.db`.
+
 ### Project structure
 
+- `Dockerfile`: single-container image for Docker deployment
+- `docker-compose.yml`: Compose service with auto-restart and a persistent data volume
+- `.dockerignore`: files excluded from the Docker build context
 - `bot.py`: development launcher from the repository root
 - `src/bga_turn/app.py`: application entry point
 - `src/bga_turn/commands_bga.py`: `/bga` slash commands
