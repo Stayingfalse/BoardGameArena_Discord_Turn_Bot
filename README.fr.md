@@ -201,6 +201,10 @@ Si `DISCORD_GUILD_ID` est renseigne, les slash commands seront synchronisees sur
 
 Si tu utilisais auparavant des slash commands globales et que tu vois maintenant des doublons avec les commandes de guilde, mets `DISCORD_CLEAR_GLOBAL_COMMANDS=1` le temps d'un demarrage, laisse le bot supprimer les anciennes commandes globales, puis remets `0`.
 
+Au demarrage, le bot affiche maintenant dans les logs une URL d'invitation Discord prete a l'emploi avec les bonnes permissions.
+
+Si tu veux que le bot lance automatiquement la surveillance quand un lien BGA est poste dans un salon, active aussi le **Message Content Intent** du bot dans le portail developpeur Discord.
+
 ### Licence
 
 Ce depot est distribue sous licence MIT. Voir `LICENSE`.
@@ -599,6 +603,6 @@ Responsabilites :
 - le bot ne fonctionne que sur des tables BGA accessibles publiquement en mode spectateur
 - le bot est self-host : il doit tourner sur ta machine pour surveiller les tables
 - les warnings Discord lies a la voix (`PyNaCl`, `davey`) ne sont pas bloquants pour ce projet
-- le warning `message content intent` n'est pas bloquant ici car le bot repose sur des slash commands
+- sans `Message Content Intent`, les slash commands continuent de fonctionner mais l'auto-surveillance des liens BGA postes dans le chat reste desactivee
 - les noms de jeux affiches viennent du slug BGA ou du bootstrap public, donc ils ne sont pas toujours joliment formates
 - le projet est actuellement distribue sans suite de tests unitaires ; la validation reste volontairement legere via le packaging et la compilation

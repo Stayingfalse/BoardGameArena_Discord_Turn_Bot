@@ -17,7 +17,7 @@ from websockets import ConnectionClosed
 from websockets.exceptions import InvalidStatus
 
 from .i18n import tr
-from .models import BgaNotificationState, BgaTableInfo
+from .models import BgaNotificationState, BgaTableInfo, BgaTableSnapshot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,8 +156,23 @@ class BgaClient:
     # Table states worth watching from a player's public table list. Anything else
     # (`finished`, `open`, ...) has no turn to notify about.
     _FOLLOWABLE_TABLE_STATUSES = {"asyncplay", "play"}
+    _WAITING_TABLE_STATUSES = {"new", "open", "pending", "setup"}
     # `tablemanager` reports an unknown/invalid player id with this payload code.
     _UNKNOWN_PLAYER_CODE = 100
+    _SEAT_TOTAL_KEYS = (
+        "maxplayers",
+        "maxplayer",
+        "maxplayernbr",
+        "maxplayernumber",
+        "maximumnumberofplayers",
+        "maximumplayernumber",
+        "nbplayermax",
+        "nbplayersmax",
+        "playermax",
+        "playernumbermax",
+        "tablemaxplayernbr",
+        "tablemaxplayers",
+    )
 
     def __init__(
         self,
@@ -410,6 +425,26 @@ class BgaClient:
         )
         return is_finished
 
+    def fetch_public_table_snapshot(self, table_id: str, base_url: str | None = None) -> BgaTableSnapshot:
+        base = (base_url or BASE_URL).rstrip("/")
+        tableview_url = f"{base}/tableview?table={table_id}"
+        try:
+            response = self._http_get(tableview_url, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise BgaClientError(
+                tr("error_load_public_page", table_url=tableview_url, error=exc)
+            ) from exc
+
+        if response.status_code >= 400:
+            raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
+
+        data = self._fetch_tableinfos_with_token(
+            table_id=table_id,
+            base_url=base,
+            html=response.text,
+        )
+        return self._build_table_snapshot(table_id=table_id, base_url=base, data=data)
+
     def fetch_public_player_names(self, table_info: BgaTableInfo) -> dict[str, str]:
         try:
             response = self._http_get(table_info.table_url, timeout=self.timeout)
@@ -508,6 +543,77 @@ class BgaClient:
         if not isinstance(data, dict):
             raise BgaClientError(tr("error_tableinfos_missing_data", table_id=table_id))
         return data
+
+    def _build_table_snapshot(
+        self,
+        *,
+        table_id: str,
+        base_url: str,
+        data: dict[str, Any],
+    ) -> BgaTableSnapshot:
+        status_value = str(data.get("status") or "").strip().lower()
+        result = data.get("result")
+        result_dict = result if isinstance(result, dict) else {}
+        endgame_reason = str(result_dict.get("endgame_reason") or "").strip()
+        time_end = str(result_dict.get("time_end") or "").strip()
+        cancelled = str(data.get("cancelled") or "").strip()
+        is_finished = (
+            status_value == "finished"
+            or bool(endgame_reason)
+            or bool(time_end)
+            or cancelled == "1"
+        )
+        gameserver = str(data.get("gameserver") or "").strip()
+        game_name = str(data.get("game_name") or "").strip()
+        player_names = self._extract_roster_from_tableinfos(data)
+        player_avatars = self._extract_player_avatars(data)
+        player_scores = self._extract_player_scores(data)
+        player_ranks = self._extract_player_ranks(data)
+        winner_ids, winner_names, final_standings = self._extract_final_standings(
+            player_names=player_names,
+            player_scores=player_scores,
+            player_ranks=player_ranks,
+        )
+        seats_taken = len(player_names)
+        seats_total = self._extract_seat_total(data)
+        seats_remaining = (
+            max(seats_total - seats_taken, 0)
+            if seats_total is not None
+            else None
+        )
+        can_watch_turns = (
+            not is_finished
+            and status_value in self._FOLLOWABLE_TABLE_STATUSES
+            and gameserver.isdigit()
+            and bool(game_name)
+        )
+        table_url = (
+            f"{base_url}/{gameserver}/{game_name}?table={table_id}"
+            if gameserver.isdigit() and game_name
+            else None
+        )
+        return BgaTableSnapshot(
+            table_id=table_id,
+            status=status_value,
+            game_name=game_name,
+            gameserver=gameserver,
+            player_names=player_names,
+            seats_taken=seats_taken,
+            seats_total=seats_total,
+            seats_remaining=seats_remaining,
+            is_finished=is_finished,
+            can_watch_turns=can_watch_turns,
+            table_url=table_url,
+            cover_image_url=self._extract_cover_image_url(data),
+            player_avatars=player_avatars,
+            player_scores=player_scores,
+            player_ranks=player_ranks,
+            winner_ids=winner_ids,
+            winner_names=winner_names,
+            final_standings=final_standings,
+            finished_at=time_end or None,
+            finish_reason=endgame_reason or None,
+        )
 
     async def probe_public_table(
         self,
@@ -761,6 +867,168 @@ class BgaClient:
             # not filtered out of waiting_ids; fall back to their raw handle or id.
             roster[player_id] = cls._clean_player_name(raw_name) or raw_name or player_id
         return roster
+
+    @classmethod
+    def _extract_seat_total(cls, data: dict[str, Any]) -> int | None:
+        for value in cls._walk_values_for_keys(data, cls._SEAT_TOTAL_KEYS):
+            parsed = cls._coerce_int(value)
+            if parsed is not None and parsed > 0:
+                return parsed
+        return None
+
+    @classmethod
+    def _iter_table_players(cls, data: dict[str, Any]) -> list[dict[str, Any]]:
+        players = data.get("players")
+        if isinstance(players, dict):
+            values: Any = players.values()
+        elif isinstance(players, list):
+            values = players
+        else:
+            return []
+        return [entry for entry in values if isinstance(entry, dict)]
+
+    @classmethod
+    def _extract_player_avatars(cls, data: dict[str, Any]) -> dict[str, str]:
+        avatars: dict[str, str] = {}
+        for entry in cls._iter_table_players(data):
+            player_id = cls._coerce_player_id(
+                entry.get("id")
+                or entry.get("player_id")
+                or entry.get("playerId")
+                or entry.get("user_id")
+            )
+            if not player_id:
+                continue
+            for key in ("avatar", "avatar_url", "picture", "image", "img", "photo"):
+                value = str(entry.get(key) or "").strip()
+                if value.startswith("http://") or value.startswith("https://"):
+                    avatars[player_id] = value
+                    break
+        return avatars
+
+    @classmethod
+    def _extract_player_scores(cls, data: dict[str, Any]) -> dict[str, str]:
+        scores: dict[str, str] = {}
+        for entry in cls._iter_table_players(data):
+            player_id = cls._coerce_player_id(
+                entry.get("id")
+                or entry.get("player_id")
+                or entry.get("playerId")
+                or entry.get("user_id")
+            )
+            if not player_id:
+                continue
+            for key in ("score", "scoreAux", "score_aux", "points"):
+                value = entry.get(key)
+                if value is None:
+                    continue
+                parsed = cls._coerce_int(value)
+                if parsed is not None:
+                    scores[player_id] = str(parsed)
+                    break
+                text_value = str(value).strip()
+                if text_value:
+                    scores[player_id] = text_value
+                    break
+        return scores
+
+    @classmethod
+    def _extract_player_ranks(cls, data: dict[str, Any]) -> dict[str, int]:
+        ranks: dict[str, int] = {}
+        for entry in cls._iter_table_players(data):
+            player_id = cls._coerce_player_id(
+                entry.get("id")
+                or entry.get("player_id")
+                or entry.get("playerId")
+                or entry.get("user_id")
+            )
+            if not player_id:
+                continue
+            for key in ("rank", "table_order", "tableOrder", "position", "place"):
+                parsed = cls._coerce_int(entry.get(key))
+                if parsed is not None and parsed > 0:
+                    ranks[player_id] = parsed
+                    break
+        return ranks
+
+    @classmethod
+    def _extract_cover_image_url(cls, data: dict[str, Any]) -> str | None:
+        image_keys = (
+            "box_url",
+            "boxurl",
+            "boximage",
+            "cover",
+            "coverimage",
+            "gameimage",
+            "game_image",
+            "image",
+            "img",
+        )
+        for value in cls._walk_values_for_keys(data, image_keys):
+            candidate = str(value or "").strip()
+            if candidate.startswith("http://") or candidate.startswith("https://"):
+                return candidate
+        return None
+
+    @classmethod
+    def _extract_final_standings(
+        cls,
+        *,
+        player_names: dict[str, str],
+        player_scores: dict[str, str],
+        player_ranks: dict[str, int],
+    ) -> tuple[list[str], list[str], list[str]]:
+        if not player_names:
+            return [], [], []
+
+        def sort_key(player_id: str) -> tuple[int, int, str]:
+            rank = player_ranks.get(player_id, 10_000)
+            parsed_score = cls._coerce_int(player_scores.get(player_id))
+            score_order = -(parsed_score if parsed_score is not None else -10_000)
+            return rank, score_order, player_names.get(player_id, player_id).casefold()
+
+        ordered_player_ids = sorted(player_names.keys(), key=sort_key)
+        if not ordered_player_ids:
+            return [], [], []
+
+        ranked_ids = [item for item in ordered_player_ids if item in player_ranks]
+        if ranked_ids:
+            best_rank = min(player_ranks[item] for item in ranked_ids)
+            winner_ids = [item for item in ranked_ids if player_ranks[item] == best_rank]
+        else:
+            winner_ids = [ordered_player_ids[0]]
+
+        winner_names = [player_names.get(player_id, player_id) for player_id in winner_ids]
+        standings: list[str] = []
+        for player_id in ordered_player_ids:
+            player_name = player_names.get(player_id, player_id)
+            rank = player_ranks.get(player_id)
+            score = player_scores.get(player_id)
+            rank_label = f"#{rank}" if rank is not None else "-"
+            score_label = score if score is not None else "-"
+            standings.append(f"{rank_label} {player_name} ({player_id}) • score {score_label}")
+        return winner_ids, winner_names, standings
+
+    @classmethod
+    def _walk_values_for_keys(cls, value: Any, normalized_keys: tuple[str, ...]) -> list[Any]:
+        wanted = set(normalized_keys)
+        matches: list[Any] = []
+
+        def visit(node: Any, depth: int) -> None:
+            if depth > 4:
+                return
+            if isinstance(node, dict):
+                for key, child in node.items():
+                    normalized_key = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
+                    if normalized_key in wanted:
+                        matches.append(child)
+                    visit(child, depth + 1)
+            elif isinstance(node, list):
+                for child in node:
+                    visit(child, depth + 1)
+
+        visit(value, 0)
+        return matches
 
     @classmethod
     def _sanitize_state_with_roster(

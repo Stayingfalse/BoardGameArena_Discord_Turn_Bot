@@ -25,6 +25,9 @@ class WatchSubscription:
     player_names: dict[str, str]
     is_initialized: bool
     game_name: str | None
+    lifecycle_state: str
+    tracked_message_id: int | None
+    tracked_message_kind: str | None
 
 
 @dataclass(slots=True)
@@ -43,6 +46,30 @@ class BgaTableInfo:
     base_url: str
     gameserver: str
     game_name: str
+
+
+@dataclass(slots=True)
+class BgaTableSnapshot:
+    table_id: str
+    status: str
+    game_name: str
+    gameserver: str
+    player_names: dict[str, str] = field(default_factory=dict)
+    seats_taken: int = 0
+    seats_total: int | None = None
+    seats_remaining: int | None = None
+    is_finished: bool = False
+    can_watch_turns: bool = False
+    table_url: str | None = None
+    cover_image_url: str | None = None
+    player_avatars: dict[str, str] = field(default_factory=dict)
+    player_scores: dict[str, str] = field(default_factory=dict)
+    player_ranks: dict[str, int] = field(default_factory=dict)
+    winner_ids: list[str] = field(default_factory=list)
+    winner_names: list[str] = field(default_factory=list)
+    final_standings: list[str] = field(default_factory=list)
+    finished_at: str | None = None
+    finish_reason: str | None = None
 
 
 @dataclass(slots=True)

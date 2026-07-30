@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS watch_states (
     last_player_names TEXT NOT NULL DEFAULT '{}',
     is_initialized INTEGER NOT NULL DEFAULT 0,
     game_name TEXT,
+    lifecycle_state TEXT NOT NULL DEFAULT 'recruiting',
+    tracked_message_id TEXT,
+    tracked_message_kind TEXT,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (subscription_id) REFERENCES watch_subscriptions(subscription_id) ON DELETE CASCADE
 );

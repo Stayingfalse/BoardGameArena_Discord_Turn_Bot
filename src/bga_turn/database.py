@@ -338,8 +338,9 @@ class Database:
                 INSERT INTO watch_states (
                     subscription_id,
                     game_name,
+                    lifecycle_state,
                     updated_at
-                ) VALUES (?, ?, ?)
+                ) VALUES (?, ?, 'recruiting', ?)
                 ON CONFLICT(subscription_id) DO UPDATE SET
                     game_name = COALESCE(excluded.game_name, watch_states.game_name),
                     updated_at = excluded.updated_at
@@ -404,6 +405,9 @@ class Database:
         player_names: dict[str, str],
         is_initialized: bool,
         game_name: str | None,
+        lifecycle_state: str | None = None,
+        tracked_message_id: int | None = None,
+        tracked_message_kind: str | None = None,
     ) -> None:
         now = utc_now_iso()
         with self._lock:
@@ -416,14 +420,20 @@ class Database:
                     last_player_names,
                     is_initialized,
                     game_name,
+                    lifecycle_state,
+                    tracked_message_id,
+                    tracked_message_kind,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'recruiting'), ?, ?, ?)
                 ON CONFLICT(subscription_id) DO UPDATE SET
                     last_packet_id = excluded.last_packet_id,
                     last_waiting_ids = excluded.last_waiting_ids,
                     last_player_names = excluded.last_player_names,
                     is_initialized = excluded.is_initialized,
                     game_name = excluded.game_name,
+                    lifecycle_state = COALESCE(excluded.lifecycle_state, watch_states.lifecycle_state),
+                    tracked_message_id = COALESCE(excluded.tracked_message_id, watch_states.tracked_message_id),
+                    tracked_message_kind = COALESCE(excluded.tracked_message_kind, watch_states.tracked_message_kind),
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -433,7 +443,39 @@ class Database:
                     json_dumps(player_names),
                     1 if is_initialized else 0,
                     game_name,
+                    lifecycle_state,
+                    str(tracked_message_id) if tracked_message_id is not None else None,
+                    tracked_message_kind,
                     now,
+                ),
+            )
+            self._connection.commit()
+
+    def update_watch_message_tracking(
+        self,
+        *,
+        subscription_id: int,
+        lifecycle_state: str,
+        tracked_message_id: int | None,
+        tracked_message_kind: str | None,
+    ) -> None:
+        now = utc_now_iso()
+        with self._lock:
+            self._connection.execute(
+                """
+                UPDATE watch_states
+                SET lifecycle_state = ?,
+                    tracked_message_id = ?,
+                    tracked_message_kind = ?,
+                    updated_at = ?
+                WHERE subscription_id = ?
+                """,
+                (
+                    lifecycle_state,
+                    str(tracked_message_id) if tracked_message_id is not None else None,
+                    tracked_message_kind,
+                    now,
+                    subscription_id,
                 ),
             )
             self._connection.commit()
@@ -453,6 +495,28 @@ class Database:
             self._connection.execute(
                 "ALTER TABLE watch_states ADD COLUMN last_player_names TEXT NOT NULL DEFAULT '{}'"
             )
+        if "lifecycle_state" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE watch_states ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'recruiting'"
+            )
+        if "tracked_message_id" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE watch_states ADD COLUMN tracked_message_id TEXT"
+            )
+        if "tracked_message_kind" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE watch_states ADD COLUMN tracked_message_kind TEXT"
+            )
+        self._connection.execute(
+            """
+            UPDATE watch_states
+            SET lifecycle_state = CASE
+                WHEN COALESCE(lifecycle_state, '') = '' AND COALESCE(is_initialized, 0) = 1 THEN 'in_progress'
+                WHEN COALESCE(lifecycle_state, '') = '' THEN 'recruiting'
+                ELSE lifecycle_state
+            END
+            """
+        )
 
     def _migrate_legacy_watches_if_needed(self) -> None:
         if not self._table_exists("watches"):
@@ -655,7 +719,10 @@ class Database:
                 COALESCE(st.last_waiting_ids, '[]') AS last_waiting_ids,
                 COALESCE(st.last_player_names, '{}') AS last_player_names,
                 COALESCE(st.is_initialized, 0) AS is_initialized,
-                st.game_name
+                st.game_name,
+                COALESCE(st.lifecycle_state, 'recruiting') AS lifecycle_state,
+                st.tracked_message_id,
+                st.tracked_message_kind
             FROM watch_subscriptions ws
             LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
         """
@@ -676,4 +743,7 @@ class Database:
             player_names=json_loads_dict(row["last_player_names"]),
             is_initialized=bool(row["is_initialized"]),
             game_name=row["game_name"],
+            lifecycle_state=row["lifecycle_state"] or "recruiting",
+            tracked_message_id=int(row["tracked_message_id"]) if row["tracked_message_id"] else None,
+            tracked_message_kind=row["tracked_message_kind"],
         )

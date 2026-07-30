@@ -12,8 +12,8 @@ Target workflow:
 - the bot fills the missing field automatically when it observes a table
 - you add a BGA table with `/bga watch <game_url | tableview_link | table_id>`, or let the bot find them for you with `/bga follow-tables @discord`
 - the bot detects whose turn it is
-- it creates, updates, deletes, then recreates Discord messages as turns evolve
-- when the game is over, it removes the last active message and automatically removes the watch
+- it keeps one lifecycle message per watched table and updates it across 3 states: recruiting → in progress → finished
+- when the game is over, it posts the final state (winner / standings when available) and automatically removes the watch
 
 ## Quick start
 
@@ -248,6 +248,10 @@ python bot.py
 If `DISCORD_GUILD_ID` is set, slash commands are synced to that guild. Otherwise, they are synced globally, which may take longer.
 
 If you previously used global slash commands and now see duplicates together with guild-scoped commands, set `DISCORD_CLEAR_GLOBAL_COMMANDS=1` for one startup, let the bot delete the stale global commands, then set it back to `0`.
+
+On startup, the bot now prints a ready-to-use Discord invite URL in the logs with the permissions it needs.
+
+If you want the bot to auto-watch tables from posted BGA links in chat, also enable the **Message Content Intent** for the bot in the Discord Developer Portal.
 
 ### License
 
@@ -563,11 +567,10 @@ In practice:
 ### Discord message behavior
 
 For each watched table:
-- the bot creates a message when an active turn starts
-- it edits that message while the waiting list shrinks
-- it deletes that message when the turn is over
-- it creates a new message for the next turn
-- if the BGA game is detected as finished, it deletes the last active message and automatically removes the watch
+- **State 1 — Recruiting**: the bot posts/updates one embed with game identity, joined players, seats, and a join button
+- **State 2 — In progress**: the same message is updated live with current waiting players and Discord mentions when linked
+- **State 3 — Finished**: the same message is updated to a final summary (winner / standings when available)
+- after State 3 is posted, the watch is automatically removed
 
 On bot startup:
 - it removes old bot messages linked to each watched table in the channel
@@ -631,9 +634,10 @@ Responsibilities:
 Responsibilities:
 - start one websocket worker per watched table
 - compare old and new states
-- decide when to create, update, or delete Discord messages
+- drive one-way lifecycle transitions (recruiting → in progress → finished)
+- update a single persisted Discord message per watch across restarts
 - clean old messages on startup
-- automatically delete the active message and remove the watch when a game is over
+- publish a final summary and remove the watch when a game is over
 
 #### `src/bga_turn/utils.py`
 
@@ -647,6 +651,6 @@ Responsibilities:
 - the bot only works for BGA tables publicly accessible in spectator mode
 - the bot is self-hosted: it must keep running on your machine to keep watching tables
 - Discord voice warnings (`PyNaCl`, `davey`) are not relevant for this project
-- the `message content intent` warning is not blocking here because the bot relies on slash commands
+- without the **Message Content Intent**, slash commands still work but automatic watching from posted BGA links stays disabled
 - displayed game names come from the BGA slug or public bootstrap, so they are not always perfectly formatted
 - the project currently ships without a unit test suite; validation is kept lightweight through packaging and compilation checks
