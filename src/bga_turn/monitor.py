@@ -371,7 +371,6 @@ class BgaMonitor:
 
     async def _run_table_worker(self, table_id: str) -> None:
         backoff_seconds = 5
-        did_cleanup = False
         while True:
             try:
                 subscriptions = self._subscriptions_for_table(table_id)
@@ -379,9 +378,6 @@ class BgaMonitor:
                     return
 
                 reference = subscriptions[0]
-                if not did_cleanup:
-                    await self._cleanup_stale_table_messages(subscriptions, table_id)
-                    did_cleanup = True
                 base_url = reference.base_url or BASE_URL
                 snapshot = await asyncio.to_thread(
                     self.bga_client.fetch_public_table_snapshot,
