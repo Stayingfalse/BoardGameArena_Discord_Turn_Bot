@@ -958,7 +958,7 @@ class BgaMonitor:
         if cover_image_url:
             items.append(
                 discord.ui.Section(
-                    discord.ui.TextDisplay(" "),
+                    discord.ui.TextDisplay("\u200b"),
                     accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
                 )
             )
