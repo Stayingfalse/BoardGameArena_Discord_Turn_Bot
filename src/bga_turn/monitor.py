@@ -70,6 +70,7 @@ class BgaMonitor:
         self._last_player_name_refresh_at: dict[str, float] = {}
         self._last_follow_sync_at: dict[tuple[str, str, str], float] = {}
         self._recently_finished_tables: dict[str, float] = {}
+        self._cover_image_urls: dict[str, str] = {}
         self.sync_tables.change_interval(seconds=self._poll_seconds)
 
     def start(self) -> None:
@@ -86,6 +87,7 @@ class BgaMonitor:
         self._last_player_name_refresh_at.clear()
         self._last_follow_sync_at.clear()
         self._recently_finished_tables.clear()
+        self._cover_image_urls.clear()
 
     @tasks.loop(seconds=30)
     async def sync_tables(self) -> None:
@@ -284,6 +286,8 @@ class BgaMonitor:
                 )
                 subscriptions = await self._sync_subscriptions_from_snapshot(subscriptions, snapshot)
                 reference = subscriptions[0]
+                if snapshot.cover_image_url:
+                    self._cover_image_urls[table_id] = snapshot.cover_image_url
                 if snapshot.is_finished:
                     await self._finalize_finished_table(subscriptions, table_id, snapshot=snapshot)
                     return
@@ -801,6 +805,7 @@ class BgaMonitor:
         player_names: dict[str, str],
         snapshot: BgaTableSnapshot | None,
     ) -> tuple[str | None, discord.Embed, discord.ui.View | None]:
+        cover_image_url = self._cover_image_urls.get(table_id)
         if lifecycle_state == self.LIFECYCLE_RECRUITING:
             embed = await self._build_recruiting_embed(
                 table_id=table_id,
@@ -814,6 +819,7 @@ class BgaMonitor:
                 table_id=table_id,
                 subscription=subscription,
                 snapshot=snapshot,
+                cover_image_url=(snapshot.cover_image_url if snapshot is not None else None) or cover_image_url,
             )
             return None, embed, None
         mention_line = await self._build_turn_mentions(
@@ -826,6 +832,7 @@ class BgaMonitor:
             subscription=subscription,
             waiting_ids=waiting_ids,
             player_names=player_names,
+            cover_image_url=cover_image_url,
         )
         return mention_line or None, embed, self._build_join_view(table_id, subscription)
 
@@ -869,13 +876,10 @@ class BgaMonitor:
             player_names=player_names,
             player_avatars={} if snapshot is None else snapshot.player_avatars,
         )
-        embed.add_field(
-            name=tr("label_players_joined"),
-            value=players_value or tr("value_none"),
-            inline=False,
-        )
+        embed.add_field(name=tr("label_players_joined"), value=players_value or tr("value_none"), inline=False)
         if snapshot is not None and snapshot.seats_total is not None and snapshot.seats_remaining is not None:
-            seats_value = tr(
+            seat_icons = self._build_seat_icons(snapshot.seats_taken, snapshot.seats_total)
+            seats_value = f"{seat_icons}\n" + tr(
                 "invite_message_seats_value",
                 seats_taken=snapshot.seats_taken,
                 seats_total=snapshot.seats_total,
@@ -905,6 +909,7 @@ class BgaMonitor:
         subscription: WatchSubscription,
         waiting_ids: list[str],
         player_names: dict[str, str],
+        cover_image_url: str | None = None,
     ) -> discord.Embed:
         game_name = format_game_name(subscription.game_name)
         embed = discord.Embed(
@@ -918,6 +923,8 @@ class BgaMonitor:
             ),
             color=discord.Color.blurple(),
         )
+        if cover_image_url:
+            embed.set_thumbnail(url=cover_image_url)
         waiting_players = await self._build_waiting_players_text(
             waiting_ids=waiting_ids,
             player_names=player_names,
@@ -928,11 +935,17 @@ class BgaMonitor:
             value=waiting_players or tr("value_none"),
             inline=False,
         )
-        embed.add_field(
-            name=tr("label_players_still_waiting"),
-            value=waiting_players or tr("value_none"),
-            inline=False,
-        )
+        if player_names:
+            waiting_set = set(waiting_ids)
+            all_players_lines = [
+                f"🎮 {name}" if pid in waiting_set else f"⏳ {name}"
+                for pid, name in sorted(player_names.items(), key=lambda kv: kv[1].casefold())
+            ]
+            embed.add_field(
+                name=tr("label_all_players"),
+                value="\n".join(all_players_lines),
+                inline=False,
+            )
         embed.add_field(
             name=tr("label_url"),
             value=subscription.table_url or build_table_url(table_id),
@@ -947,6 +960,7 @@ class BgaMonitor:
         table_id: str,
         subscription: WatchSubscription,
         snapshot: BgaTableSnapshot | None,
+        cover_image_url: str | None = None,
     ) -> discord.Embed:
         game_name = format_game_name(
             (snapshot.game_name if snapshot is not None else None) or subscription.game_name
@@ -962,6 +976,8 @@ class BgaMonitor:
             ),
             color=discord.Color.dark_green(),
         )
+        if cover_image_url:
+            embed.set_thumbnail(url=cover_image_url)
         if snapshot is not None and snapshot.winner_names:
             embed.add_field(
                 name=tr("label_winner"),
@@ -1446,6 +1462,12 @@ class BgaMonitor:
         player_label = linked_user.bga_player_name or player_names.get(player_id, "").strip() or player_id
         player_id_label = linked_user.bga_player_id or player_id
         return f"<@{linked_user.discord_user_id}> {player_label} ({player_id_label})"
+
+    @staticmethod
+    def _build_seat_icons(seats_taken: int, seats_total: int) -> str:
+        filled = "🪑" * seats_taken
+        empty = "⬜" * max(0, seats_total - seats_taken)
+        return filled + empty
 
     @staticmethod
     def _select_previous_waiting_ids(subscriptions: list[WatchSubscription]) -> list[str]:
