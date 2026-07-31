@@ -367,6 +367,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Watched tables:",
         "FR": "Tables surveillees :",
     },
+    "watchlist_embed_summary": {
+        "EN": "{count} watched table(s) on this server.",
+        "FR": "{count} table(s) surveillee(s) sur ce serveur.",
+    },
+    "watchlist_card_title": {
+        "EN": "🧩 Table `{table_id}` • {game_name}",
+        "FR": "🧩 Table `{table_id}` • {game_name}",
+    },
+    "watchlist_card_footer": {
+        "EN": "Table {index}/{total}",
+        "FR": "Table {index}/{total}",
+    },
     "watchlist_line": {
         "EN": "- Table `{table_id}` | {game_name}\n  {channel_label}: <#{channel_id}>\n  {state_label}: {state}\n  {url_label}: {table_url}",
         "FR": "- Table `{table_id}` | {game_name}\n  {channel_label} : <#{channel_id}>\n  {state_label} : {state}\n  {url_label} : {table_url}",
@@ -390,6 +402,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "status_header": {
         "EN": "Watch status:",
         "FR": "Etat des watches :",
+    },
+    "status_embed_summary": {
+        "EN": "{count} active watch(es) on this server.",
+        "FR": "{count} watch(es) active(s) sur ce serveur.",
+    },
+    "status_card_title": {
+        "EN": "📊 Table `{table_id}` • {game_name}",
+        "FR": "📊 Table `{table_id}` • {game_name}",
+    },
+    "status_card_footer": {
+        "EN": "Watch {index}/{total}",
+        "FR": "Watch {index}/{total}",
     },
     "status_line": {
         "EN": "- Table `{table_id}` | {game_name}\n  {channel_label}: <#{channel_id}>\n  {waiting_ids_label}: `{waiting_ids}`\n  {state_label}: {state}",
@@ -878,6 +902,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "command_invocation": {
         "EN": "Slash command /{command} invoked by {user_name} ({user_id}) in guild={guild_id} channel={channel_id} params=[{params}]",
         "FR": "Commande slash /{command} appelee par {user_name} ({user_id}) dans serveur={guild_id} salon={channel_id} params=[{params}]",
+    },
+    "recruiting_only_unwatch": {
+        "EN": "Recruiting-only mode: game started for table {table_id} (subscription {subscription_id}), recruiting message deleted and watch removed.",
+        "FR": "Mode recrutement uniquement: partie demarree pour la table {table_id} (souscription {subscription_id}), message de recrutement supprime et watch retiree.",
+    },
+    "trigger_message_deleted": {
+        "EN": "Deleted triggering BGA invite message in channel {channel_id} (guild {guild_id}).",
+        "FR": "Message d'invitation BGA declencheur supprime dans le salon {channel_id} (serveur {guild_id}).",
+    },
+    "trigger_message_delete_failed": {
+        "EN": "Failed to delete triggering BGA invite message in channel {channel_id}: {error}",
+        "FR": "Echec de suppression du message d'invitation BGA declencheur dans le salon {channel_id}: {error}",
     },
 }
 

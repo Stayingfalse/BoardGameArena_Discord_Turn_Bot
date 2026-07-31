@@ -44,6 +44,9 @@ class BgaDiscordBot(commands.Bot):
         poll_seconds: int,
         dev_guild_id: int | None,
         clear_global_commands: bool,
+        recruiting_only: bool = False,
+        delete_invite_message: bool = False,
+        forced_channel_id: str | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -52,12 +55,29 @@ class BgaDiscordBot(commands.Bot):
         self.bga_client = bga_client
         self.dev_guild_id = dev_guild_id
         self.clear_global_commands = clear_global_commands
-        self.monitor = BgaMonitor(self, database, bga_client, poll_seconds)
+        self._recruiting_only = recruiting_only
+        self._delete_invite_message = delete_invite_message
+        self._forced_channel_id = forced_channel_id
+        self.monitor = BgaMonitor(
+            self,
+            database,
+            bga_client,
+            poll_seconds,
+            recruiting_only=recruiting_only,
+            forced_channel_id=forced_channel_id,
+        )
         self.logger = logging.getLogger(__name__)
         self._startup_completed = False
 
     async def setup_hook(self) -> None:
-        await self.add_cog(BgaCommands(self.database, self.bga_client, self.monitor))
+        await self.add_cog(
+            BgaCommands(
+                self.database,
+                self.bga_client,
+                self.monitor,
+                delete_invite_message=self._delete_invite_message,
+            )
+        )
 
     async def _clear_global_commands(self) -> int:
         deleted_count = 0
@@ -104,6 +124,7 @@ class BgaDiscordBot(commands.Bot):
             send_messages=True,
             embed_links=True,
             read_message_history=True,
+            manage_messages=True,
         )
         invite_url = (
             "https://discord.com/oauth2/authorize"
@@ -129,6 +150,9 @@ def main() -> None:
     dev_guild_id = os.getenv("DISCORD_GUILD_ID")
     clear_global_commands = env_flag("DISCORD_CLEAR_GLOBAL_COMMANDS")
     enable_tableinfos_fallback = env_flag("BGA_ENABLE_TABLEINFOS_FALLBACK")
+    recruiting_only = env_flag("BGA_RECRUITING_ONLY")
+    delete_invite_message = env_flag("BGA_DELETE_INVITE_MESSAGE")
+    forced_channel_id = os.getenv("BGA_FORCED_CHANNEL_ID") or None
     websocket_url = os.getenv("BGA_WS_URL", "wss://ws-x1.boardgamearena.com/connection/websocket")
 
     database = Database(db_path=db_path, schema_sql=schema_sql)
@@ -145,6 +169,9 @@ def main() -> None:
         poll_seconds=poll_seconds,
         dev_guild_id=int(dev_guild_id) if dev_guild_id else None,
         clear_global_commands=clear_global_commands,
+        recruiting_only=recruiting_only,
+        delete_invite_message=delete_invite_message,
+        forced_channel_id=forced_channel_id,
     )
     bot.run(token, log_handler=None)
 

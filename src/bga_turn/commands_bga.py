@@ -35,10 +35,11 @@ class BgaCommands(commands.Cog):
     _EMBED_DESCRIPTION_LIMIT = 4096
     _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
-    def __init__(self, database: Database, bga_client: BgaClient, monitor: BgaMonitor) -> None:
+    def __init__(self, database: Database, bga_client: BgaClient, monitor: BgaMonitor, *, delete_invite_message: bool = False) -> None:
         self.database = database
         self.bga_client = bga_client
         self.monitor = monitor
+        self._delete_invite_message = delete_invite_message
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Log every ``/bga`` command invocation. Never blocks the command."""
@@ -85,6 +86,26 @@ class BgaCommands(commands.Cog):
                     channel_id=message.channel.id,
                 )
             )
+            if self._delete_invite_message:
+                try:
+                    await message.delete()
+                    LOGGER.info(
+                        tr(
+                            "trigger_message_deleted",
+                            channel_id=message.channel.id,
+                            guild_id=message.guild.id,
+                        )
+                    )
+                except discord.NotFound:
+                    pass
+                except discord.DiscordException as exc:
+                    LOGGER.warning(
+                        tr(
+                            "trigger_message_delete_failed",
+                            channel_id=message.channel.id,
+                            error=exc,
+                        )
+                    )
             await self.monitor.refresh_now()
 
     @staticmethod
@@ -226,6 +247,24 @@ class BgaCommands(commands.Cog):
 
         for chunk in remaining_chunks:
             await interaction.followup.send(chunk, ephemeral=True)
+
+    @staticmethod
+    async def _send_ephemeral_embeds(
+        interaction: discord.Interaction,
+        embeds: list[discord.Embed],
+    ) -> None:
+        if not embeds:
+            embeds = [discord.Embed(description="")]
+
+        batches = [embeds[index : index + 10] for index in range(0, len(embeds), 10)]
+        first_batch, *remaining_batches = batches
+        if interaction.response.is_done():
+            await interaction.followup.send(embeds=first_batch, ephemeral=True)
+        else:
+            await interaction.response.send_message(embeds=first_batch, ephemeral=True)
+
+        for batch in remaining_batches:
+            await interaction.followup.send(embeds=batch, ephemeral=True)
 
     @bga.command(name="help", description=tr("command_help_description"))
     async def help_command(self, interaction: discord.Interaction) -> None:
@@ -812,33 +851,49 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        lines = []
-        for subscription in subscriptions:
+        embeds = [
+            discord.Embed(
+                title=f"📚 {tr('watchlist_header')}",
+                description=tr("watchlist_embed_summary", count=len(subscriptions)),
+                color=discord.Color.blurple(),
+            )
+        ]
+        for index, subscription in enumerate(subscriptions, start=1):
             public_url = subscription.table_url or build_table_url(subscription.table_id)
-            lines.append(
-                tr(
-                    "watchlist_line",
+            state = (
+                tr("watch_state_initialized")
+                if subscription.is_initialized
+                else tr("watch_state_waiting_players")
+                if not (subscription.gameserver or "").strip()
+                else tr("watch_state_waiting_first_event")
+            )
+            card = discord.Embed(
+                title=tr(
+                    "watchlist_card_title",
                     table_id=subscription.table_id,
                     game_name=format_game_name(subscription.game_name),
-                    channel_label=tr("label_channel"),
-                    channel_id=subscription.channel_id,
-                    state_label=tr("label_state"),
-                    state=(
-                        tr("watch_state_initialized")
-                        if subscription.is_initialized
-                        else tr("watch_state_waiting_players")
-                        if not (subscription.gameserver or "").strip()
-                        else tr("watch_state_waiting_first_event")
-                    ),
-                    url_label=tr("label_url"),
-                    table_url=public_url,
-                )
+                ),
+                color=discord.Color.blurple(),
             )
+            card.add_field(
+                name=f"📍 {tr('label_channel')}",
+                value=f"<#{subscription.channel_id}>",
+                inline=True,
+            )
+            card.add_field(
+                name=f"⚙️ {tr('label_state')}",
+                value=state,
+                inline=True,
+            )
+            card.add_field(
+                name=f"🔗 {tr('label_url')}",
+                value=public_url,
+                inline=False,
+            )
+            card.set_footer(text=tr("watchlist_card_footer", index=index, total=len(subscriptions)))
+            embeds.append(card)
 
-        await self._send_ephemeral_chunks(
-            interaction,
-            self._split_message_lines(tr("watchlist_header"), lines),
-        )
+        await self._send_ephemeral_embeds(interaction, embeds)
 
     @bga.command(name="status", description=tr("command_status_description"))
     async def status(self, interaction: discord.Interaction) -> None:
@@ -857,8 +912,14 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        lines = []
-        for subscription in subscriptions:
+        embeds = [
+            discord.Embed(
+                title=f"🩺 {tr('status_header')}",
+                description=tr("status_embed_summary", count=len(subscriptions)),
+                color=discord.Color.green(),
+            )
+        ]
+        for index, subscription in enumerate(subscriptions, start=1):
             if not subscription.is_initialized and not (subscription.gameserver or "").strip():
                 state = tr("status_waiting_for_start")
             elif not subscription.is_initialized:
@@ -875,21 +936,30 @@ class BgaCommands(commands.Cog):
             else:
                 state = tr("status_no_waiting")
 
-            lines.append(
-                tr(
-                    "status_line",
+            card = discord.Embed(
+                title=tr(
+                    "status_card_title",
                     table_id=subscription.table_id,
                     game_name=format_game_name(subscription.game_name),
-                    channel_label=tr("label_channel"),
-                    channel_id=subscription.channel_id,
-                    waiting_ids_label=tr("label_waiting_ids"),
-                    waiting_ids=", ".join(subscription.last_waiting_ids) or tr("value_none"),
-                    state_label=tr("label_state"),
-                    state=state,
-                )
+                ),
+                color=discord.Color.green(),
             )
+            card.add_field(
+                name=f"📍 {tr('label_channel')}",
+                value=f"<#{subscription.channel_id}>",
+                inline=True,
+            )
+            card.add_field(
+                name=f"⏳ {tr('label_waiting_ids')}",
+                value=f"`{', '.join(subscription.last_waiting_ids) or tr('value_none')}`",
+                inline=True,
+            )
+            card.add_field(
+                name=f"🧠 {tr('label_state')}",
+                value=state,
+                inline=False,
+            )
+            card.set_footer(text=tr("status_card_footer", index=index, total=len(subscriptions)))
+            embeds.append(card)
 
-        await self._send_ephemeral_chunks(
-            interaction,
-            self._split_message_lines(tr("status_header"), lines),
-        )
+        await self._send_ephemeral_embeds(interaction, embeds)
