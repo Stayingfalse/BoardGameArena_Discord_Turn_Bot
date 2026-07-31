@@ -367,6 +367,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Watched tables:",
         "FR": "Tables surveillees :",
     },
+    "watchlist_embed_summary": {
+        "EN": "{count} watched table(s) on this server.",
+        "FR": "{count} table(s) surveillee(s) sur ce serveur.",
+    },
+    "watchlist_card_title": {
+        "EN": "🧩 Table `{table_id}` • {game_name}",
+        "FR": "🧩 Table `{table_id}` • {game_name}",
+    },
+    "watchlist_card_footer": {
+        "EN": "Table {index}/{total}",
+        "FR": "Table {index}/{total}",
+    },
     "watchlist_line": {
         "EN": "- Table `{table_id}` | {game_name}\n  {channel_label}: <#{channel_id}>\n  {state_label}: {state}\n  {url_label}: {table_url}",
         "FR": "- Table `{table_id}` | {game_name}\n  {channel_label} : <#{channel_id}>\n  {state_label} : {state}\n  {url_label} : {table_url}",
@@ -390,6 +402,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "status_header": {
         "EN": "Watch status:",
         "FR": "Etat des watches :",
+    },
+    "status_embed_summary": {
+        "EN": "{count} active watch(es) on this server.",
+        "FR": "{count} watch(es) active(s) sur ce serveur.",
+    },
+    "status_card_title": {
+        "EN": "📊 Table `{table_id}` • {game_name}",
+        "FR": "📊 Table `{table_id}` • {game_name}",
+    },
+    "status_card_footer": {
+        "EN": "Watch {index}/{total}",
+        "FR": "Watch {index}/{total}",
     },
     "status_line": {
         "EN": "- Table `{table_id}` | {game_name}\n  {channel_label}: <#{channel_id}>\n  {waiting_ids_label}: `{waiting_ids}`\n  {state_label}: {state}",
