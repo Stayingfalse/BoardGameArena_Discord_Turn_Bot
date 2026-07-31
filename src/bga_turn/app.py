@@ -16,7 +16,7 @@ from .bga_client import BgaClient
 from .commands_bga import BgaCommands
 from .database import Database
 from .i18n import tr
-from .monitor import BgaMonitor
+from .monitor import BgaMonitor, LinkSelfPersistentView
 
 
 def setup_logging() -> None:
@@ -78,6 +78,9 @@ class BgaDiscordBot(commands.Bot):
                 delete_invite_message=self._delete_invite_message,
             )
         )
+        # Register a persistent view so the self-link button on existing messages
+        # continues to work after a bot restart.
+        self.add_view(LinkSelfPersistentView())
 
     async def _clear_global_commands(self) -> int:
         deleted_count = 0

@@ -791,6 +791,38 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Join table",
         "FR": "Rejoindre la table",
     },
+    "button_link_bga_discord": {
+        "EN": "🔗 Link your BGA & Discord",
+        "FR": "🔗 Lier votre BGA & Discord",
+    },
+    "modal_link_bga_title": {
+        "EN": "Link BGA & Discord Account",
+        "FR": "Lier votre compte BGA & Discord",
+    },
+    "modal_link_bga_input_label": {
+        "EN": "BGA Username or Player ID",
+        "FR": "Pseudo BGA ou ID joueur",
+    },
+    "modal_link_bga_input_placeholder": {
+        "EN": "e.g. Haurrus  or  91713763",
+        "FR": "ex. Haurrus  ou  91713763",
+    },
+    "link_self_already_linked": {
+        "EN": "You are already linked to BGA as `{bga_name}` (ID: `{bga_id}`).\nTo update the link use `/bga link-member` (requires Manage Server).",
+        "FR": "Vous etes deja lie a BGA sous le nom `{bga_name}` (ID : `{bga_id}`).\nPour mettre a jour le lien, utilisez `/bga link-member` (necessite Gérer le serveur).",
+    },
+    "link_self_saved": {
+        "EN": "✅ Linked! Your Discord account is now linked to BGA as `{bga_name}` (ID: `{bga_id}`).",
+        "FR": "✅ Lien enregistre ! Votre compte Discord est maintenant lie a BGA sous le nom `{bga_name}` (ID : `{bga_id}`).",
+    },
+    "link_self_invalid_id": {
+        "EN": "BGA Player ID must be a number. Enter your BGA username instead, or find your numeric ID in your BGA profile URL.",
+        "FR": "L'ID joueur BGA doit etre un nombre. Entrez plutot votre pseudo BGA, ou trouvez votre ID numerique dans l'URL de votre profil BGA.",
+    },
+    "link_self_no_guild": {
+        "EN": "This button can only be used inside a server.",
+        "FR": "Ce bouton ne peut etre utilise qu'au sein d'un serveur.",
+    },
     "lifecycle_common_description": {
         "EN": "{game_label}: {game_name}\n{table_label}: {table_id}",
         "FR": "{game_label} : {game_name}\n{table_label} : {table_id}",
