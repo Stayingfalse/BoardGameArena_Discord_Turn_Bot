@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass
 
@@ -370,7 +371,6 @@ class BgaMonitor:
 
     async def _run_table_worker(self, table_id: str) -> None:
         backoff_seconds = 5
-        did_cleanup = False
         while True:
             try:
                 subscriptions = self._subscriptions_for_table(table_id)
@@ -378,9 +378,6 @@ class BgaMonitor:
                     return
 
                 reference = subscriptions[0]
-                if not did_cleanup:
-                    await self._cleanup_stale_table_messages(subscriptions, table_id)
-                    did_cleanup = True
                 base_url = reference.base_url or BASE_URL
                 snapshot = await asyncio.to_thread(
                     self.bga_client.fetch_public_table_snapshot,
@@ -1134,9 +1131,8 @@ class BgaMonitor:
         player_names: dict[str, str],
         subscription: WatchSubscription,
     ) -> str:
-        linked_users = await asyncio.to_thread(
-            self.database.get_linked_users_for_players,
-            {player_id: player_names.get(player_id, "") for player_id in waiting_ids},
+        linked_users = await self._get_linked_users_for_players_safe(
+            {player_id: player_names.get(player_id, "") for player_id in waiting_ids}
         )
         mentions = [f"<@{item.discord_user_id}>" for item in linked_users]
         if not mentions:
@@ -1154,10 +1150,7 @@ class BgaMonitor:
             player_id: player_names.get(player_id, "")
             for player_id in waiting_ids
         }
-        linked_users = await asyncio.to_thread(
-            self.database.get_linked_users_for_players,
-            observed_waiting_players,
-        )
+        linked_users = await self._get_linked_users_for_players_safe(observed_waiting_players)
         linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
         linked_users_by_name = {
             user.bga_player_name.casefold(): user
@@ -1181,10 +1174,7 @@ class BgaMonitor:
         player_names: dict[str, str],
         player_avatars: dict[str, str],
     ) -> str:
-        linked_users = await asyncio.to_thread(
-            self.database.get_linked_users_for_players,
-            player_names,
-        )
+        linked_users = await self._get_linked_users_for_players_safe(player_names)
         linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
         linked_by_name = {
             item.bga_player_name.casefold(): item
@@ -1353,10 +1343,7 @@ class BgaMonitor:
             player_id: player_names.get(player_id, "")
             for player_id in waiting_ids
         }
-        linked_users = await asyncio.to_thread(
-            self.database.get_linked_users_for_players,
-            observed_waiting_players,
-        )
+        linked_users = await self._get_linked_users_for_players_safe(observed_waiting_players)
         linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
         linked_users_by_name = {
             user.bga_player_name.casefold(): user
@@ -1384,6 +1371,18 @@ class BgaMonitor:
             url_label=tr("label_url"),
             table_url=subscription.table_url or build_table_url(table_id),
         )
+
+    async def _get_linked_users_for_players_safe(
+        self, player_names: dict[str, str]
+    ) -> list[LinkedUser]:
+        try:
+            return await asyncio.to_thread(
+                self.database.get_linked_users_for_players,
+                player_names,
+            )
+        except sqlite3.Error as exc:
+            LOGGER.warning("Linked-user lookup failed while building table message: %s", exc)
+            return []
 
     def _build_invite_layout(
         self,

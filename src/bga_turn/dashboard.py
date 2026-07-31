@@ -88,6 +88,7 @@ def _set_session(response: web.Response, data: dict, secret: str, *, secure: boo
     response.set_cookie(
         _COOKIE_NAME,
         value,
+        path="/",
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
         samesite="Lax",
@@ -307,7 +308,15 @@ async def _auth_login(request: web.Request) -> web.Response:
     url = _build_oauth2_url(client_id, redirect_uri, state)
     response = web.HTTPFound(location=url)
     secure_cookie = base_url.startswith("https://")
-    response.set_cookie("oauth_state", state, max_age=300, httponly=True, samesite="Lax", secure=secure_cookie)
+    response.set_cookie(
+        "oauth_state",
+        state,
+        path="/",
+        max_age=300,
+        httponly=True,
+        samesite="Lax",
+        secure=secure_cookie,
+    )
     raise response
 
 
@@ -370,7 +379,7 @@ async def _auth_callback(request: web.Request) -> web.Response:
     }
 
     response = web.HTTPFound(location="/dashboard")
-    response.del_cookie("oauth_state")
+    response.del_cookie("oauth_state", path="/")
     base_url: str = request.app["base_url"]
     _set_session(response, session_data, secret, secure=base_url.startswith("https://"))
     raise response
