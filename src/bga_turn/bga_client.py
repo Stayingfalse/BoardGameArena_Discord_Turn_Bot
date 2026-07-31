@@ -138,6 +138,11 @@ class BgaClient:
         re.DOTALL,
     )
     _REQUEST_TOKEN_PATTERN = re.compile(r"requestToken:\s*'(?P<token>[0-9a-fA-F]+)'")
+    _OG_IMAGE_TAG_PATTERN = re.compile(
+        r'<meta\b[^>]*\bproperty=["\']og:image["\'][^>]*>',
+        re.IGNORECASE,
+    )
+    _CONTENT_ATTR_PATTERN = re.compile(r'\bcontent=["\']([^"\'>\s]+)', re.IGNORECASE)
     _LEGACY_BOOTSTRAP_PATTERNS = [
         re.compile(
             r'"user_id"\s*:\s*"(?P<user_id>-?\d+)".{0,500}?"username"\s*:\s*"(?P<username>[^"]+)".{0,500}?"credentials"\s*:\s*"(?P<credentials>[0-9a-fA-F]{16,})"',
@@ -438,12 +443,17 @@ class BgaClient:
         if response.status_code >= 400:
             raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
 
+        html = response.text
         data = self._fetch_tableinfos_with_token(
             table_id=table_id,
             base_url=base,
-            html=response.text,
+            html=html,
         )
-        return self._build_table_snapshot(table_id=table_id, base_url=base, data=data)
+        snapshot = self._build_table_snapshot(table_id=table_id, base_url=base, data=data)
+        og_image_url = self._extract_og_image_url(html)
+        if og_image_url:
+            snapshot.cover_image_url = og_image_url
+        return snapshot
 
     def fetch_public_player_names(self, table_info: BgaTableInfo) -> dict[str, str]:
         try:
@@ -969,6 +979,18 @@ class BgaClient:
             if candidate.startswith("http://") or candidate.startswith("https://"):
                 return candidate
         return None
+
+    @classmethod
+    def _extract_og_image_url(cls, html: str) -> str | None:
+        """Extract the og:image URL from Open Graph meta tags in a BGA page."""
+        tag_match = cls._OG_IMAGE_TAG_PATTERN.search(html)
+        if not tag_match:
+            return None
+        content_match = cls._CONTENT_ATTR_PATTERN.search(tag_match.group(0))
+        if not content_match:
+            return None
+        url = content_match.group(1).strip()
+        return url if url.startswith("https://") or url.startswith("http://") else None
 
     @classmethod
     def _extract_final_standings(

@@ -495,6 +495,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Current turn",
         "FR": "Tour en cours",
     },
+    "label_all_players": {
+        "EN": "Players",
+        "FR": "Joueurs",
+    },
     "label_winner": {
         "EN": "Winner",
         "FR": "Vainqueur",
@@ -792,12 +796,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "FR": "{game_label} : {game_name}\n{table_label} : {table_id}",
     },
     "lifecycle_recruiting_title": {
-        "EN": "BGA table recruiting",
-        "FR": "Table BGA en recrutement",
+        "EN": "🎲 BGA Table Recruiting",
+        "FR": "🎲 Table BGA en recrutement",
     },
     "lifecycle_in_progress_title": {
-        "EN": "BGA game in progress",
-        "FR": "Partie BGA en cours",
+        "EN": "🎮 BGA Game in Progress",
+        "FR": "🎮 Partie BGA en cours",
     },
     "lifecycle_in_progress_footer": {
         "EN": "This message updates live during the game.",
@@ -808,8 +812,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "FR": "Tour en cours : {mentions}",
     },
     "lifecycle_finished_title": {
-        "EN": "BGA game finished",
-        "FR": "Partie BGA terminee",
+        "EN": "🏆 BGA Game Finished",
+        "FR": "🏆 Partie BGA terminee",
     },
     "lifecycle_finished_footer": {
         "EN": "Watch closed automatically after game completion.",
