@@ -450,9 +450,12 @@ class BgaClient:
             html=html,
         )
         snapshot = self._build_table_snapshot(table_id=table_id, base_url=base, data=data)
-        og_image_url = self._extract_og_image_url(html)
-        if og_image_url:
-            snapshot.cover_image_url = og_image_url
+        # Only fall back to the tableview og:image if no game-specific image was
+        # resolved from the CDN URL or the tableinfos JSON data.
+        if not snapshot.cover_image_url:
+            og_image_url = self._extract_og_image_url(html)
+            if og_image_url:
+                snapshot.cover_image_url = og_image_url
         return snapshot
 
     def fetch_public_player_names(self, table_info: BgaTableInfo) -> dict[str, str]:
@@ -602,6 +605,10 @@ class BgaClient:
             if gameserver.isdigit() and game_name
             else None
         )
+        cover_image_url = (
+            self._build_game_box_image_url(game_name)
+            or self._extract_cover_image_url(data)
+        )
         return BgaTableSnapshot(
             table_id=table_id,
             status=status_value,
@@ -614,7 +621,7 @@ class BgaClient:
             is_finished=is_finished,
             can_watch_turns=can_watch_turns,
             table_url=table_url,
-            cover_image_url=self._extract_cover_image_url(data),
+            cover_image_url=cover_image_url,
             player_avatars=player_avatars,
             player_scores=player_scores,
             player_ranks=player_ranks,
@@ -991,6 +998,19 @@ class BgaClient:
             return None
         url = content_match.group(1).strip()
         return url if url.startswith("https://") or url.startswith("http://") else None
+
+    @staticmethod
+    def _build_game_box_image_url(game_name: str) -> str | None:
+        """Return the BGA CDN box-art URL for *game_name*.
+
+        BGA exposes game box images at a stable CDN path:
+        ``https://x.boardgamearena.net/data/gamemedia/{game_name}/box/en.png``
+        This is the same image that appears in Discord link embeds when a
+        ``bga.li/t/`` short-link is shared.
+        """
+        if not game_name:
+            return None
+        return f"https://x.boardgamearena.net/data/gamemedia/{game_name}/box/en.png"
 
     @classmethod
     def _extract_final_standings(
