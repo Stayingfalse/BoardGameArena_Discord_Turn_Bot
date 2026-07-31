@@ -35,10 +35,11 @@ class BgaCommands(commands.Cog):
     _EMBED_DESCRIPTION_LIMIT = 4096
     _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
-    def __init__(self, database: Database, bga_client: BgaClient, monitor: BgaMonitor) -> None:
+    def __init__(self, database: Database, bga_client: BgaClient, monitor: BgaMonitor, *, delete_invite_message: bool = False) -> None:
         self.database = database
         self.bga_client = bga_client
         self.monitor = monitor
+        self._delete_invite_message = delete_invite_message
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Log every ``/bga`` command invocation. Never blocks the command."""
@@ -85,6 +86,26 @@ class BgaCommands(commands.Cog):
                     channel_id=message.channel.id,
                 )
             )
+            if self._delete_invite_message:
+                try:
+                    await message.delete()
+                    LOGGER.info(
+                        tr(
+                            "trigger_message_deleted",
+                            channel_id=message.channel.id,
+                            guild_id=message.guild.id,
+                        )
+                    )
+                except discord.NotFound:
+                    pass
+                except discord.DiscordException as exc:
+                    LOGGER.warning(
+                        tr(
+                            "trigger_message_delete_failed",
+                            channel_id=message.channel.id,
+                            error=exc,
+                        )
+                    )
             await self.monitor.refresh_now()
 
     @staticmethod

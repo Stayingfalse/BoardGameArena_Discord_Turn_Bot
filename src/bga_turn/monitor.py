@@ -55,11 +55,16 @@ class BgaMonitor:
         database: Database,
         bga_client: BgaClient,
         poll_seconds: int,
+        *,
+        recruiting_only: bool = False,
+        forced_channel_id: str | None = None,
     ) -> None:
         self.bot = bot
         self.database = database
         self.bga_client = bga_client
         self._poll_seconds = max(5, poll_seconds)
+        self._recruiting_only = recruiting_only
+        self._forced_channel_id = forced_channel_id
         self._table_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_messages: dict[int, ActiveTableMessage] = {}
         self._last_player_name_refresh_at: dict[str, float] = {}
@@ -378,6 +383,31 @@ class BgaMonitor:
             if not self._can_transition_lifecycle(
                 subscription.lifecycle_state, self.LIFECYCLE_IN_PROGRESS
             ):
+                continue
+
+            # In recruiting-only mode: the game has started — delete the recruiting
+            # message and remove the watch subscription without posting in-progress messages.
+            if self._recruiting_only:
+                active_message = self._active_messages.get(subscription.subscription_id)
+                if active_message is not None:
+                    await self._delete_tracked_message(
+                        subscription=subscription,
+                        active_message=active_message,
+                        table_id=table_id,
+                    )
+                    self._active_messages.pop(subscription.subscription_id, None)
+                self.database.remove_watch_subscription(
+                    table_id=subscription.table_id,
+                    guild_id=subscription.guild_id,
+                    channel_id=subscription.channel_id,
+                )
+                LOGGER.info(
+                    tr(
+                        "recruiting_only_unwatch",
+                        table_id=table_id,
+                        subscription_id=subscription.subscription_id,
+                    )
+                )
                 continue
 
             await self._publish_or_update_lifecycle_message(
@@ -1096,9 +1126,10 @@ class BgaMonitor:
         table_markers = {f"{tr('label_table')} : {table_id}", f"{tr('label_table')}: {table_id}", f"Table : {table_id}", f"Table: {table_id}"}
 
         for subscription in subscriptions:
-            if subscription.channel_id in seen_channels:
+            effective_channel_id = self._forced_channel_id or subscription.channel_id
+            if effective_channel_id in seen_channels:
                 continue
-            seen_channels.add(subscription.channel_id)
+            seen_channels.add(effective_channel_id)
 
             channel = await self._resolve_channel(subscription, table_id)
             if channel is None or not hasattr(channel, "history"):
@@ -1299,15 +1330,16 @@ class BgaMonitor:
         return merged_names
 
     async def _resolve_channel(self, subscription: WatchSubscription, table_id: str) -> discord.abc.Messageable | None:
-        channel = self.bot.get_channel(int(subscription.channel_id))
+        channel_id = self._forced_channel_id or subscription.channel_id
+        channel = self.bot.get_channel(int(channel_id))
         if channel is None:
             try:
-                channel = await self.bot.fetch_channel(int(subscription.channel_id))
+                channel = await self.bot.fetch_channel(int(channel_id))
             except discord.DiscordException as exc:
                 LOGGER.error(
                     tr(
                         "channel_fetch_failed",
-                        channel_id=subscription.channel_id,
+                        channel_id=channel_id,
                         table_id=table_id,
                         error=exc,
                     )
@@ -1318,7 +1350,7 @@ class BgaMonitor:
             LOGGER.error(
                 tr(
                     "channel_not_messageable",
-                    channel_id=subscription.channel_id,
+                    channel_id=channel_id,
                     table_id=table_id,
                 )
             )
