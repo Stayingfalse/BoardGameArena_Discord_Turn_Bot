@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 
 import discord
+from discord.components import MediaGalleryItem
 from discord.ext import tasks
 
 from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaTableUnavailableError
@@ -709,7 +710,7 @@ class BgaMonitor:
             return
 
         message = await self._resolve_tracked_message(subscription, channel)
-        content, embed, view = await self._build_lifecycle_message_payload(
+        layout_view = await self._build_lifecycle_message_payload(
             lifecycle_state=lifecycle_state,
             table_id=table_id,
             subscription=subscription,
@@ -720,7 +721,7 @@ class BgaMonitor:
 
         if message is None:
             try:
-                message = await channel.send(content=content, embed=embed, view=view)
+                message = await channel.send(view=layout_view)
             except discord.DiscordException as exc:
                 LOGGER.error(
                     tr(
@@ -733,8 +734,33 @@ class BgaMonitor:
                 return
         else:
             try:
-                await message.edit(content=content, embed=embed, view=view)
+                await message.edit(view=layout_view)
             except discord.NotFound:
+                self.database.update_watch_message_tracking(
+                    subscription_id=subscription.subscription_id,
+                    lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
+                    tracked_message_id=None,
+                    tracked_message_kind=None,
+                )
+                self._active_messages.pop(subscription.subscription_id, None)
+                return await self._publish_or_update_lifecycle_message(
+                    subscription=subscription,
+                    table_id=table_id,
+                    lifecycle_state=lifecycle_state,
+                    waiting_ids=waiting_ids,
+                    player_names=player_names,
+                    snapshot=snapshot,
+                )
+            except discord.HTTPException as exc:
+                # Discord rejects editing a legacy embed message with V2 components
+                # (HTTP 400). Delete the stale message and send a fresh V2 one.
+                if exc.status != 400:
+                    LOGGER.error(tr("turn_message_update_failed", table_id=table_id, error=exc))
+                    return
+                try:
+                    await message.delete()
+                except discord.DiscordException:
+                    pass
                 self.database.update_watch_message_tracking(
                     subscription_id=subscription.subscription_id,
                     lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
@@ -804,82 +830,64 @@ class BgaMonitor:
         waiting_ids: list[str],
         player_names: dict[str, str],
         snapshot: BgaTableSnapshot | None,
-    ) -> tuple[str | None, discord.Embed, discord.ui.View | None]:
+    ) -> discord.ui.LayoutView:
         cover_image_url = self._cover_image_urls.get(table_id)
         if lifecycle_state == self.LIFECYCLE_RECRUITING:
-            embed = await self._build_recruiting_embed(
+            return await self._build_recruiting_layout(
                 table_id=table_id,
                 subscription=subscription,
                 player_names=player_names,
                 snapshot=snapshot,
             )
-            return None, embed, self._build_join_view(table_id, subscription)
         if lifecycle_state == self.LIFECYCLE_FINISHED:
-            embed = self._build_finished_embed(
+            return self._build_finished_layout(
                 table_id=table_id,
                 subscription=subscription,
                 snapshot=snapshot,
                 cover_image_url=(snapshot.cover_image_url if snapshot is not None else None) or cover_image_url,
             )
-            return None, embed, None
-        mention_line = await self._build_turn_mentions(
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            subscription=subscription,
-        )
-        embed = await self._build_in_progress_embed(
+        return await self._build_in_progress_layout(
             table_id=table_id,
             subscription=subscription,
             waiting_ids=waiting_ids,
             player_names=player_names,
             cover_image_url=cover_image_url,
         )
-        return mention_line or None, embed, self._build_join_view(table_id, subscription)
 
-    def _build_join_view(self, table_id: str, subscription: WatchSubscription) -> discord.ui.View:
-        view = discord.ui.View(timeout=None)
-        view.add_item(
-            discord.ui.Button(
-                label=tr("button_join_table"),
-                url=subscription.table_url or build_table_url(table_id),
-            )
-        )
-        return view
-
-    async def _build_recruiting_embed(
+    async def _build_recruiting_layout(
         self,
         *,
         table_id: str,
         subscription: WatchSubscription,
         player_names: dict[str, str],
         snapshot: BgaTableSnapshot | None,
-    ) -> discord.Embed:
+    ) -> discord.ui.LayoutView:
         game_name = format_game_name(
             (snapshot.game_name if snapshot is not None else None) or subscription.game_name
         )
-        embed = discord.Embed(
-            title=tr("lifecycle_recruiting_title"),
-            description=tr(
-                "lifecycle_common_description",
-                game_label=tr("label_game"),
-                game_name=game_name,
-                table_label=tr("label_table"),
-                table_id=table_id,
-            ),
-            color=discord.Color.gold(),
-        )
+        table_url = subscription.table_url or build_table_url(table_id)
+
+        header_text = f"🎲  **{game_name}**\n{tr('label_table')}: {table_id}"
+        join_btn = discord.ui.Button(label=tr("button_join_table"), url=table_url)
+        header_section = discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=join_btn)
+
+        items: list[discord.ui.Item] = [header_section, discord.ui.Separator()]
+
         if snapshot is not None and snapshot.cover_image_url:
-            embed.set_image(url=snapshot.cover_image_url)
+            items.append(discord.ui.MediaGallery(MediaGalleryItem(snapshot.cover_image_url)))
+            items.append(discord.ui.Separator())
 
         players_value = await self._build_player_lines(
             guild_id=subscription.guild_id,
             player_names=player_names,
             player_avatars={} if snapshot is None else snapshot.player_avatars,
         )
-        embed.add_field(name=tr("label_players_joined"), value=players_value or tr("value_none"), inline=False)
+        players_text = f"**{tr('label_players_joined')}**\n{players_value or tr('value_none')}"
+        items.append(discord.ui.TextDisplay(players_text))
+
         if snapshot is not None and snapshot.seats_total is not None and snapshot.seats_remaining is not None:
             seat_icons = self._build_seat_icons(snapshot.seats_taken, snapshot.seats_total)
-            seats_value = f"{seat_icons}\n" + tr(
+            seats_line = f"{seat_icons}  " + tr(
                 "invite_message_seats_value",
                 seats_taken=snapshot.seats_taken,
                 seats_total=snapshot.seats_total,
@@ -887,22 +895,17 @@ class BgaMonitor:
             )
         else:
             joined_count = len(player_names)
-            seats_value = tr("invite_message_seats_unknown", seats_taken=joined_count)
-        embed.add_field(name=tr("label_seats"), value=seats_value, inline=True)
-        embed.add_field(
-            name=tr("label_status"),
-            value=(snapshot.status if snapshot is not None else "") or tr("value_unknown"),
-            inline=True,
-        )
-        embed.add_field(
-            name=tr("label_url"),
-            value=subscription.table_url or build_table_url(table_id),
-            inline=False,
-        )
-        embed.set_footer(text=tr("invite_message_footer"))
-        return embed
+            seats_line = tr("invite_message_seats_unknown", seats_taken=joined_count)
+        status = (snapshot.status if snapshot is not None else "") or tr("value_unknown")
+        footer_text = f"_{seats_line} · {tr('label_status')}: {status}_"
+        items.append(discord.ui.TextDisplay(footer_text))
 
-    async def _build_in_progress_embed(
+        container = discord.ui.Container(*items, accent_color=discord.Color.gold())
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(container)
+        return view
+
+    async def _build_in_progress_layout(
         self,
         *,
         table_id: str,
@@ -910,94 +913,109 @@ class BgaMonitor:
         waiting_ids: list[str],
         player_names: dict[str, str],
         cover_image_url: str | None = None,
-    ) -> discord.Embed:
+    ) -> discord.ui.LayoutView:
         game_name = format_game_name(subscription.game_name)
-        embed = discord.Embed(
-            title=tr("lifecycle_in_progress_title"),
-            description=tr(
-                "lifecycle_common_description",
-                game_label=tr("label_game"),
-                game_name=game_name,
-                table_label=tr("label_table"),
-                table_id=table_id,
-            ),
-            color=discord.Color.blurple(),
-        )
+        table_url = subscription.table_url or build_table_url(table_id)
+        header_text = f"🎮  **{game_name}** · {tr('lifecycle_in_progress_title')}\n{tr('label_table')}: {table_id}"
+
+        items: list[discord.ui.Item] = []
         if cover_image_url:
-            embed.set_thumbnail(url=cover_image_url)
-        waiting_players = await self._build_waiting_players_text(
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            subscription=subscription,
-        )
-        embed.add_field(
-            name=tr("label_current_turn"),
-            value=waiting_players or tr("value_none"),
-            inline=False,
-        )
+            items.append(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(header_text),
+                    accessory=discord.ui.Thumbnail(cover_image_url),
+                )
+            )
+        else:
+            items.append(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(header_text),
+                    accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
+                )
+            )
+
+        items.append(discord.ui.Separator())
+
+        if waiting_ids:
+            waiting_players = await self._build_waiting_players_text(
+                waiting_ids=waiting_ids,
+                player_names=player_names,
+                subscription=subscription,
+            )
+            ping_text = f"**🎯 {tr('label_current_turn')}**\n{waiting_players or tr('value_none')}"
+            items.append(discord.ui.TextDisplay(ping_text))
+            items.append(discord.ui.Separator())
+
         if player_names:
             waiting_set = set(waiting_ids)
             all_players_lines = [
                 f"🎮 {name}" if pid in waiting_set else f"⏳ {name}"
                 for pid, name in sorted(player_names.items(), key=lambda kv: kv[1].casefold())
             ]
-            embed.add_field(
-                name=tr("label_all_players"),
-                value="\n".join(all_players_lines),
-                inline=False,
-            )
-        embed.add_field(
-            name=tr("label_url"),
-            value=subscription.table_url or build_table_url(table_id),
-            inline=False,
-        )
-        embed.set_footer(text=tr("lifecycle_in_progress_footer"))
-        return embed
+            all_players_text = f"**{tr('label_all_players')}**\n" + "\n".join(all_players_lines)
+            items.append(discord.ui.TextDisplay(all_players_text))
 
-    def _build_finished_embed(
+        if cover_image_url:
+            items.append(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(" "),
+                    accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
+                )
+            )
+
+        container = discord.ui.Container(*items, accent_color=discord.Color.blurple())
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(container)
+        return view
+
+    def _build_finished_layout(
         self,
         *,
         table_id: str,
         subscription: WatchSubscription,
         snapshot: BgaTableSnapshot | None,
         cover_image_url: str | None = None,
-    ) -> discord.Embed:
+    ) -> discord.ui.LayoutView:
         game_name = format_game_name(
             (snapshot.game_name if snapshot is not None else None) or subscription.game_name
         )
-        embed = discord.Embed(
-            title=tr("lifecycle_finished_title"),
-            description=tr(
-                "lifecycle_common_description",
-                game_label=tr("label_game"),
-                game_name=game_name,
-                table_label=tr("label_table"),
-                table_id=table_id,
-            ),
-            color=discord.Color.dark_green(),
+        finished_at = (snapshot.finished_at if snapshot is not None else None) or ""
+        header_text = (
+            f"🏆  **{game_name}** · {tr('lifecycle_finished_title')}\n"
+            f"{tr('label_table')}: {table_id}"
+            + (f" · {finished_at}" if finished_at else "")
         )
+
+        items: list[discord.ui.Item] = []
         if cover_image_url:
-            embed.set_thumbnail(url=cover_image_url)
-        if snapshot is not None and snapshot.winner_names:
-            embed.add_field(
-                name=tr("label_winner"),
-                value=", ".join(snapshot.winner_names),
-                inline=False,
+            items.append(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(header_text),
+                    accessory=discord.ui.Thumbnail(cover_image_url),
+                )
             )
+        else:
+            items.append(discord.ui.TextDisplay(header_text))
+
+        items.append(discord.ui.Separator())
+
+        if snapshot is not None and snapshot.winner_names:
+            winner_text = f"**🥇 {tr('label_winner')}:** {', '.join(snapshot.winner_names)}"
+            items.append(discord.ui.TextDisplay(winner_text))
+            items.append(discord.ui.Separator())
+
         if snapshot is not None and snapshot.final_standings:
-            standings_value = "\n".join(snapshot.final_standings[:10])
-            embed.add_field(name=tr("label_final_standings"), value=standings_value, inline=False)
+            standings_lines = "\n".join(snapshot.final_standings[:10])
+            standings_text = f"**{tr('label_final_standings')}**\n{standings_lines}"
+            items.append(discord.ui.TextDisplay(standings_text))
+
         if snapshot is not None and snapshot.finish_reason:
-            embed.add_field(name=tr("label_finish_reason"), value=snapshot.finish_reason, inline=False)
-        if snapshot is not None and snapshot.finished_at:
-            embed.add_field(name=tr("label_finished_at"), value=snapshot.finished_at, inline=False)
-        embed.add_field(
-            name=tr("label_url"),
-            value=subscription.table_url or build_table_url(table_id),
-            inline=False,
-        )
-        embed.set_footer(text=tr("lifecycle_finished_footer"))
-        return embed
+            items.append(discord.ui.TextDisplay(f"_{tr('label_finish_reason')}: {snapshot.finish_reason}_"))
+
+        container = discord.ui.Container(*items, accent_color=discord.Color.dark_green())
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(container)
+        return view
 
     async def _build_turn_mentions(
         self,
@@ -1038,7 +1056,7 @@ class BgaMonitor:
             for user in linked_users
             if user.bga_player_name
         }
-        waiting_descriptions = ", ".join(
+        waiting_descriptions = "\n".join(
             self._format_waiting_player(
                 player_id,
                 player_names,
@@ -1089,9 +1107,9 @@ class BgaMonitor:
         if channel is None:
             return None
 
-        embed = self._build_invite_embed(table_id=table_id, subscription=subscription, snapshot=snapshot)
+        embed = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
         try:
-            message = await channel.send(embed=embed)
+            message = await channel.send(view=embed)
             LOGGER.info(tr("invite_message_sent", table_id=table_id))
             return message
         except discord.DiscordException as exc:
@@ -1117,9 +1135,9 @@ class BgaMonitor:
         if channel is None or not isinstance(channel, discord.TextChannel):
             return False
 
-        embed = self._build_invite_embed(table_id=table_id, subscription=subscription, snapshot=snapshot)
+        layout = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
         try:
-            await active_message.message.edit(content=None, embed=embed)
+            await active_message.message.edit(view=layout)
             LOGGER.info(tr("invite_message_updated", table_id=table_id))
             return True
         except discord.NotFound:
@@ -1199,7 +1217,19 @@ class BgaMonitor:
                     ],
                 )
             )
+        for component in message.components:
+            content_parts.extend(BgaMonitor._extract_component_text(component))
         return any(marker in "\n".join(content_parts) for marker in table_markers)
+
+    @staticmethod
+    def _extract_component_text(component: object) -> list[str]:
+        texts: list[str] = []
+        if hasattr(component, "content") and isinstance(getattr(component, "content"), str):
+            texts.append(component.content)  # type: ignore[union-attr]
+        if hasattr(component, "children"):
+            for child in (component.children or []):  # type: ignore[union-attr]
+                texts.extend(BgaMonitor._extract_component_text(child))
+        return texts
 
     async def _build_turn_message_content(
         self,
@@ -1247,15 +1277,18 @@ class BgaMonitor:
             table_url=subscription.table_url or build_table_url(table_id),
         )
 
-    def _build_invite_embed(
+    def _build_invite_layout(
         self,
         *,
         table_id: str,
         subscription: WatchSubscription,
         snapshot: BgaTableSnapshot,
-    ) -> discord.Embed:
+    ) -> discord.ui.LayoutView:
+        game_name = format_game_name(snapshot.game_name or subscription.game_name)
+        table_url = subscription.table_url or build_table_url(table_id)
         players = sorted(snapshot.player_names.values(), key=str.casefold)
-        players_text = ", ".join(players) if players else tr("value_none")
+        players_text = "\n".join(players) if players else tr("value_none")
+
         if snapshot.seats_total is not None and snapshot.seats_remaining is not None:
             seats_text = tr(
                 "invite_message_seats_value",
@@ -1266,27 +1299,27 @@ class BgaMonitor:
         else:
             seats_text = tr("invite_message_seats_unknown", seats_taken=snapshot.seats_taken)
 
-        embed = discord.Embed(
-            title=tr("invite_message_title"),
-            description=tr(
-                "invite_message_description",
-                game_label=tr("label_game"),
-                game_name=format_game_name(snapshot.game_name or subscription.game_name),
-                table_label=tr("label_table"),
-                table_id=table_id,
-            ),
-            color=discord.Color.gold(),
+        header_text = f"🎲  **{game_name}**\n{tr('label_table')}: {table_id}"
+        join_btn = discord.ui.Button(label=tr("button_join_table"), url=table_url)
+        header_section = discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=join_btn)
+
+        status = snapshot.status or tr("value_unknown")
+        details_text = (
+            f"**{tr('label_players_joined')}**\n{players_text}\n\n"
+            f"{tr('label_seats')}: {seats_text} · {tr('label_status')}: {status}"
         )
-        embed.add_field(name=tr("label_status"), value=snapshot.status or tr("value_unknown"), inline=True)
-        embed.add_field(name=tr("label_seats"), value=seats_text, inline=True)
-        embed.add_field(name=tr("label_players_joined"), value=players_text, inline=False)
-        embed.add_field(
-            name=tr("label_url"),
-            value=subscription.table_url or build_table_url(table_id),
-            inline=False,
+        footer_text = f"_{tr('invite_message_footer')}_"
+
+        container = discord.ui.Container(
+            header_section,
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(details_text),
+            discord.ui.TextDisplay(footer_text),
+            accent_color=discord.Color.gold(),
         )
-        embed.set_footer(text=tr("invite_message_footer"))
-        return embed
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(container)
+        return view
 
     async def _refresh_missing_player_names(
         self,
