@@ -1,13 +1,22 @@
 ﻿PRAGMA foreign_keys = ON;
 
+-- Discord/BGA bindings are global: one link per Discord user across all guilds.
 CREATE TABLE IF NOT EXISTS users (
-    guild_id TEXT NOT NULL,
     discord_user_id TEXT NOT NULL,
     bga_player_id TEXT NOT NULL,
     bga_player_name TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (guild_id, discord_user_id)
+    PRIMARY KEY (discord_user_id)
+);
+
+-- Per-guild settings that override the global env-var defaults.
+CREATE TABLE IF NOT EXISTS guild_settings (
+    guild_id TEXT NOT NULL PRIMARY KEY,
+    recruiting_only INTEGER NOT NULL DEFAULT 0,
+    delete_invite_message INTEGER NOT NULL DEFAULT 0,
+    forced_channel_id TEXT,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS watch_subscriptions (

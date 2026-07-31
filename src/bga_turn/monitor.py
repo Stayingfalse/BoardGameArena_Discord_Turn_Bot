@@ -70,17 +70,15 @@ class LinkBgaModal(discord.ui.Modal):
             bga_player_name = raw
 
         database: Database = interaction.client.database  # type: ignore[attr-defined]
-        guild_id = str(interaction.guild_id)
         discord_user_id = str(interaction.user.id)
 
         await asyncio.to_thread(
             database.upsert_linked_user,
-            guild_id,
             discord_user_id,
             bga_player_id,
             bga_player_name,
         )
-        linked = await asyncio.to_thread(database.get_linked_user, guild_id, discord_user_id)
+        linked = await asyncio.to_thread(database.get_linked_user, discord_user_id)
         name_display = (linked.bga_player_name if linked else None) or tr("link_missing_value_placeholder")
         id_display = (linked.bga_player_id if linked else None) or tr("link_missing_value_placeholder")
 
@@ -110,10 +108,9 @@ class LinkSelfButton(discord.ui.Button["LinkSelfPersistentView"]):
             return
 
         database: Database = interaction.client.database  # type: ignore[attr-defined]
-        guild_id = str(interaction.guild_id)
         discord_user_id = str(interaction.user.id)
 
-        existing = await asyncio.to_thread(database.get_linked_user, guild_id, discord_user_id)
+        existing = await asyncio.to_thread(database.get_linked_user, discord_user_id)
         if existing is not None and (existing.bga_player_id or existing.bga_player_name):
             name_display = existing.bga_player_name or tr("link_missing_value_placeholder")
             id_display = existing.bga_player_id or tr("link_missing_value_placeholder")
@@ -162,15 +159,15 @@ class BgaMonitor:
         bga_client: BgaClient,
         poll_seconds: int,
         *,
-        recruiting_only: bool = False,
-        forced_channel_id: str | None = None,
+        default_recruiting_only: bool = False,
+        default_forced_channel_id: str | None = None,
     ) -> None:
         self.bot = bot
         self.database = database
         self.bga_client = bga_client
         self._poll_seconds = max(5, poll_seconds)
-        self._recruiting_only = recruiting_only
-        self._forced_channel_id = forced_channel_id
+        self._default_recruiting_only = default_recruiting_only
+        self._default_forced_channel_id = default_forced_channel_id
         self._table_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_messages: dict[int, ActiveTableMessage] = {}
         self._last_player_name_refresh_at: dict[str, float] = {}
@@ -321,7 +318,7 @@ class BgaMonitor:
             self._last_follow_sync_at[follow_key] = now
 
             linked_user = await asyncio.to_thread(
-                self.database.get_linked_user, follow.guild_id, follow.discord_user_id
+                self.database.get_linked_user, follow.discord_user_id
             )
             if linked_user is None or not linked_user.bga_player_id.strip():
                 LOGGER.warning(
@@ -464,7 +461,7 @@ class BgaMonitor:
         )
         for guild_id in {subscription.guild_id for subscription in subscriptions}:
             await asyncio.to_thread(
-                self.database.enrich_linked_users_from_players, guild_id, merged_player_names
+                self.database.enrich_linked_users_from_players, merged_player_names
             )
 
         if state.is_game_finished:
@@ -497,7 +494,11 @@ class BgaMonitor:
 
             # In recruiting-only mode: the game has started — delete the recruiting
             # message and remove the watch subscription without posting in-progress messages.
-            if self._recruiting_only:
+            guild_settings = self.database.get_guild_settings(
+                subscription.guild_id,
+                default_recruiting_only=self._default_recruiting_only,
+            )
+            if guild_settings.recruiting_only:
                 active_message = self._active_messages.get(subscription.subscription_id)
                 if active_message is not None:
                     await self._delete_tracked_message(
@@ -983,7 +984,6 @@ class BgaMonitor:
             items.append(discord.ui.Separator())
 
         players_value = await self._build_player_lines(
-            guild_id=subscription.guild_id,
             player_names=player_names,
             player_avatars={} if snapshot is None else snapshot.player_avatars,
         )
@@ -1136,7 +1136,6 @@ class BgaMonitor:
     ) -> str:
         linked_users = await asyncio.to_thread(
             self.database.get_linked_users_for_players,
-            subscription.guild_id,
             {player_id: player_names.get(player_id, "") for player_id in waiting_ids},
         )
         mentions = [f"<@{item.discord_user_id}>" for item in linked_users]
@@ -1157,7 +1156,6 @@ class BgaMonitor:
         }
         linked_users = await asyncio.to_thread(
             self.database.get_linked_users_for_players,
-            subscription.guild_id,
             observed_waiting_players,
         )
         linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
@@ -1180,13 +1178,11 @@ class BgaMonitor:
     async def _build_player_lines(
         self,
         *,
-        guild_id: str,
         player_names: dict[str, str],
         player_avatars: dict[str, str],
     ) -> str:
         linked_users = await asyncio.to_thread(
             self.database.get_linked_users_for_players,
-            guild_id,
             player_names,
         )
         linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
@@ -1270,7 +1266,10 @@ class BgaMonitor:
         table_markers = {f"{tr('label_table')} : {table_id}", f"{tr('label_table')}: {table_id}", f"Table : {table_id}", f"Table: {table_id}"}
 
         for subscription in subscriptions:
-            effective_channel_id = self._forced_channel_id or subscription.channel_id
+            effective_channel_id = self.database.get_guild_settings(
+                subscription.guild_id,
+                default_forced_channel_id=self._default_forced_channel_id,
+            ).forced_channel_id or subscription.channel_id
             if effective_channel_id in seen_channels:
                 continue
             seen_channels.add(effective_channel_id)
@@ -1356,7 +1355,6 @@ class BgaMonitor:
         }
         linked_users = await asyncio.to_thread(
             self.database.get_linked_users_for_players,
-            subscription.guild_id,
             observed_waiting_players,
         )
         linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
@@ -1489,7 +1487,11 @@ class BgaMonitor:
         return merged_names
 
     async def _resolve_channel(self, subscription: WatchSubscription, table_id: str) -> discord.abc.Messageable | None:
-        channel_id = self._forced_channel_id or subscription.channel_id
+        guild_settings = self.database.get_guild_settings(
+            subscription.guild_id,
+            default_forced_channel_id=self._default_forced_channel_id,
+        )
+        channel_id = guild_settings.forced_channel_id or subscription.channel_id
         channel = self.bot.get_channel(int(channel_id))
         if channel is None:
             try:

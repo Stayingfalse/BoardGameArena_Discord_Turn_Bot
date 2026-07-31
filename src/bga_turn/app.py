@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from importlib.resources import files
@@ -44,9 +45,9 @@ class BgaDiscordBot(commands.Bot):
         poll_seconds: int,
         dev_guild_id: int | None,
         clear_global_commands: bool,
-        recruiting_only: bool = False,
-        delete_invite_message: bool = False,
-        forced_channel_id: str | None = None,
+        default_recruiting_only: bool = False,
+        default_delete_invite_message: bool = False,
+        default_forced_channel_id: str | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -55,17 +56,15 @@ class BgaDiscordBot(commands.Bot):
         self.bga_client = bga_client
         self.dev_guild_id = dev_guild_id
         self.clear_global_commands = clear_global_commands
-        self._recruiting_only = recruiting_only
-        self._delete_invite_message = delete_invite_message
-        self._forced_channel_id = forced_channel_id
         self.monitor = BgaMonitor(
             self,
             database,
             bga_client,
             poll_seconds,
-            recruiting_only=recruiting_only,
-            forced_channel_id=forced_channel_id,
+            default_recruiting_only=default_recruiting_only,
+            default_forced_channel_id=default_forced_channel_id,
         )
+        self._default_delete_invite_message = default_delete_invite_message
         self.logger = logging.getLogger(__name__)
         self._startup_completed = False
 
@@ -75,7 +74,7 @@ class BgaDiscordBot(commands.Bot):
                 self.database,
                 self.bga_client,
                 self.monitor,
-                delete_invite_message=self._delete_invite_message,
+                default_delete_invite_message=self._default_delete_invite_message,
             )
         )
         # Register a persistent view so the self-link button on existing messages
@@ -138,6 +137,54 @@ class BgaDiscordBot(commands.Bot):
         self.logger.info(tr("bot_invite_url", invite_url=invite_url))
 
 
+async def _run_bot(
+    bot: BgaDiscordBot,
+    token: str,
+    *,
+    dashboard_enabled: bool,
+    dashboard_port: int,
+    dashboard_base_url: str,
+    client_id: str,
+    client_secret: str,
+    dashboard_secret_key: str,
+) -> None:
+    logger = logging.getLogger(__name__)
+    if dashboard_enabled:
+        try:
+            from .dashboard import create_dashboard_app, run_dashboard
+        except ImportError as exc:
+            logger.warning("Dashboard disabled: failed to import aiohttp (%s).", exc)
+            dashboard_enabled = False
+
+    if dashboard_enabled:
+        app = create_dashboard_app(  # type: ignore[possibly-undefined]
+            bot=bot,
+            database=bot.database,
+            base_url=dashboard_base_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            secret_key=dashboard_secret_key,
+        )
+        dashboard_task = asyncio.create_task(
+            run_dashboard(app, port=dashboard_port),  # type: ignore[possibly-undefined]
+            name="dashboard",
+        )
+        logger.info("Dashboard started on port %d.", dashboard_port)
+    else:
+        dashboard_task = None
+
+    try:
+        async with bot:
+            await bot.start(token)
+    finally:
+        if dashboard_task is not None:
+            dashboard_task.cancel()
+            try:
+                await dashboard_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 def main() -> None:
     setup_logging()
 
@@ -153,10 +200,17 @@ def main() -> None:
     dev_guild_id = os.getenv("DISCORD_GUILD_ID")
     clear_global_commands = env_flag("DISCORD_CLEAR_GLOBAL_COMMANDS")
     enable_tableinfos_fallback = env_flag("BGA_ENABLE_TABLEINFOS_FALLBACK")
-    recruiting_only = env_flag("BGA_RECRUITING_ONLY")
-    delete_invite_message = env_flag("BGA_DELETE_INVITE_MESSAGE")
-    forced_channel_id = os.getenv("BGA_FORCED_CHANNEL_ID") or None
+    default_recruiting_only = env_flag("BGA_RECRUITING_ONLY")
+    default_delete_invite_message = env_flag("BGA_DELETE_INVITE_MESSAGE")
+    default_forced_channel_id = os.getenv("BGA_FORCED_CHANNEL_ID") or None
     websocket_url = os.getenv("BGA_WS_URL", "wss://ws-x1.boardgamearena.com/connection/websocket")
+
+    dashboard_enabled = env_flag("DASHBOARD_ENABLED")
+    dashboard_port = int(os.getenv("DASHBOARD_PORT", "8080"))
+    dashboard_base_url = os.getenv("DASHBOARD_BASE_URL", "http://localhost:8080").rstrip("/")
+    client_id = os.getenv("DISCORD_CLIENT_ID", "")
+    client_secret = os.getenv("DISCORD_CLIENT_SECRET", "")
+    dashboard_secret_key = os.getenv("DASHBOARD_SECRET_KEY", "")
 
     database = Database(db_path=db_path, schema_sql=schema_sql)
     database.initialize()
@@ -172,11 +226,22 @@ def main() -> None:
         poll_seconds=poll_seconds,
         dev_guild_id=int(dev_guild_id) if dev_guild_id else None,
         clear_global_commands=clear_global_commands,
-        recruiting_only=recruiting_only,
-        delete_invite_message=delete_invite_message,
-        forced_channel_id=forced_channel_id,
+        default_recruiting_only=default_recruiting_only,
+        default_delete_invite_message=default_delete_invite_message,
+        default_forced_channel_id=default_forced_channel_id,
     )
-    bot.run(token, log_handler=None)
+    asyncio.run(
+        _run_bot(
+            bot,
+            token,
+            dashboard_enabled=dashboard_enabled,
+            dashboard_port=dashboard_port,
+            dashboard_base_url=dashboard_base_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            dashboard_secret_key=dashboard_secret_key,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -951,6 +951,58 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Failed to delete triggering BGA invite message in channel {channel_id}: {error}",
         "FR": "Echec de suppression du message d'invitation BGA declencheur dans le salon {channel_id}: {error}",
     },
+    "command_settings_description": {
+        "EN": "Show or update per-server bot settings",
+        "FR": "Afficher ou modifier les reglages du bot pour ce serveur",
+    },
+    "command_settings_recruiting_only": {
+        "EN": "Recruiting-only mode: remove watch once the game starts",
+        "FR": "Mode recrutement uniquement: retire le watch quand la partie commence",
+    },
+    "command_settings_delete_invite_message": {
+        "EN": "Delete the Discord message that triggered auto-watch",
+        "FR": "Supprimer le message Discord ayant declenche le watch automatique",
+    },
+    "command_settings_forced_channel": {
+        "EN": "Force all bot notifications to this channel",
+        "FR": "Forcer toutes les notifications du bot dans ce salon",
+    },
+    "command_settings_clear_forced_channel": {
+        "EN": "Clear the forced channel override",
+        "FR": "Supprimer l'override de salon force",
+    },
+    "settings_display": {
+        "EN": (
+            "**Server settings**\n"
+            "• Recruiting-only mode: `{recruiting_only}`\n"
+            "• Delete invite message: `{delete_invite_message}`\n"
+            "• Forced channel: {forced_channel_id}"
+        ),
+        "FR": (
+            "**Reglages du serveur**\n"
+            "• Mode recrutement uniquement : `{recruiting_only}`\n"
+            "• Supprimer le message d'invitation : `{delete_invite_message}`\n"
+            "• Salon force : {forced_channel_id}"
+        ),
+    },
+    "settings_saved": {
+        "EN": (
+            "✅ **Settings saved.**\n"
+            "• Recruiting-only mode: `{recruiting_only}`\n"
+            "• Delete invite message: `{delete_invite_message}`\n"
+            "• Forced channel: {forced_channel_id}"
+        ),
+        "FR": (
+            "✅ **Reglages sauvegard\u00e9s.**\n"
+            "• Mode recrutement uniquement : `{recruiting_only}`\n"
+            "• Supprimer le message d'invitation : `{delete_invite_message}`\n"
+            "• Salon force : {forced_channel_id}"
+        ),
+    },
+    "error_manage_server_required_settings": {
+        "EN": "You need the **Manage Server** permission to change bot settings.",
+        "FR": "Vous devez avoir la permission **Gérer le serveur** pour modifier les réglages du bot.",
+    },
 }
 
 

@@ -35,11 +35,18 @@ class BgaCommands(commands.Cog):
     _EMBED_DESCRIPTION_LIMIT = 4096
     _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
-    def __init__(self, database: Database, bga_client: BgaClient, monitor: BgaMonitor, *, delete_invite_message: bool = False) -> None:
+    def __init__(
+        self,
+        database: Database,
+        bga_client: BgaClient,
+        monitor: BgaMonitor,
+        *,
+        default_delete_invite_message: bool = False,
+    ) -> None:
         self.database = database
         self.bga_client = bga_client
         self.monitor = monitor
-        self._delete_invite_message = delete_invite_message
+        self._default_delete_invite_message = default_delete_invite_message
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Log every ``/bga`` command invocation. Never blocks the command."""
@@ -86,7 +93,11 @@ class BgaCommands(commands.Cog):
                     channel_id=message.channel.id,
                 )
             )
-            if self._delete_invite_message:
+            guild_settings = self.database.get_guild_settings(
+                str(message.guild.id),
+                default_delete_invite_message=self._default_delete_invite_message,
+            )
+            if guild_settings.delete_invite_message:
                 try:
                     await message.delete()
                     LOGGER.info(
@@ -345,12 +356,11 @@ class BgaCommands(commands.Cog):
 
         guild_id = str(interaction.guild_id)
         self.database.upsert_linked_user(
-            guild_id=guild_id,
             discord_user_id=str(member.id),
             bga_player_id=candidate_id,
             bga_player_name=candidate_name,
         )
-        linked_user = self.database.get_linked_user(guild_id, str(member.id))
+        linked_user = self.database.get_linked_user(str(member.id))
         if linked_user is None:
             raise RuntimeError("Failed to load the linked BGA user after saving it.")
         name_display = linked_user.bga_player_name or tr("link_missing_value_placeholder")
@@ -385,7 +395,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        removed = self.database.remove_linked_user(str(interaction.guild_id), str(member.id))
+        removed = self.database.remove_linked_user(str(member.id))
         if not removed:
             await interaction.response.send_message(
                 tr("unlink_not_found", member_mention=member.mention),
@@ -407,7 +417,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        linked_users = self.database.list_linked_users_for_guild(str(interaction.guild_id))
+        linked_users = self.database.list_linked_users()
         if not linked_users:
             await interaction.response.send_message(
                 tr("linked_none"),
@@ -484,7 +494,6 @@ class BgaCommands(commands.Cog):
         message_overhead = len(tr("watch_registered", players="", **message_kwargs))
         max_players_length = max(0, 2000 - message_overhead)
         detected_players = await self._format_detected_players(
-            guild_id=str(interaction.guild_id),
             player_names=result.detected_player_names,
         )
         detected_players_text = self._format_bounded_list(
@@ -574,7 +583,7 @@ class BgaCommands(commands.Cog):
             game_name=resolved_game_name or subscription.game_name,
         )
         await asyncio.to_thread(
-            self.database.enrich_linked_users_from_players, guild_id, persisted_player_names
+            self.database.enrich_linked_users_from_players, persisted_player_names
         )
         if state is None:
             subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
@@ -600,11 +609,10 @@ class BgaCommands(commands.Cog):
     async def _format_detected_players(
         self,
         *,
-        guild_id: str,
         player_names: dict[str, str],
     ) -> list[str]:
         linked_users = await asyncio.to_thread(
-            self.database.get_linked_users_for_players, guild_id, player_names
+            self.database.get_linked_users_for_players, player_names
         )
         linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
         linked_by_name = {
@@ -678,7 +686,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        linked_user = self.database.get_linked_user(guild_id, followed_discord_user_id)
+        linked_user = self.database.get_linked_user(followed_discord_user_id)
         if linked_user is None:
             await interaction.response.send_message(
                 tr("error_follow_member_not_linked", member_mention=member.mention),
@@ -926,7 +934,7 @@ class BgaCommands(commands.Cog):
                 state = tr("status_unknown")
             elif subscription.last_waiting_ids:
                 linked_users = self.database.get_linked_users_by_bga_ids(
-                    subscription.guild_id, subscription.last_waiting_ids
+                    subscription.last_waiting_ids
                 )
                 if linked_users:
                     mentions = ", ".join(f"<@{item.discord_user_id}>" for item in linked_users)
@@ -963,3 +971,80 @@ class BgaCommands(commands.Cog):
             embeds.append(card)
 
         await self._send_ephemeral_embeds(interaction, embeds)
+
+    @bga.command(name="settings", description=tr("command_settings_description"))
+    @app_commands.describe(
+        recruiting_only=tr("command_settings_recruiting_only"),
+        delete_invite_message=tr("command_settings_delete_invite_message"),
+        forced_channel=tr("command_settings_forced_channel"),
+        clear_forced_channel=tr("command_settings_clear_forced_channel"),
+    )
+    async def settings_command(
+        self,
+        interaction: discord.Interaction,
+        recruiting_only: bool | None = None,
+        delete_invite_message: bool | None = None,
+        forced_channel: discord.TextChannel | None = None,
+        clear_forced_channel: bool | None = None,
+    ) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                tr("error_command_server_only"),
+                ephemeral=True,
+            )
+            return
+        if not self._has_manage_permissions(interaction):
+            await interaction.response.send_message(
+                tr("error_manage_server_required_settings"),
+                ephemeral=True,
+            )
+            return
+
+        guild_id = str(interaction.guild_id)
+        current = self.database.get_guild_settings(
+            guild_id,
+            default_recruiting_only=self.monitor._default_recruiting_only,
+            default_delete_invite_message=self._default_delete_invite_message,
+            default_forced_channel_id=self.monitor._default_forced_channel_id,
+        )
+
+        # No changes requested — show current settings.
+        if recruiting_only is None and delete_invite_message is None and forced_channel is None and clear_forced_channel is None:
+            channel_display = f"<#{current.forced_channel_id}>" if current.forced_channel_id else tr("value_none")
+            await interaction.response.send_message(
+                tr(
+                    "settings_display",
+                    recruiting_only=current.recruiting_only,
+                    delete_invite_message=current.delete_invite_message,
+                    forced_channel_id=channel_display,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        new_recruiting_only = recruiting_only if recruiting_only is not None else current.recruiting_only
+        new_delete_invite_message = delete_invite_message if delete_invite_message is not None else current.delete_invite_message
+        if clear_forced_channel:
+            new_forced_channel_id: str | None = None
+        elif forced_channel is not None:
+            new_forced_channel_id = str(forced_channel.id)
+        else:
+            new_forced_channel_id = current.forced_channel_id
+
+        self.database.upsert_guild_settings(
+            guild_id=guild_id,
+            recruiting_only=new_recruiting_only,
+            delete_invite_message=new_delete_invite_message,
+            forced_channel_id=new_forced_channel_id,
+        )
+
+        channel_display = f"<#{new_forced_channel_id}>" if new_forced_channel_id else tr("value_none")
+        await interaction.response.send_message(
+            tr(
+                "settings_saved",
+                recruiting_only=new_recruiting_only,
+                delete_invite_message=new_delete_invite_message,
+                forced_channel_id=channel_display,
+            ),
+            ephemeral=True,
+        )

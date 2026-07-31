@@ -11,6 +11,14 @@ class LinkedUser:
 
 
 @dataclass(slots=True)
+class GuildSettings:
+    guild_id: str
+    recruiting_only: bool
+    delete_invite_message: bool
+    forced_channel_id: str | None
+
+
+@dataclass(slots=True)
 class WatchSubscription:
     subscription_id: int
     table_id: str

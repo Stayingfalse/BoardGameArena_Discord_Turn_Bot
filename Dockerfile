@@ -17,6 +17,8 @@ USER bga
 
 ENV BGA_DB_PATH=/data/bga_bot.db
 
+EXPOSE 8080
+
 VOLUME ["/data"]
 
 ENTRYPOINT ["/entrypoint.sh"]
