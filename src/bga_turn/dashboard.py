@@ -83,7 +83,7 @@ def _get_session(request: web.Request) -> dict | None:
     return _decode_session(cookie, secret)
 
 
-def _set_session(response: web.Response, data: dict, secret: str) -> None:
+def _set_session(response: web.Response, data: dict, secret: str, *, secure: bool = False) -> None:
     value = _encode_session(data, secret)
     response.set_cookie(
         _COOKIE_NAME,
@@ -91,6 +91,7 @@ def _set_session(response: web.Response, data: dict, secret: str) -> None:
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
         samesite="Lax",
+        secure=secure,
     )
 
 
@@ -305,7 +306,8 @@ async def _auth_login(request: web.Request) -> web.Response:
     redirect_uri = f"{base_url}/auth/callback"
     url = _build_oauth2_url(client_id, redirect_uri, state)
     response = web.HTTPFound(location=url)
-    response.set_cookie("oauth_state", state, max_age=300, httponly=True, samesite="Lax")
+    secure_cookie = base_url.startswith("https://")
+    response.set_cookie("oauth_state", state, max_age=300, httponly=True, samesite="Lax", secure=secure_cookie)
     raise response
 
 
@@ -369,7 +371,8 @@ async def _auth_callback(request: web.Request) -> web.Response:
 
     response = web.HTTPFound(location="/dashboard")
     response.del_cookie("oauth_state")
-    _set_session(response, session_data, secret)
+    base_url: str = request.app["base_url"]
+    _set_session(response, session_data, secret, secure=base_url.startswith("https://"))
     raise response
 
 
@@ -438,6 +441,8 @@ async def _dashboard_guild(request: web.Request) -> web.Response:
         raise web.HTTPFound(location="/auth/login")
 
     guild_id = request.match_info["guild_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
     if not _session_manages_guild(session, guild_id):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
@@ -521,6 +526,9 @@ async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
         raise web.HTTPFound(location="/auth/login")
 
     guild_id = request.match_info["guild_id"]
+    # Validate guild_id is a Discord snowflake before using in a redirect.
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
     if not _session_manages_guild(session, guild_id):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
@@ -538,7 +546,7 @@ async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
         delete_invite_message=delete_invite_message,
         forced_channel_id=forced_channel_id,
     )
-    raise web.HTTPFound(location=f"/dashboard/{guild_id}?saved=1")
+    raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}?saved=1")
 
 
 def _session_manages_guild(session: dict, guild_id: str) -> bool:
