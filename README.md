@@ -4,16 +4,17 @@
 
 Self-hosted Discord bot for Board Game Arena.
 
-The bot watches public BGA tables in spectator mode, without cookies or BGA login, then posts a status message in Discord for each watched table.
+The bot's primary job is **automatic link detection**: whenever someone posts a BGA game URL in a Discord channel, the bot immediately starts watching that table and posts a live status message that it keeps up to date throughout the game.
 
-Target workflow:
-- you manually link a Discord member with `/bga link-member @discord BgaName BgaId`
-- the link can be partial: name only, ID only, or both
-- the bot fills the missing field automatically when it observes a table
-- you add a BGA table with `/bga watch <game_url | tableview_link | table_id>`, or let the bot find them for you with `/bga follow-tables @discord`
-- the bot detects whose turn it is
-- it keeps one lifecycle message per watched table and updates it across 3 states: recruiting → in progress → finished
-- when the game is over, it posts the final state (winner / standings when available) and automatically removes the watch
+No BGA account, no password, no cookie — the bot only reads what any anonymous spectator can see.
+
+**How it works:**
+1. A player posts a BGA table link in any Discord channel the bot can read.
+2. The bot detects the link and begins watching the table.
+3. One message is posted and updated live across three stages: **Recruiting → In Progress → Finished**.
+4. When the game ends, the message is marked finished and the watch is removed automatically.
+
+To get Discord mentions in turn notifications, server admins can link Discord members to their BGA accounts with `/bga link-member`. Players can also self-link by clicking the **Link your BGA & Discord** button that appears on the recruiting message.
 
 ## Quick start
 
@@ -29,25 +30,11 @@ docker compose up -d
 
 The SQLite database is stored in a named Docker volume (`bga_data`) so it survives container restarts and upgrades.
 
-To view logs:
-
 ```bash
-docker compose logs -f
+docker compose logs -f       # view logs
+docker compose down          # stop
+docker compose up -d --build # rebuild after a code change
 ```
-
-To stop the bot:
-
-```bash
-docker compose down
-```
-
-To rebuild after a code change:
-
-```bash
-docker compose up -d --build
-```
-
-After cloning the repository and installing `requirements.txt`, you can also start the bot directly with `python -m bga_turn`.
 
 ### Windows PowerShell
 
@@ -56,6 +43,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
+# Edit .env, then:
 python -m bga_turn
 ```
 
@@ -66,166 +54,150 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 cp .env.example .env
+# Edit .env, then:
 python -m bga_turn
 ```
 
-## 1. Deployment
+## 1. Setup
 
 ### Requirements
 
 - Docker and Docker Compose (recommended), **or** Python 3.11 or newer
-- a Discord bot created in the Discord developer portal
-- the bot invited to your Discord server
-- one or more BGA tables publicly accessible in spectator mode
+- A Discord bot created in the Discord Developer Portal with the **Message Content Intent** enabled
+- The bot invited to your Discord server
+- At least one BGA table publicly accessible in spectator mode
 
-### Docker deployment
+---
 
-The project ships with a `Dockerfile` and a `docker-compose.yml` that run the bot in a single container with automatic restart.
+### Step 1 — Create the Discord bot
 
-```bash
-cp .env.example .env
-# Edit .env – set at least DISCORD_TOKEN
-docker compose up -d
+1. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and click **New Application**.
+2. Give it a name and create it.
+3. Open the **Bot** tab in the left sidebar.
+4. Click **Reset Token** (or **Copy** if a token is already shown). This is your `DISCORD_TOKEN`. Keep it secret — if it is ever exposed, regenerate it immediately.
+5. On the same **Bot** tab, scroll down to **Privileged Gateway Intents** and enable **Message Content Intent**. This is required for the bot to read posted links and auto-watch tables.
+
+> **Why is the Message Content Intent needed?**
+> Discord hides message text from bots by default. Enabling this intent lets the bot read the content of messages so it can detect BGA links automatically.
+
+---
+
+### Step 2 — Invite the bot to your server
+
+The easiest method is to use the invite URL that the bot prints in its own logs on startup. Start the bot once with just `DISCORD_TOKEN` set, look for the line:
+
+```
+Bot invite URL: https://discord.com/oauth2/authorize?client_id=...
 ```
 
-Key behaviours:
-- `restart: unless-stopped` — the container starts automatically when the Docker daemon starts and restarts on crash.
-- `init: true` — uses an init process inside the container for correct signal forwarding and zombie-process reaping.
-- The SQLite database is stored in the named volume `bga_data` (mounted at `/data` inside the container). You do **not** need to set `BGA_DB_PATH` in `.env`; the image defaults it to `/data/bga_bot.db`.
+Open that URL in your browser, choose your server, and approve. The bot will have exactly the permissions it needs.
 
-### Project structure
+**Alternatively**, generate the URL manually in the Developer Portal:
 
-- `Dockerfile`: single-container image for Docker deployment
-- `docker-compose.yml`: Compose service with auto-restart and a persistent data volume
-- `.dockerignore`: files excluded from the Docker build context
-- `bot.py`: development launcher from the repository root
-- `src/bga_turn/app.py`: application entry point
-- `src/bga_turn/commands_bga.py`: `/bga` slash commands
-- `src/bga_turn/bga_client.py`: public BGA networking, HTML parsing, websocket handling
-- `src/bga_turn/monitor.py`: watch loop and Discord publishing logic
-- `src/bga_turn/database.py`: SQLite persistence
-- `src/bga_turn/models.py`: domain dataclasses
-- `src/bga_turn/utils.py`: URL parsing, JSON helpers, small utilities
-- `src/bga_turn/schema.sql`: packaged SQLite schema
-- `pyproject.toml`: package metadata and console entry point
-- `requirements.txt`: installs the project itself in editable mode
-- `LICENSE`: MIT license
-- `.github/workflows/ci.yml`: lightweight validation on push and pull request
-- `.env.example`: local configuration example
-
-### Local installation
-
-From the project directory:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-```
-
-Adjust the virtual environment activation and file copy commands to your shell if needed.
-
-Then edit `.env`:
-
-```env
-DISCORD_TOKEN=paste_your_bot_token_here
-DISCORD_GUILD_ID=paste_your_server_id_here
-DISCORD_CLEAR_GLOBAL_COMMANDS=0
-BGA_POLL_SECONDS=15
-BGA_DB_PATH=bga_bot.db
-BGA_WS_URL=wss://ws-x1.boardgamearena.com/connection/websocket
-BGA_ENABLE_TABLEINFOS_FALLBACK=0
-LOG_LEVEL=INFO
-BOT_LANG=EN
-```
-
-### `.env` variables
-
-- `DISCORD_TOKEN`: required; copy it from the Discord Developer Portal, in your application, under `Bot`
-- `DISCORD_GUILD_ID`: optional but strongly recommended for the first setup; copy your server ID from the Discord client after enabling Developer Mode
-- `DISCORD_CLEAR_GLOBAL_COMMANDS`: optional, set to `1` once to delete stale global slash commands before guild sync, then set it back to `0`
-- `BGA_POLL_SECONDS`: supervision interval for the monitor scheduler
-- `BGA_DB_PATH`: SQLite file path
-- `BGA_WS_URL`: public BGA websocket endpoint
-- `BGA_ENABLE_TABLEINFOS_FALLBACK`: optional, `0` by default; when set to `1`, re-enables the HTTP `tableinfos.html` fallback used when the websocket is silent
-- `LOG_LEVEL`: console log level
-- `BOT_LANG`: bot language for internal logs, slash command responses, and Discord messages, `EN` by default, `FR` for French
-
-### Discord setup for beginners
-
-#### 1. Create the Discord application and bot
-
-1. Go to `https://discord.com/developers/applications`
-2. Click `New Application`
-3. Give the application a name, then create it
-4. Open the application and go to the `Bot` tab
-5. If Discord asks, click `Add Bot`
-6. In the `Bot` tab:
-   - click `Reset Token` or `Copy` to get the bot token
-   - paste that value into `DISCORD_TOKEN=...` in your `.env`
-   - keep this token secret; if it is ever exposed, regenerate it immediately
-7. You do not need to enable privileged intents for this project
-
-#### 2. Invite the bot to your Discord server
-
-1. In the Discord Developer Portal, open the `Installation` page
-2. For `Guild Install`, make sure the install link includes:
-   - `bot`
-   - `applications.commands`
-3. For the bot permissions, the tested minimum is:
+1. Open your application in the Developer Portal.
+2. Go to **Installation** (or **OAuth2 > URL Generator** on older portals).
+3. Under **Guild Install**, select scopes: `bot` and `applications.commands`.
+4. Under **Bot Permissions**, select:
    - `View Channels`
    - `Send Messages`
    - `Embed Links`
    - `Read Message History`
-4. Copy the generated install link
-5. Open that link in your browser
-6. Choose the Discord server where you want the bot
-7. Approve the installation
+   - `Manage Messages` *(needed only if `BGA_DELETE_INVITE_MESSAGE=1`)*
+5. Copy the generated URL, open it in a browser, and add the bot to your server.
 
-If your Developer Portal UI still shows `OAuth2 > URL Generator` instead of `Installation`, do the same there:
-- select `bot`
-- select `applications.commands`
-- select the permissions above
-- open the generated URL and add the bot to your server
+---
 
-#### 3. Get `DISCORD_GUILD_ID`
+### Step 3 — Get your server ID (`DISCORD_GUILD_ID`)
 
-`DISCORD_GUILD_ID` is optional, but it is the easiest way to make slash commands appear almost immediately while you are setting the bot up.
+Setting `DISCORD_GUILD_ID` is optional but strongly recommended during initial setup: it makes slash commands appear in your server almost instantly instead of waiting for Discord's global sync (which can take up to an hour).
 
-To get it:
+1. Open the Discord app.
+2. Go to **User Settings → Advanced** and enable **Developer Mode**.
+3. Right-click your server icon or name and click **Copy Server ID**.
+4. Paste that value into `DISCORD_GUILD_ID=...` in your `.env`.
 
-1. Open the Discord app
-2. Go to `User Settings > Advanced`
-3. Enable `Developer Mode`
-4. Right-click your server icon or server name
-5. Click `Copy Server ID`
-6. Paste that value into `DISCORD_GUILD_ID=...` in your `.env`
+---
 
-If you leave `DISCORD_GUILD_ID` empty, the bot still works, but slash command updates can take longer to appear because they are synced globally.
+### Step 4 — Configure `.env`
 
-#### 4. Example `.env` for a first setup
+Copy `.env.example` to `.env` and fill in at least `DISCORD_TOKEN`:
 
 ```env
 DISCORD_TOKEN=paste_your_bot_token_here
 DISCORD_GUILD_ID=paste_your_server_id_here
-DISCORD_CLEAR_GLOBAL_COMMANDS=0
-BGA_POLL_SECONDS=15
-BGA_DB_PATH=bga_bot.db
-BGA_WS_URL=wss://ws-x1.boardgamearena.com/connection/websocket
-BGA_ENABLE_TABLEINFOS_FALLBACK=0
-LOG_LEVEL=INFO
-BOT_LANG=EN
 ```
 
-Quick explanation:
-- `DISCORD_TOKEN`: the secret token copied from the `Bot` tab in the Discord Developer Portal
-- `DISCORD_GUILD_ID`: your Discord server ID, copied from the Discord client with Developer Mode enabled
-- `BOT_LANG`: set `EN` for English or `FR` for French
+A complete example with all variables explained:
 
-If slash commands appear twice because you previously used global commands, set `DISCORD_CLEAR_GLOBAL_COMMANDS=1` for one startup, let the bot delete the old global commands, then set it back to `0`.
+```env
+# --- Required ---
+DISCORD_TOKEN=paste_your_bot_token_here
 
-### Run the bot
+# --- Recommended during setup ---
+# Your Discord server ID. Speeds up slash command registration to this server only.
+DISCORD_GUILD_ID=paste_your_server_id_here
+
+# --- Bot behaviour ---
+BGA_POLL_SECONDS=15             # How often the monitor checks watched tables (seconds)
+BGA_DB_PATH=bga_bot.db          # SQLite database file path
+BGA_WS_URL=wss://ws-x1.boardgamearena.com/connection/websocket
+LOG_LEVEL=INFO                  # DEBUG, INFO, WARNING, ERROR
+BOT_LANG=EN                     # EN or FR
+
+# --- Optional features ---
+# Set to 1 to only post the recruiting embed and auto-unwatch when the game starts.
+BGA_RECRUITING_ONLY=0
+
+# Set to 1 to delete the original message that contained the BGA invite link
+# after the watch is registered. Requires the Manage Messages permission.
+BGA_DELETE_INVITE_MESSAGE=0
+
+# Channel ID to route all bot notifications to a single fixed channel,
+# regardless of which channel the original link was posted in.
+BGA_FORCED_CHANNEL_ID=
+
+# Set to 1 once to delete stale global slash commands before guild sync, then back to 0.
+DISCORD_CLEAR_GLOBAL_COMMANDS=0
+
+# Set to 1 to re-enable the legacy tableinfos HTTP fallback for end-of-game detection.
+BGA_ENABLE_TABLEINFOS_FALLBACK=0
+
+# --- Optional web dashboard ---
+DASHBOARD_ENABLED=0
+DASHBOARD_PORT=8080
+DASHBOARD_BASE_URL=http://localhost:8080
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+# Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+DASHBOARD_SECRET_KEY=
+```
+
+#### `.env` variable reference
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DISCORD_TOKEN` | ✅ | — | Bot token from the Discord Developer Portal → Bot tab |
+| `DISCORD_GUILD_ID` | — | — | Server ID for fast guild-scoped command sync (recommended during setup) |
+| `DISCORD_CLEAR_GLOBAL_COMMANDS` | — | `0` | Set to `1` once to remove stale global slash commands, then back to `0` |
+| `BGA_POLL_SECONDS` | — | `15` | Seconds between monitor scheduler ticks |
+| `BGA_DB_PATH` | — | `bga_bot.db` | SQLite database file path |
+| `BGA_WS_URL` | — | `wss://ws-x1.boardgamearena.com/connection/websocket` | Public BGA websocket URL |
+| `BGA_ENABLE_TABLEINFOS_FALLBACK` | — | `0` | Re-enables the legacy HTTP fallback for end-of-game detection |
+| `BGA_RECRUITING_ONLY` | — | `0` | Only post the recruiting embed; auto-unwatch when the game starts |
+| `BGA_DELETE_INVITE_MESSAGE` | — | `0` | Delete the original link message after registering the watch |
+| `BGA_FORCED_CHANNEL_ID` | — | — | Force all bot notifications into one specific channel |
+| `LOG_LEVEL` | — | `INFO` | Console log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `BOT_LANG` | — | `EN` | Bot message language (`EN` or `FR`) |
+| `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
+| `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
+| `DASHBOARD_BASE_URL` | — | `http://localhost:8080` | Public base URL for dashboard OAuth2 redirect (must be HTTPS in production) |
+| `DISCORD_CLIENT_ID` | — | — | Discord OAuth2 client ID (required when dashboard is enabled) |
+| `DISCORD_CLIENT_SECRET` | — | — | Discord OAuth2 client secret (required when dashboard is enabled) |
+| `DASHBOARD_SECRET_KEY` | — | — | Random secret for dashboard auth state validation (required when dashboard is enabled) |
+
+---
+
+### Step 5 — Run the bot
 
 #### Recommended
 
@@ -245,412 +217,209 @@ bga-turn-bot
 python bot.py
 ```
 
-If `DISCORD_GUILD_ID` is set, slash commands are synced to that guild. Otherwise, they are synced globally, which may take longer.
+If `DISCORD_GUILD_ID` is set, slash commands are synced to that guild. Otherwise, they are synced globally (may take up to an hour to appear).
 
-If you previously used global slash commands and now see duplicates together with guild-scoped commands, set `DISCORD_CLEAR_GLOBAL_COMMANDS=1` for one startup, let the bot delete the stale global commands, then set it back to `0`.
+If you previously used global slash commands and now see duplicates, set `DISCORD_CLEAR_GLOBAL_COMMANDS=1` for one startup, then set it back to `0`.
 
-On startup, the bot now prints a ready-to-use Discord invite URL in the logs with the permissions it needs.
+---
 
-If you want the bot to auto-watch tables from posted BGA links in chat, also enable the **Message Content Intent** for the bot in the Discord Developer Portal.
+### Docker deployment details
+
+The project ships with a `Dockerfile` and a `docker-compose.yml` for a single-container deployment:
+
+- `restart: unless-stopped` — auto-starts with Docker and restarts on crash.
+- `init: true` — correct signal forwarding and zombie-process reaping.
+- The SQLite database is stored in a named volume `bga_data` (mounted at `/data`). You do **not** need to set `BGA_DB_PATH` in `.env`; the image defaults to `/data/bga_bot.db`.
+
+---
 
 ### License
 
 This repository is distributed under the MIT license. See `LICENSE`.
 
-### SQLite database
+## 2. How the bot works
 
-The project uses SQLite with 3 useful tables.
+### Automatic link detection (primary feature)
 
-#### `users`
+The bot listens for messages in all channels it can see. When a message contains a BGA table URL (e.g. `https://boardgamearena.com/...?table=12345`), the bot:
 
-Maps a Discord member to a BGA player.
+1. Extracts the table ID from the URL.
+2. Anonymously fetches the public table page to identify the game.
+3. Opens a public websocket connection to the BGA table.
+4. Posts a status message in the same channel and keeps it updated.
 
-A link can be partial:
-- `bga_player_id` can be empty
-- `bga_player_name` can be empty
-- logically, at least one of them must be provided
+This requires the **Message Content Intent** to be enabled in the Discord Developer Portal (see Step 1).
 
-Main columns:
-- `discord_user_id`
-- `bga_player_id`
-- `bga_player_name`
+### One message per table, three lifecycle states
 
-#### `watch_subscriptions`
+For each watched table the bot maintains exactly one Discord message and updates it in place as the game progresses:
 
-Describes watched tables per guild/channel.
+- **State 1 — Recruiting**: shows game name, players who have joined, open seats, and a **Join** button. A **Link your BGA & Discord** button lets any server member self-link their account.
+- **State 2 — In Progress**: shows whose turn it is. If that player is linked to a Discord account, they are @mentioned.
+- **State 3 — Finished**: shows the final result (winner or standings when available). The watch is automatically removed.
 
-Main columns:
-- `subscription_id`
-- `table_id`
-- `table_url`
-- `guild_id`
-- `channel_id`
-- `created_by_discord_user_id`
+### Self-service player linking
 
-#### `watch_states`
+Players can link themselves without an admin by clicking the **Link your BGA & Discord** button on any recruiting message. A modal appears asking for their BGA username or numeric player ID.
 
-Stores the last known state for a watch.
+### Player link enrichment
 
-Main columns:
-- `subscription_id`
-- `last_packet_id`
-- `last_waiting_ids`
-- `last_player_names`
-- `is_initialized`
-- `game_name`
+When the bot sees a player act on a watched table it automatically fills in any missing BGA name or ID for linked Discord members. You can link someone with just a name or just an ID, and the bot completes the other field over time.
 
-## 2. Discord commands
+## 3. Discord commands
 
 All commands are under the `/bga` group.
 
 ### `/bga link-member`
 
-Manually link a Discord member to a BGA player.
-
-Syntax:
+Manually link a Discord member to a BGA player. Requires `Manage Server` or `Administrator`.
 
 ```text
 /bga link-member @Member Haurrus 91713763
 ```
 
-or
-
-```text
-/bga link-member @Member Haurrus
-```
-
-or
-
-```text
-/bga link-member @Member "" 91713763
-```
-
-Usage:
-- requires `Manage Server` or `Administrator`
-- stores the `Discord -> BGA` mapping
-- accepts a partial link: name only, ID only, or both
-- the bot fills the missing field automatically when it recognizes the player on a watched table
-- used later for Discord mentions in turn messages
+- `bga_player_name` and `bga_player_id` are both optional — provide at least one.
+- The BGA player ID is the number in the BGA profile URL: `https://boardgamearena.com/player?id=91713763` → ID is `91713763`.
+- If only the name is provided, the bot fills in the ID automatically the first time it sees that player act on a watched table.
 
 ### `/bga unlink-member`
 
-Remove the BGA link for a Discord member.
-
-Syntax:
+Remove the BGA link for a Discord member. Requires `Manage Server` or `Administrator`.
 
 ```text
 /bga unlink-member @Member
 ```
 
-### `/bga help`
-
-Show what the bot does and how to use it.
-
-Syntax:
-
-```text
-/bga help
-```
-
-Rules:
-- the reply is ephemeral: only the caller sees it, and it can be dismissed. Nothing is posted in the channel
-- it is sent as an embed rather than plain content, because the help text is longer than Discord's 2000-character message limit (an embed description holds 4096)
-- the text follows `BOT_LANG` like every other message
-
-### `/bga linked`
-
-Show all Discord members currently linked to a BGA ID.
-
-Syntax:
-
-```text
-/bga linked
-```
-
-### `/bga watch`
-
-Add a public BGA table to watch in the current channel.
-
-Syntax:
-
-```text
-/bga watch https://en.boardgamearena.com/15/sevenwondersdice?table=827248309
-/bga watch https://en.boardgamearena.com/tableview?table=827248309
-/bga watch 827248309
-```
-
-Rules:
-- the command accepts the full in-game URL, a `tableview`/`table` link, or just the table id
-- for a `tableview`/`table` link or a bare id, the bot resolves the game server and game name anonymously (tableview page -> `requestToken` -> `tableinfos`)
-- the watch is attached to the current guild and channel
-- the websocket worker starts immediately after the command, without waiting for the next scheduler cycle
-
-### `/bga follow-tables`
-
-Toggle automatic watching of every table a linked member plays on, in the current channel.
-
-Syntax:
-
-```text
-/bga follow-tables @Member
-```
-
-Rules:
-- the command is a toggle: the first call enables the follow, the next call on the same member in the same channel disables it. The reply always states the resulting state
-- the member must be linked **and have a BGA ID** (`/bga link-member`). Linked by name only is not enough, because the table list is keyed on the numeric id. The reply says so explicitly; the id also auto-completes on its own once the member is seen on a watched table
-- on enable, every ongoing table of that player is watched right away, exactly as if `/bga watch` had been run on each one
-- afterwards the bot re-scans the player every 3 minutes and watches any new table automatically
-- the follow is per guild and per channel, like the BGA links themselves: following the same member from two channels watches their tables in both (and notifies in both)
-- disabling the follow does **not** unwatch tables already watched; remove them with `/bga unwatch` / `/bga unwatch-all`
-- a table that ends is auto-unwatched as usual, and is not re-watched by the follow
-- unlinking the member with `/bga unlink-member` also removes their follows on that server
-- fully anonymous: the bot reads `playertables?player=<id>` -> `requestToken` -> `tablemanager/tableinfos` with `playerfilter=<id>`, which is readable without an account
-
-### `/bga unwatch`
-
-Remove a watch for the table in the current channel.
-
-Syntax:
-
-```text
-/bga unwatch 827248309
-```
-
-or
-
-```text
-/bga unwatch https://en.boardgamearena.com/15/sevenwondersdice?table=827248309
-```
-
-### `/bga unwatch-all`
-
-Remove all watches from the current server.
-
-Syntax:
-
-```text
-/bga unwatch-all
-```
-
-Usage:
-- requires `Manage Server` or `Administrator`
-- useful to reset everything cleanly
-
-### `/bga watchlist`
-
-Show all watched tables on the current server.
-
-Syntax:
-
-```text
-/bga watchlist
-```
-
 ### `/bga status`
 
-Show the last known state of watched tables on the current server.
-
-Syntax:
+Show the last known state of all watched tables on the current server (ephemeral — only visible to you).
 
 ```text
 /bga status
 ```
 
-Displays, among other things:
-- table
-- channel
-- known `waiting_ids`
-- interpreted state
+Displays for each watch: the table ID, game name, channel, whose turn it is (BGA player IDs), and the interpreted state.
 
-### Full setup example
+### `/bga settings`
 
-1. Link a Discord player to a BGA ID:
+View or change server-wide bot settings. Requires `Manage Server` or `Administrator`.
+
+Run with no arguments to see current settings:
 
 ```text
-/bga link-member @MrHaurrus Haurrus 91713763
+/bga settings
 ```
 
-2. Add a table to watch:
+| Option | Type | Description |
+|---|---|---|
+| `recruiting_only` | bool | Only post the recruiting embed; auto-unwatch when the game moves to in-progress |
+| `delete_invite_message` | bool | Delete the original message containing a BGA link after the watch is registered (requires Manage Messages) |
+| `forced_channel` | channel | Route all bot notifications into this channel, regardless of where links are posted |
+| `clear_forced_channel` | bool | Remove the forced channel setting |
+
+Examples:
 
 ```text
-/bga watch https://en.boardgamearena.com/6/perfectwords?table=827318521
+/bga settings recruiting_only:True
+/bga settings delete_invite_message:True forced_channel:#bga-notifications
+/bga settings clear_forced_channel:True
 ```
 
-3. Check watched tables:
+## 4. Full setup walkthrough
+
+### Minimal — just auto-watch links
+
+1. Create the Discord bot, enable Message Content Intent, invite it to your server (see [Setup](#1-setup)).
+2. Configure `.env` with `DISCORD_TOKEN` and optionally `DISCORD_GUILD_ID`.
+3. Start the bot with `python -m bga_turn` (or Docker).
+4. Post a BGA game link in any channel the bot can see. The bot starts watching it automatically.
+
+### With player mentions
+
+1. Complete the steps above.
+2. Link Discord members to their BGA accounts:
+   ```text
+   /bga link-member @MrHaurrus Haurrus 91713763
+   ```
+   Or let players self-link by clicking the **Link your BGA & Discord** button on the recruiting message.
+3. From now on, when it is a linked player's turn, the bot @mentions them in the status message.
+
+### With a dedicated notifications channel
+
+If you want all game notifications in one place (e.g. `#bga-notifications`) regardless of where links are posted:
 
 ```text
-/bga watchlist
+/bga settings forced_channel:#bga-notifications
 ```
 
-4. Check the current state:
+## 5. Optional web dashboard
 
-```text
-/bga status
+The bot includes an optional web dashboard that lets server admins manage settings through a browser interface with Discord OAuth2 login.
+
+### Enable the dashboard
+
+Add the following to your `.env`:
+
+```env
+DASHBOARD_ENABLED=1
+DASHBOARD_PORT=8080
+DASHBOARD_BASE_URL=https://your-domain.com   # must be HTTPS in production
+DISCORD_CLIENT_ID=your_discord_app_client_id
+DISCORD_CLIENT_SECRET=your_discord_app_client_secret
+DASHBOARD_SECRET_KEY=your_random_secret      # python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-## 3. Technical overview
+To get `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`:
+1. Open your application in the [Discord Developer Portal](https://discord.com/developers/applications).
+2. The **Client ID** is shown on the **General Information** page.
+3. Go to **OAuth2** and generate or copy the **Client Secret**.
+4. Under **OAuth2 → Redirects**, add `https://your-domain.com/auth/callback`.
 
-### High-level view
+The dashboard is then accessible at `http://localhost:8080` (or your configured base URL).
 
-The bot has 3 layers:
-- Discord: slash commands and message publishing
-- SQLite: persistence for links and watches
-- Public BGA: table page bootstrap + public websocket connection
+## 6. Technical overview
+
+### High-level architecture
+
+The bot has three layers:
+- **Discord** — slash commands, message events, and message publishing
+- **SQLite** — persistence for player links, watches, and guild settings
+- **BGA public API** — anonymous table page bootstrap and public websocket connection
 
 ### BGA network flow
 
-The bot does not use cookies, browser sessions, or BGA login.
+The bot does not use cookies, browser sessions, or a BGA account.
 
-The network flow is the following.
+1. **Load the public table page** — downloads the table URL and extracts: anonymous spectator identity (`user_id`, `archivemask`), known player names from the HTML bootstrap, and the initial game state when available.
 
-#### 1. Load the public table page
+2. **Open the public websocket** (`wss://ws-x1.boardgamearena.com/connection/websocket`) — replays the BGA/Centrifugo handshake (`connect`, `subscribe bgamsg`, `subscribe /table/t<TABLE_ID>`, etc.).
 
-The bot downloads the public table URL, for example:
+3. **Interpret events** — reconstructs `waiting_ids` from websocket events in priority order: `gameStateMultipleActiveUpdate`, `gameStateChange.active_player`, `yourturnack`, then limited public heuristics. Detects game-over from `tableInfosChanged` status or `tableDestroy` signals.
 
-```text
-https://en.boardgamearena.com/6/perfectwords?table=827318521
-```
+### Project structure
 
-From that HTML it extracts:
-- anonymous spectator identity
-  - `user_id`
-  - `current_player_name`
-  - `archivemask`, reused as websocket `credentials`
-- known player names from the HTML bootstrap
-- the initial game state when available
-  - especially `gamestate.active_player` for single-active-player games
-
-#### 2. Open the public websocket
-
-The bot then opens the public BGA websocket:
-
-```text
-wss://ws-x1.boardgamearena.com/connection/websocket
-```
-
-It replays the BGA/Centrifugo handshake:
-- `connect`
-- `subscribe bgamsg`
-- `subscribe /general/emergency`
-- `subscribe /player/p<visitor_id>`
-- `subscribe /table/t<TABLE_ID>`
-- `presence /table/t<TABLE_ID>`
-
-#### 3. Interpret events
-
-The bot reconstructs `waiting_ids` with this priority order:
-
-1. `gameStateMultipleActiveUpdate`
-2. `gameStateChange.active_player` for single-active-player games
-3. `yourturnack` as a light fallback
-4. limited public heuristics on some events (`beginTurn`, `endPrivateAction`, etc.)
-
-To detect that a game is finished, the bot also uses:
-
-1. `tableInfosChanged` with `status = finished`
-2. `tableInfosChanged.reload_reason = tableDestroy`
-3. end-of-game events visible in the public stream (`End of game`, `simpleNote`, `simpleNode`)
-
-By default, the bot does not use `tableinfos.html` as an end-of-game fallback anymore, because this public endpoint is inconsistent without an authenticated BGA session. If you want to restore that legacy behavior, set `BGA_ENABLE_TABLEINFOS_FALLBACK=1`.
-
-#### 4. Single-active vs multi-active games
-
-The behavior is designed not to break multi-active games.
-
-- If the public page exposes a `gamestate` of type `activeplayer`, the bot can initialize `waiting_ids` immediately from `active_player`.
-- If the public page exposes a `multipleactiveplayer` state, the bot does not invent anything from HTML bootstrap and waits for websocket events, especially `gameStateMultipleActiveUpdate`.
-
-In practice:
-- `Perfectwords` benefits from HTML bootstrap immediately
-- `Seven Wonders Dice` is still driven mainly by `gameStateMultipleActiveUpdate`
-
-### Discord message behavior
-
-For each watched table:
-- **State 1 — Recruiting**: the bot posts/updates one embed with game identity, joined players, seats, and a join button
-- **State 2 — In progress**: the same message is updated live with current waiting players and Discord mentions when linked
-- **State 3 — Finished**: the same message is updated to a final summary (winner / standings when available)
-- after State 3 is posted, the watch is automatically removed
-
-On bot startup:
-- it removes old bot messages linked to each watched table in the channel
-- then republishes a clean current state
-
-This cleanup is targeted:
-- only bot messages containing `Table : <table_id>` are removed
-- the rest of the channel is untouched
-
-### Python architecture
-
-#### `src/bga_turn/app.py`
-
-Responsibilities:
-- load `.env`
-- initialize logging
-- open the SQLite database
-- instantiate `BgaClient`
-- instantiate `BgaMonitor`
-- start the Discord bot
-- sync slash commands
-
-#### `bot.py`
-
-Responsibilities:
-- act as an optional development launcher from the repository root
-- add `src/` to `sys.path`
-- forward execution to the packaged application in `src/bga_turn`
-
-#### `src/bga_turn/commands_bga.py`
-
-Responsibilities:
-- expose `/bga` commands
-- validate Discord permissions
-- parse table URLs
-- store watches and Discord/BGA links
-- support partial links and automatic enrichment
-- trigger an immediate monitor refresh after `/bga watch`, `/bga follow-tables`, `/bga unwatch`, and `/bga unwatch-all`
-
-#### `src/bga_turn/database.py`
-
-Responsibilities:
-- create and migrate the SQLite database
-- read and write user mappings
-- read and write watches
-- store the last known state per watch
-
-#### `src/bga_turn/bga_client.py`
-
-Responsibilities:
-- download the public table page
-- extract useful HTML bootstrap data
-- open and maintain the public BGA websocket connection
-- parse websocket messages
-- detect end-of-game transitions from the websocket
-- optionally use `tableinfos.html` as a legacy fallback when explicitly enabled
-- produce `BgaNotificationState` objects
-
-#### `src/bga_turn/monitor.py`
-
-Responsibilities:
-- start one websocket worker per watched table
-- compare old and new states
-- drive one-way lifecycle transitions (recruiting → in progress → finished)
-- update a single persisted Discord message per watch across restarts
-- clean old messages on startup
-- publish a final summary and remove the watch when a game is over
-
-#### `src/bga_turn/utils.py`
-
-Responsibilities:
-- parse BGA URLs
-- JSON helpers
-- small formatting and utility helpers
+| Path | Purpose |
+|---|---|
+| `Dockerfile` | Single-container image for Docker deployment |
+| `docker-compose.yml` | Compose service with auto-restart and persistent data volume |
+| `bot.py` | Optional development launcher from the repository root |
+| `src/bga_turn/app.py` | Application entry point, environment loading, bot startup |
+| `src/bga_turn/commands_bga.py` | `/bga` slash commands and the `on_message` link detector |
+| `src/bga_turn/bga_client.py` | Public BGA networking, HTML parsing, websocket handling |
+| `src/bga_turn/monitor.py` | Watch loop, Discord message lifecycle, followed-player sync |
+| `src/bga_turn/database.py` | SQLite persistence |
+| `src/bga_turn/dashboard.py` | Optional aiohttp web dashboard |
+| `src/bga_turn/models.py` | Domain dataclasses |
+| `src/bga_turn/utils.py` | URL parsing, JSON helpers, small utilities |
+| `src/bga_turn/schema.sql` | Packaged SQLite schema |
+| `pyproject.toml` | Package metadata and console entry point |
+| `.env.example` | Local configuration example |
 
 ### Important notes and limits
 
-- the bot only works for BGA tables publicly accessible in spectator mode
-- the bot is self-hosted: it must keep running on your machine to keep watching tables
-- Discord voice warnings (`PyNaCl`, `davey`) are not relevant for this project
-- without the **Message Content Intent**, slash commands still work but automatic watching from posted BGA links stays disabled
-- displayed game names come from the BGA slug or public bootstrap, so they are not always perfectly formatted
-- the project currently ships without a unit test suite; validation is kept lightweight through packaging and compilation checks
+- The bot only works for BGA tables publicly accessible in spectator mode.
+- The bot is self-hosted — it must keep running on your machine to keep watching tables.
+- The **Message Content Intent** must be enabled in the Discord Developer Portal for automatic link detection to work.
+- Without that intent, no links are detected and no tables are auto-watched (the bot starts but does nothing until a table is manually registered through the database).
+- Displayed game names come from the BGA slug or public bootstrap and are not always perfectly formatted.
+- The project ships without a unit test suite; validation is kept lightweight through packaging and compilation checks.
