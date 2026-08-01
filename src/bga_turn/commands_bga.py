@@ -96,11 +96,11 @@ class BgaCommands(commands.Cog):
             )
             await self.monitor.refresh_now()
             if guild_settings.delete_invite_message and await self.monitor.wait_for_active_messages(
-            registered_subscriptions
+                registered_subscriptions
             ):
-            try:
-                await message.delete()
-                LOGGER.info(
+                try:
+                    await message.delete()
+                    LOGGER.info(
                         tr(
                             "trigger_message_deleted",
                             channel_id=message.channel.id,
