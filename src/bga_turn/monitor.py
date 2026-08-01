@@ -27,6 +27,7 @@ class ActiveTableMessage:
     message: discord.Message
     kind: str
     waiting_ids: list[str]
+    payload_signature: str | None = None
 
 
 @dataclass(slots=True)
@@ -1067,6 +1068,22 @@ class BgaMonitor:
         if not self._is_supported_message_channel(channel):
             return
 
+        payload_signature = self._build_lifecycle_payload_signature(
+            lifecycle_state=lifecycle_state,
+            table_id=table_id,
+            subscription=subscription,
+            waiting_ids=waiting_ids,
+            player_names=player_names,
+            snapshot=snapshot,
+        )
+        active_message = self._active_messages.get(subscription.subscription_id)
+        if (
+            active_message is not None
+            and active_message.kind == lifecycle_state
+            and active_message.payload_signature == payload_signature
+        ):
+            return
+
         message = await self._resolve_tracked_message(subscription, channel)
         layout_view = await self._build_lifecycle_message_payload(
             lifecycle_state=lifecycle_state,
@@ -1163,6 +1180,7 @@ class BgaMonitor:
             message=message,
             kind=lifecycle_state,
             waiting_ids=list(waiting_ids),
+            payload_signature=payload_signature,
         )
         self.database.update_watch_message_tracking(
             subscription_id=subscription.subscription_id,
@@ -1199,6 +1217,42 @@ class BgaMonitor:
             waiting_ids=list(subscription.last_waiting_ids),
         )
         return message
+
+    def _build_lifecycle_payload_signature(
+        self,
+        *,
+        lifecycle_state: str,
+        table_id: str,
+        subscription: WatchSubscription,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        snapshot: BgaTableSnapshot | None,
+    ) -> str:
+        snapshot_player_avatars = () if snapshot is None else tuple(sorted(snapshot.player_avatars.items()))
+        snapshot_winner_names = () if snapshot is None else tuple(snapshot.winner_names)
+        snapshot_final_standings = () if snapshot is None else tuple(snapshot.final_standings)
+        signature = (
+            lifecycle_state,
+            table_id,
+            subscription.game_name or "",
+            subscription.table_url or "",
+            tuple(waiting_ids),
+            tuple(sorted(player_names.items())),
+            self._cover_image_urls.get(table_id) or "",
+            "" if snapshot is None else snapshot.game_name,
+            "" if snapshot is None else snapshot.status,
+            "" if snapshot is None else (snapshot.table_url or ""),
+            "" if snapshot is None else (snapshot.cover_image_url or ""),
+            0 if snapshot is None else snapshot.seats_taken,
+            None if snapshot is None else snapshot.seats_total,
+            None if snapshot is None else snapshot.seats_remaining,
+            snapshot_player_avatars,
+            snapshot_winner_names,
+            snapshot_final_standings,
+            "" if snapshot is None else (snapshot.finished_at or ""),
+            "" if snapshot is None else (snapshot.finish_reason or ""),
+        )
+        return repr(signature)
 
     async def _build_lifecycle_message_payload(
         self,
