@@ -817,6 +817,8 @@ class BgaMonitor:
         active_message: ActiveTableMessage,
         table_id: str,
     ) -> bool:
+        if not self._discord_io_allowed():
+            return False
         channel = await self._resolve_channel(subscription, table_id)
         if not self._is_supported_message_channel(channel):
             return False
@@ -923,7 +925,10 @@ class BgaMonitor:
         immediately so callers can handle them normally.
         """
         for attempt in range(1, max_retries + 2):
-            if channel_id is not None and attempt == 1:
+            # Record a slot (and wait if the channel bucket is full) on every
+            # attempt, including retries, so the proactive queue correctly
+            # accounts for all API calls made against each channel.
+            if channel_id is not None:
                 await self._wait_for_discord_channel_slot(
                     channel_id=channel_id,
                     operation=operation,
@@ -948,6 +953,12 @@ class BgaMonitor:
                     # Not a rate-limit error; let it propagate.
                     raise
 
+                # Broadcast the rate-limit window immediately so all other
+                # concurrent workers stop issuing Discord calls while we wait.
+                broadcast_until = time.monotonic() + retry_after
+                if broadcast_until > self._discord_rate_limit_until:
+                    self._discord_rate_limit_until = broadcast_until
+
                 if attempt > max_retries:
                     LOGGER.warning(
                         tr(
@@ -956,10 +967,11 @@ class BgaMonitor:
                             table_id=table_id,
                         )
                     )
-                    # Record a Discord I/O pause so the main loop can skip the
-                    # next tick(s) while rate-limiting persists.
-                    pause = min(self._discord_rl_backoff, 60.0)
-                    self._discord_rate_limit_until = time.monotonic() + pause
+                    # Extend the I/O pause to at least retry_after so a brief
+                    # Discord window doesn't cause an immediate re-flood.
+                    extended_until = time.monotonic() + max(retry_after, min(self._discord_rl_backoff, 60.0))
+                    if extended_until > self._discord_rate_limit_until:
+                        self._discord_rate_limit_until = extended_until
                     self._discord_rl_backoff = min(self._discord_rl_backoff * 2, 60.0)
                     return None
 
@@ -1200,7 +1212,11 @@ class BgaMonitor:
         if subscription.tracked_message_id is None:
             return None
         try:
-            message = await channel.fetch_message(subscription.tracked_message_id)
+            message = await self._discord_call_with_retry(
+                "fetch_tracked_message",
+                "?",
+                lambda mid=subscription.tracked_message_id: channel.fetch_message(mid),
+            )
         except discord.NotFound:
             self.database.update_watch_message_tracking(
                 subscription_id=subscription.subscription_id,
@@ -1210,6 +1226,9 @@ class BgaMonitor:
             )
             return None
         except discord.DiscordException:
+            return None
+        if message is None:
+            # Rate-limit retries exhausted; caller will re-attempt next tick.
             return None
         self._active_messages[subscription.subscription_id] = ActiveTableMessage(
             message=message,
@@ -1600,6 +1619,8 @@ class BgaMonitor:
     ) -> None:
         if self.bot.user is None:
             return
+        if not self._discord_io_allowed():
+            return
 
         seen_channels: set[str] = set()
         deleted_count = 0
@@ -1850,6 +1871,8 @@ class BgaMonitor:
         channel_id = guild_settings.forced_channel_id or subscription.channel_id
         channel = self.bot.get_channel(int(channel_id))
         if channel is None:
+            if not self._discord_io_allowed():
+                return None
             try:
                 channel = await self.bot.fetch_channel(int(channel_id))
             except discord.DiscordException as exc:
@@ -1896,6 +1919,34 @@ class BgaMonitor:
     @staticmethod
     def _is_supported_message_channel(channel: object | None) -> bool:
         return isinstance(channel, (discord.TextChannel, discord.Thread))
+
+    async def delete_discord_message(
+        self,
+        message: discord.Message,
+        *,
+        operation: str = "delete",
+    ) -> bool:
+        """Delete *message* via the rate-limit-aware retry wrapper.
+
+        Returns ``True`` if the message was deleted (or was already gone),
+        ``False`` if rate-limit retries were exhausted or Discord I/O is
+        currently paused.
+        """
+        if not self._discord_io_allowed():
+            return False
+        try:
+            result = await self._discord_call_with_retry(
+                operation,
+                "?",
+                lambda: message.delete(),
+                channel_id=str(message.channel.id),
+                operation_kind="delete",
+            )
+            return result is not None
+        except discord.NotFound:
+            return True
+        except discord.DiscordException:
+            return False
 
     async def _clear_active_invite_messages(
         self,
