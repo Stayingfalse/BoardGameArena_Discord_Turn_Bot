@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import logging
 import random
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord.components import MediaGalleryItem
@@ -153,6 +155,11 @@ class BgaMonitor:
     # can still list it as being played for a short while. Without this cooldown the
     # next follow scan would re-watch it and republish a turn message for a dead game.
     _FINISHED_TABLE_COOLDOWN_SECONDS = 3600.0
+    _DISCORD_WRITE_THRESHOLD = 5
+    _DISCORD_WRITE_WINDOW_SECONDS = 5.0
+    _DISCORD_OLD_EDIT_THRESHOLD = 3
+    _DISCORD_OLD_EDIT_WINDOW_SECONDS = 6.0
+    _DISCORD_OLD_EDIT_AGE = timedelta(hours=1)
 
     def __init__(
         self,
@@ -178,6 +185,8 @@ class BgaMonitor:
         self._cover_image_urls: dict[str, str] = {}
         # Tracks per-table effective poll/backoff seconds for observability.
         self._table_backoff_seconds: dict[str, float] = {}
+        self._discord_channel_locks: dict[str, asyncio.Lock] = {}
+        self._discord_channel_requests: dict[tuple[str, str], deque[float]] = {}
         # Monotonic timestamp before which Discord I/O should be skipped due to
         # rate-limiting. Zero means no active pause.
         self._discord_rate_limit_until: float = 0.0
@@ -201,6 +210,8 @@ class BgaMonitor:
         self._recently_finished_tables.clear()
         self._cover_image_urls.clear()
         self._table_backoff_seconds.clear()
+        self._discord_channel_locks.clear()
+        self._discord_channel_requests.clear()
         self._discord_rate_limit_until = 0.0
         self._discord_rl_backoff = 5.0
 
@@ -237,6 +248,8 @@ class BgaMonitor:
                             "delete_orphan",
                             "?",
                             lambda msg=active_message.message: msg.delete(),
+                            channel_id=str(active_message.message.channel.id),
+                            operation_kind="delete",
                         )
                         if result is None:
                             LOGGER.error(
@@ -734,6 +747,8 @@ class BgaMonitor:
             "send_turn",
             table_id,
             lambda: channel.send(content),
+            channel_id=str(channel.id),
+            operation_kind="send",
         )
         if message is not None:
             LOGGER.info(tr("notification_sent", table_id=table_id, waiting_ids=waiting_ids))
@@ -779,6 +794,9 @@ class BgaMonitor:
                 "edit_turn",
                 table_id,
                 lambda: message.edit(content=content),
+                channel_id=str(channel.id),
+                operation_kind="edit",
+                message_created_at=message.created_at,
             )
             if result is None:
                 return False
@@ -808,6 +826,8 @@ class BgaMonitor:
                 "delete_message",
                 table_id,
                 lambda: message.delete(),
+                channel_id=str(channel.id),
+                operation_kind="delete",
             )
             if result is None:
                 # Retries exhausted — treat as a failed delete.
@@ -886,19 +906,29 @@ class BgaMonitor:
         coro_factory,
         *,
         max_retries: int = 3,
+        channel_id: str | None = None,
+        operation_kind: str = "send",
+        message_created_at: datetime | None = None,
     ):
         """Call a Discord coroutine, retrying on HTTP 429 rate-limit responses.
 
         *coro_factory* must be a zero-argument callable that returns a fresh
         coroutine each time it is called (awaitables cannot be re-awaited).
 
-        On a rate-limit response the helper sleeps for the ``retry_after`` value
-        advertised by Discord plus a small random jitter, then retries up to
-        *max_retries* times.  If retries are exhausted it logs a warning, records
-        a Discord I/O pause and returns ``None``.  All other exceptions are
-        re-raised immediately so callers can handle them normally.
+        Calls are proactively queued per channel to reduce rate-limit hits before
+        they happen, then retried on 429 responses using Discord's ``retry_after``
+        value plus jitter. If retries are exhausted it logs a warning, records a
+        Discord I/O pause and returns ``None``. All other exceptions are re-raised
+        immediately so callers can handle them normally.
         """
         for attempt in range(1, max_retries + 2):
+            if channel_id is not None:
+                await self._wait_for_discord_channel_slot(
+                    channel_id=channel_id,
+                    operation=operation,
+                    operation_kind=operation_kind,
+                    message_created_at=message_created_at,
+                )
             try:
                 result = await coro_factory()
                 # Successful call — reset the Discord backoff.
@@ -945,6 +975,72 @@ class BgaMonitor:
                 )
                 await asyncio.sleep(sleep_for)
 
+    async def _wait_for_discord_channel_slot(
+        self,
+        *,
+        channel_id: str,
+        operation: str,
+        operation_kind: str,
+        message_created_at: datetime | None,
+    ) -> None:
+        lock = self._discord_channel_locks.setdefault(channel_id, asyncio.Lock())
+        while True:
+            sleep_for: float | None = None
+            async with lock:
+                now = time.monotonic()
+                bucket_limits: list[tuple[str, int, float]] = [
+                    (
+                        "write",
+                        self._DISCORD_WRITE_THRESHOLD,
+                        self._DISCORD_WRITE_WINDOW_SECONDS,
+                    )
+                ]
+                if (
+                    operation_kind == "edit"
+                    and message_created_at is not None
+                    and self._is_old_discord_message(message_created_at)
+                ):
+                    bucket_limits.append(
+                        (
+                            "edit_old",
+                            self._DISCORD_OLD_EDIT_THRESHOLD,
+                            self._DISCORD_OLD_EDIT_WINDOW_SECONDS,
+                        )
+                    )
+
+                waits: list[float] = []
+                for bucket_name, threshold, window_seconds in bucket_limits:
+                    bucket_key = (channel_id, bucket_name)
+                    attempts = self._discord_channel_requests.setdefault(bucket_key, deque())
+                    while attempts and now - attempts[0] >= window_seconds:
+                        attempts.popleft()
+                    if len(attempts) >= threshold:
+                        waits.append(window_seconds - (now - attempts[0]))
+
+                if not waits:
+                    for bucket_name, _threshold, _window_seconds in bucket_limits:
+                        self._discord_channel_requests[(channel_id, bucket_name)].append(now)
+                    return
+
+                sleep_for = max(waits) + random.uniform(0.05, 0.20)
+
+            if sleep_for is None:
+                return
+            LOGGER.debug(
+                tr(
+                    "discord_queue_wait",
+                    operation=operation,
+                    channel_id=channel_id,
+                    wait=sleep_for,
+                )
+            )
+            await asyncio.sleep(sleep_for)
+
+    @classmethod
+    def _is_old_discord_message(cls, created_at: datetime) -> bool:
+        normalized = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - normalized) >= cls._DISCORD_OLD_EDIT_AGE
+
     def _discord_io_allowed(self) -> bool:
         """Return ``True`` unless Discord I/O is currently paused due to rate-limiting."""
         now = time.monotonic()
@@ -986,6 +1082,8 @@ class BgaMonitor:
                 "send_lifecycle",
                 table_id,
                 lambda: channel.send(view=layout_view),
+                channel_id=str(channel.id),
+                operation_kind="send",
             )
             if sent is None:
                 LOGGER.error(
@@ -1004,6 +1102,9 @@ class BgaMonitor:
                     "edit_lifecycle",
                     table_id,
                     lambda: message.edit(view=layout_view),
+                    channel_id=str(channel.id),
+                    operation_kind="edit",
+                    message_created_at=message.created_at,
                 )
                 if edited is None:
                     return
@@ -1030,7 +1131,13 @@ class BgaMonitor:
                     LOGGER.error(tr("turn_message_update_failed", table_id=table_id, error=exc))
                     return
                 try:
-                    await message.delete()
+                    await self._discord_call_with_retry(
+                        "delete_legacy_lifecycle",
+                        table_id,
+                        lambda: message.delete(),
+                        channel_id=str(channel.id),
+                        operation_kind="delete",
+                    )
                 except discord.DiscordException:
                     pass
                 self.database.update_watch_message_tracking(
@@ -1380,6 +1487,8 @@ class BgaMonitor:
             "send_invite",
             table_id,
             lambda: channel.send(view=embed),
+            channel_id=str(channel.id),
+            operation_kind="send",
         )
         if message is not None:
             LOGGER.info(tr("invite_message_sent", table_id=table_id))
@@ -1415,6 +1524,9 @@ class BgaMonitor:
                 "edit_invite",
                 table_id,
                 lambda: active_message.message.edit(view=layout),
+                channel_id=str(channel.id),
+                operation_kind="edit",
+                message_created_at=active_message.message.created_at,
             )
             if result is None:
                 return False
@@ -1459,8 +1571,15 @@ class BgaMonitor:
                     if not self._message_contains_table_marker(message, table_markers):
                         continue
                     try:
-                        await message.delete()
-                        deleted_count += 1
+                        deleted = await self._discord_call_with_retry(
+                            "cleanup_stale",
+                            table_id,
+                            lambda msg=message: msg.delete(),
+                            channel_id=str(channel.id),
+                            operation_kind="delete",
+                        )
+                        if deleted is not None:
+                            deleted_count += 1
                     except discord.NotFound:
                         continue
                     except discord.DiscordException as exc:
