@@ -585,6 +585,8 @@ async def _dashboard_index(request: web.Request) -> web.Response:
 
     bot: BgaDiscordBot = request.app["bot"]
     database: Database = request.app["database"]
+    client_id: str = request.app["client_id"]
+    base_url: str = request.app["base_url"]
 
     # Guilds where the user has MANAGE_GUILD and bot is present
     bot_guild_ids = {str(g.id) for g in bot.guilds}
@@ -595,12 +597,21 @@ async def _dashboard_index(request: web.Request) -> web.Response:
         if (int(g.get("permissions", 0)) & _MANAGE_GUILD) and g["id"] in bot_guild_ids
     ]
 
+    # Guilds where the user has MANAGE_GUILD but the bot is NOT yet installed
+    unenrolled_managed_guilds = [
+        g for g in user_guilds
+        if (int(g.get("permissions", 0)) & _MANAGE_GUILD) and g["id"] not in bot_guild_ids
+    ]
+
+    add_bot_url = _build_add_bot_url(client_id, base_url) if client_id else "#"
+
     if not managed_guilds:
-        body = """
+        add_btn = f'<a class="btn btn-primary" href="{html.escape(add_bot_url)}">➕ Add to Server</a>'
+        body = f"""
 <div class="section-title">Your Servers</div>
-<p class="empty">No servers found where you have <strong>Manage Server</strong> permission
+<p style="color:#b0b0c0">No servers found where you have <strong>Manage Server</strong> permission
 and the bot is installed.<br><br>
-<a href="/" class="btn btn-primary">Add the bot to a server</a></p>
+{add_btn}</p>
 """
         return web.Response(
             text=_page("Dashboard", body, session=session),
@@ -629,7 +640,11 @@ and the bot is installed.<br><br>
   </div>
 </div>""")
 
-    body = f'<div class="section-title">Your Servers</div>' + "".join(cards)
+    add_another_btn = ""
+    if unenrolled_managed_guilds:
+        add_another_btn = f'<div style="margin-top:16px"><a class="btn btn-primary" href="{html.escape(add_bot_url)}">➕ Add another Server</a></div>'
+
+    body = f'<div class="section-title">Your Servers</div>' + "".join(cards) + add_another_btn
     return web.Response(
         text=_page("Dashboard", body, session=session),
         content_type="text/html",
