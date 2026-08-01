@@ -16,12 +16,9 @@ POST /dashboard/{guild_id}/settings  Save per-guild settings.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import html
-import json
 import logging
-import time
+import secrets
 import urllib.parse
 from typing import TYPE_CHECKING
 
@@ -42,6 +39,7 @@ _OAUTH2_AUTH_URL = "https://discord.com/oauth2/authorize"
 
 _COOKIE_NAME = "bga_session"
 _COOKIE_MAX_AGE = 86400  # 1 day
+_AUTH_MAX_ATTEMPTS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -49,51 +47,111 @@ _COOKIE_MAX_AGE = 86400  # 1 day
 # ---------------------------------------------------------------------------
 
 
-def _sign(payload: str, secret: str) -> str:
-    return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-
-
-def _encode_session(data: dict, secret: str) -> str:
-    payload = json.dumps(data, separators=(",", ":"))
-    b64 = urllib.parse.quote(payload)
-    sig = _sign(b64, secret)
-    return f"{b64}.{sig}"
-
-
-def _decode_session(cookie: str, secret: str) -> dict | None:
-    if "." not in cookie:
-        return None
-    b64, sig = cookie.rsplit(".", 1)
-    expected = _sign(b64, secret)
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        return json.loads(urllib.parse.unquote(b64))
-    except Exception:
-        return None
-
-
-def _get_session(request: web.Request) -> dict | None:
-    secret: str = request.app["secret_key"]
-    if not secret:
-        return None
-    cookie = request.cookies.get(_COOKIE_NAME)
-    if not cookie:
-        return None
-    return _decode_session(cookie, secret)
-
-
-def _set_session(response: web.Response, data: dict, secret: str, *, secure: bool = False) -> None:
-    value = _encode_session(data, secret)
+def _set_session_cookie(response: web.Response, session_id: str, *, secure: bool) -> None:
     response.set_cookie(
         _COOKIE_NAME,
-        value,
+        session_id,
         path="/",
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
         samesite="Lax",
         secure=secure,
     )
+
+
+def _get_session(request: web.Request) -> tuple[dict[str, object] | None, str | None]:
+    cookie = request.cookies.get(_COOKIE_NAME, "")
+    if not cookie:
+        return None, "missing_session_cookie"
+    if len(cookie) < 24:
+        return None, "invalid_session_cookie"
+    database: Database = request.app["database"]
+    session = database.get_dashboard_session(cookie)
+    if session is None:
+        return None, "session_missing_or_expired"
+    return session, None
+
+
+def _safe_login_attempt(raw: str) -> int:
+    try:
+        return max(0, min(10, int(raw)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sanitize_next_path(raw: str) -> str:
+    candidate = (raw or "").strip()
+    if not candidate or not candidate.startswith("/") or candidate.startswith("//"):
+        return "/dashboard"
+    parsed = urllib.parse.urlsplit(candidate)
+    if parsed.scheme or parsed.netloc:
+        return "/dashboard"
+    return urllib.parse.urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
+def _append_query_value(path: str, key: str, value: str) -> str:
+    parsed = urllib.parse.urlsplit(path)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(item_key, item_value) for item_key, item_value in query if item_key != key]
+    query.append((key, value))
+    return urllib.parse.urlunsplit(("", "", parsed.path, urllib.parse.urlencode(query), ""))
+
+
+def _auth_error_page(
+    *,
+    session_reason: str,
+    next_path: str,
+    login_attempts: int,
+    session: dict | None = None,
+) -> str:
+    reason_text = {
+        "missing_session_cookie": "No dashboard session cookie was received.",
+        "invalid_session_cookie": "Dashboard session cookie format is invalid.",
+        "session_missing_or_expired": "Dashboard session cookie does not match a valid server session.",
+    }.get(session_reason, "Dashboard authentication state is invalid.")
+    body = f"""
+<div class="card">
+  <h3>⚠️ Dashboard login could not be completed</h3>
+  <p style="margin-top:10px">Reason: <code>{html.escape(reason_text)}</code></p>
+  <p style="margin-top:10px">The bot stopped redirecting automatically to prevent a login loop.</p>
+  <p style="margin-top:10px">Troubleshooting:</p>
+  <ul style="margin:8px 0 0 22px;color:#b0b0c0;line-height:1.5">
+    <li>Use an HTTPS public <code>DASHBOARD_BASE_URL</code> in production.</li>
+    <li>Confirm reverse proxy preserves <code>Set-Cookie</code> headers.</li>
+    <li>Confirm <code>DASHBOARD_SECRET_KEY</code>, <code>DISCORD_CLIENT_ID</code>, and <code>DISCORD_CLIENT_SECRET</code> are correct.</li>
+    <li>Clear old dashboard cookies and log in again.</li>
+  </ul>
+  <p style="margin-top:12px;color:#888">Target path: <code>{html.escape(next_path)}</code> · Redirect attempts: <code>{login_attempts}</code></p>
+  <p style="margin-top:14px"><a class="btn btn-primary" href="/auth/login?next={urllib.parse.quote(next_path, safe='/?=&')}">Try login again</a></p>
+</div>
+"""
+    return _page("Dashboard Login Error", body, session=session)
+
+
+def _raise_auth_redirect_or_error(request: web.Request, *, session_reason: str) -> None:
+    login_attempt = _safe_login_attempt(request.rel_url.query.get("login_attempt", "0"))
+    auth_result = request.rel_url.query.get("auth_result") == "1"
+    next_path = _sanitize_next_path(request.path_qs)
+    if auth_result or login_attempt >= _AUTH_MAX_ATTEMPTS:
+        raise web.HTTPUnauthorized(
+            text=_auth_error_page(
+                session_reason=session_reason,
+                next_path=next_path,
+                login_attempts=login_attempt,
+            ),
+            content_type="text/html",
+        )
+    next_attempt = login_attempt + 1
+    login_target = (
+        "/auth/login?"
+        + urllib.parse.urlencode(
+            {
+                "next": next_path,
+                "login_attempt": str(next_attempt),
+            }
+        )
+    )
+    raise web.HTTPFound(location=login_target)
 
 
 def _build_add_bot_url(client_id: str, base_url: str) -> str:
@@ -236,7 +294,7 @@ def _page(title: str, body: str, *, session: dict | None = None) -> str:
 
 
 async def _index(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session, _ = _get_session(request)
     database: Database = request.app["database"]
     client_id: str = request.app["client_id"]
     base_url: str = request.app["base_url"]
@@ -299,18 +357,38 @@ async def _auth_login(request: web.Request) -> web.Response:
     client_id: str = request.app["client_id"]
     base_url: str = request.app["base_url"]
     secret: str = request.app["secret_key"]
+    secure_cookie: bool = request.app["cookie_secure"]
 
     if not client_id or not secret:
         raise web.HTTPServiceUnavailable(reason="OAuth2 not configured (DISCORD_CLIENT_ID / DASHBOARD_SECRET_KEY missing).")
 
-    state = hmac.new(secret.encode(), str(time.time()).encode(), hashlib.sha256).hexdigest()[:16]
+    state = secrets.token_urlsafe(24)
+    next_path = _sanitize_next_path(request.rel_url.query.get("next", "/dashboard"))
+    login_attempt = _safe_login_attempt(request.rel_url.query.get("login_attempt", "0"))
     redirect_uri = f"{base_url}/auth/callback"
     url = _build_oauth2_url(client_id, redirect_uri, state)
     response = web.HTTPFound(location=url)
-    secure_cookie = base_url.startswith("https://")
     response.set_cookie(
         "oauth_state",
         state,
+        path="/",
+        max_age=300,
+        httponly=True,
+        samesite="Lax",
+        secure=secure_cookie,
+    )
+    response.set_cookie(
+        "oauth_next",
+        next_path,
+        path="/",
+        max_age=300,
+        httponly=True,
+        samesite="Lax",
+        secure=secure_cookie,
+    )
+    response.set_cookie(
+        "oauth_login_attempt",
+        str(login_attempt),
         path="/",
         max_age=300,
         httponly=True,
@@ -326,11 +404,14 @@ async def _auth_callback(request: web.Request) -> web.Response:
     client_id: str = request.app["client_id"]
     client_secret: str = request.app["client_secret"]
     base_url: str = request.app["base_url"]
-    secret: str = request.app["secret_key"]
+    database: Database = request.app["database"]
+    secure_cookie: bool = request.app["cookie_secure"]
 
     code = request.rel_url.query.get("code", "")
     state = request.rel_url.query.get("state", "")
     expected_state = request.cookies.get("oauth_state", "")
+    next_path = _sanitize_next_path(request.cookies.get("oauth_next", "/dashboard"))
+    login_attempt = _safe_login_attempt(request.cookies.get("oauth_login_attempt", "0"))
 
     if not code or not state or state != expected_state:
         raise web.HTTPBadRequest(reason="Invalid OAuth2 state or missing code.")
@@ -378,17 +459,42 @@ async def _auth_callback(request: web.Request) -> web.Response:
         ],
     }
 
-    response = web.HTTPFound(location="/dashboard")
-    response.del_cookie("oauth_state", path="/")
-    base_url: str = request.app["base_url"]
-    _set_session(response, session_data, secret, secure=base_url.startswith("https://"))
+    session_id = secrets.token_urlsafe(32)
+    await asyncio.to_thread(
+        database.create_dashboard_session,
+        session_id=session_id,
+        user_id=str(session_data["user_id"]),
+        username=str(session_data["username"]),
+        avatar=(str(session_data["avatar"]) if session_data["avatar"] else None),
+        guilds=[
+            {
+                "id": str(g.get("id", "")),
+                "name": str(g.get("name", "")),
+                "icon": str(g.get("icon", "")),
+                "permissions": str(g.get("permissions", "0")),
+            }
+            for g in session_data["guilds"]
+            if isinstance(g, dict) and str(g.get("id", "")).strip()
+        ],
+        ttl_seconds=_COOKIE_MAX_AGE,
+    )
+    stored_session = await asyncio.to_thread(database.get_dashboard_session, session_id)
+    if stored_session is None:
+        raise web.HTTPInternalServerError(reason="Session could not be persisted.")
+
+    redirect_target = _append_query_value(next_path, "auth_result", "1")
+    response = web.HTTPFound(location=redirect_target)
+    response.del_cookie("oauth_state", path="/", secure=secure_cookie)
+    response.del_cookie("oauth_next", path="/", secure=secure_cookie)
+    response.del_cookie("oauth_login_attempt", path="/", secure=secure_cookie)
+    _set_session_cookie(response, session_id, secure=secure_cookie)
     raise response
 
 
 async def _dashboard_index(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session, session_reason = _get_session(request)
     if session is None:
-        raise web.HTTPFound(location="/auth/login")
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
 
     bot: BgaDiscordBot = request.app["bot"]
     database: Database = request.app["database"]
@@ -445,9 +551,9 @@ and the bot is installed.<br><br>
 
 
 async def _dashboard_guild(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session, session_reason = _get_session(request)
     if session is None:
-        raise web.HTTPFound(location="/auth/login")
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
 
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
@@ -530,9 +636,9 @@ async def _dashboard_guild(request: web.Request) -> web.Response:
 
 
 async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session, session_reason = _get_session(request)
     if session is None:
-        raise web.HTTPFound(location="/auth/login")
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
 
     guild_id = request.match_info["guild_id"]
     # Validate guild_id is a Discord snowflake before using in a redirect.
@@ -586,6 +692,7 @@ def create_dashboard_app(
     app["client_id"] = client_id
     app["client_secret"] = client_secret
     app["secret_key"] = secret_key
+    app["cookie_secure"] = urllib.parse.urlparse(base_url).scheme.lower() == "https"
 
     app.router.add_get("/", _index)
     app.router.add_get("/stats", _stats_json)

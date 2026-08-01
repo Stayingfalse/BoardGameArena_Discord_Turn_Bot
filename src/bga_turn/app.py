@@ -5,6 +5,7 @@ import logging
 import os
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands
@@ -34,6 +35,45 @@ def env_flag(name: str, *, default: bool = False) -> bool:
     if raw_value is None:
         return default
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_dashboard_config(
+    *,
+    dashboard_base_url: str,
+    client_id: str,
+    client_secret: str,
+    dashboard_secret_key: str,
+) -> str:
+    missing = [
+        name
+        for name, value in (
+            ("DISCORD_CLIENT_ID", client_id),
+            ("DISCORD_CLIENT_SECRET", client_secret),
+            ("DASHBOARD_SECRET_KEY", dashboard_secret_key),
+            ("DASHBOARD_BASE_URL", dashboard_base_url),
+        )
+        if not value.strip()
+    ]
+    if missing:
+        raise RuntimeError(
+            "Dashboard enabled but missing required environment variables: "
+            + ", ".join(missing)
+        )
+
+    parsed = urlparse(dashboard_base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("DASHBOARD_BASE_URL must be an absolute http(s) URL with host.")
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        raise RuntimeError("DASHBOARD_BASE_URL must not include path, params, query, or fragment.")
+
+    host = (parsed.hostname or "").lower()
+    is_local_http = parsed.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"}
+    if parsed.scheme != "https" and not is_local_http:
+        raise RuntimeError(
+            "DASHBOARD_BASE_URL must use HTTPS for non-local deployments so auth cookies are secure."
+        )
+
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
 class BgaDiscordBot(commands.Bot):
@@ -211,6 +251,13 @@ def main() -> None:
     client_id = os.getenv("DISCORD_CLIENT_ID", "")
     client_secret = os.getenv("DISCORD_CLIENT_SECRET", "")
     dashboard_secret_key = os.getenv("DASHBOARD_SECRET_KEY", "")
+    if dashboard_enabled:
+        dashboard_base_url = _validate_dashboard_config(
+            dashboard_base_url=dashboard_base_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            dashboard_secret_key=dashboard_secret_key,
+        )
 
     database = Database(db_path=db_path, schema_sql=schema_sql)
     database.initialize()
