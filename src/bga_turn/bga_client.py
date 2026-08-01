@@ -40,6 +40,18 @@ class BgaPlayerNotFoundError(BgaClientError):
     pass
 
 
+class BgaRateLimitError(BgaClientError):
+    """Raised when BGA responds with HTTP 429.
+
+    ``retry_after`` is the number of seconds to wait before retrying, parsed
+    from the ``Retry-After`` response header (defaulting to 60 if absent).
+    """
+
+    def __init__(self, message: str, retry_after: int = 60) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 @dataclass(frozen=True)
 class SpectatorBootstrap:
     user_id: str
@@ -247,6 +259,7 @@ class BgaClient:
                 tr("error_load_public_page", table_url=tableview_url, error=exc)
             ) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaNotPublicError(tr("error_public_page_http", status_code=response.status_code))
 
@@ -297,6 +310,7 @@ class BgaClient:
         except requests.RequestException as exc:
             raise BgaClientError(tr("error_load_public_page", table_url=page_url, error=exc)) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
 
@@ -367,6 +381,7 @@ class BgaClient:
                 tr("error_load_player_tables", player_id=player_id, error=exc)
             ) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaClientError(
                 tr("error_player_tables_http", status_code=response.status_code, player_id=player_id)
@@ -440,6 +455,7 @@ class BgaClient:
                 tr("error_load_public_page", table_url=tableview_url, error=exc)
             ) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
 
@@ -466,6 +482,7 @@ class BgaClient:
                 tr("error_load_public_page", table_url=table_info.table_url, error=exc)
             ) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
 
@@ -485,6 +502,25 @@ class BgaClient:
     def _http_post(self, url: str, **kwargs: Any) -> requests.Response:
         with self._http_lock:
             return self._http.post(url, **kwargs)
+
+    @staticmethod
+    def _raise_for_bga_status(response: requests.Response) -> None:
+        """Raise ``BgaRateLimitError`` if BGA responded with HTTP 429.
+
+        All other error status codes are left to the individual callsite to
+        handle so that they can raise the correct exception subtype
+        (``BgaNotPublicError``, ``BgaTableUnavailableError``, etc.).
+        """
+        if response.status_code == 429:
+            raw = response.headers.get("Retry-After", "")
+            try:
+                retry_after = max(1, int(raw))
+            except (ValueError, TypeError):
+                retry_after = 60
+            raise BgaRateLimitError(
+                tr("bga_rate_limited", table_id="?", retry_after=retry_after),
+                retry_after=retry_after,
+            )
 
     def _fetch_tableinfos_with_token(
         self, *, table_id: str, base_url: str, html: str
@@ -528,6 +564,7 @@ class BgaClient:
         except requests.RequestException as exc:
             raise BgaClientError(tr("error_load_tableinfos", table_id=table_id, error=exc)) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaClientError(
                 tr("error_tableinfos_http", status_code=response.status_code, table_id=table_id)
@@ -816,6 +853,7 @@ class BgaClient:
                 tr("error_load_public_page", table_url=table_info.table_url, error=exc)
             ) from exc
 
+        self._raise_for_bga_status(response)
         if response.status_code >= 400:
             raise BgaNotPublicError(tr("error_public_page_http", status_code=response.status_code))
 
