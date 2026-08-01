@@ -702,7 +702,7 @@ class BgaMonitor:
         game_label: str,
     ) -> bool:
         channel = await self._resolve_channel(subscription, table_id)
-        if channel is None or not isinstance(channel, discord.TextChannel):
+        if not self._is_supported_message_channel(channel):
             return False
 
         message = active_message.message
@@ -733,7 +733,7 @@ class BgaMonitor:
         table_id: str,
     ) -> bool:
         channel = await self._resolve_channel(subscription, table_id)
-        if channel is None or not isinstance(channel, discord.TextChannel):
+        if not self._is_supported_message_channel(channel):
             return False
 
         message = active_message.message
@@ -809,7 +809,7 @@ class BgaMonitor:
         snapshot: BgaTableSnapshot | None,
     ) -> None:
         channel = await self._resolve_channel(subscription, table_id)
-        if channel is None or not isinstance(channel, discord.TextChannel):
+        if not self._is_supported_message_channel(channel):
             return
 
         message = await self._resolve_tracked_message(subscription, channel)
@@ -898,7 +898,7 @@ class BgaMonitor:
     async def _resolve_tracked_message(
         self,
         subscription: WatchSubscription,
-        channel: discord.TextChannel,
+        channel: discord.TextChannel | discord.Thread,
     ) -> discord.Message | None:
         active = self._active_messages.get(subscription.subscription_id)
         if active is not None:
@@ -1228,7 +1228,7 @@ class BgaMonitor:
         snapshot: BgaTableSnapshot,
     ) -> bool:
         channel = await self._resolve_channel(subscription, table_id)
-        if channel is None or not isinstance(channel, discord.TextChannel):
+        if not self._is_supported_message_channel(channel):
             return False
 
         layout = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
@@ -1516,6 +1516,29 @@ class BgaMonitor:
             )
             return None
         return channel
+
+    async def wait_for_active_messages(
+        self,
+        subscription_ids: list[int],
+        *,
+        timeout_seconds: float = 20.0,
+        poll_seconds: float = 0.5,
+    ) -> bool:
+        pending = set(subscription_ids)
+        if not pending:
+            return False
+
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            if any(subscription_id in self._active_messages for subscription_id in pending):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(max(0.1, poll_seconds))
+
+    @staticmethod
+    def _is_supported_message_channel(channel: object | None) -> bool:
+        return isinstance(channel, (discord.TextChannel, discord.Thread))
 
     async def _clear_active_invite_messages(
         self,

@@ -61,10 +61,10 @@ class BgaCommands(commands.Cog):
         if not table_references:
             return
 
-        registered_any = False
+        registered_subscriptions: list[int] = []
         for table_reference in table_references:
             try:
-                await self._register_watch(
+                registration = await self._register_watch(
                     guild_id=str(message.guild.id),
                     channel_id=str(message.channel.id),
                     created_by_discord_user_id=str(message.author.id),
@@ -80,9 +80,9 @@ class BgaCommands(commands.Cog):
                     )
                 )
                 continue
-            registered_any = True
+            registered_subscriptions.append(registration.subscription.subscription_id)
 
-        if registered_any:
+        if registered_subscriptions:
             LOGGER.info(
                 tr(
                     "auto_watch_registered",
@@ -94,10 +94,13 @@ class BgaCommands(commands.Cog):
                 str(message.guild.id),
                 default_delete_invite_message=self._default_delete_invite_message,
             )
-            if guild_settings.delete_invite_message:
-                try:
-                    await message.delete()
-                    LOGGER.info(
+            await self.monitor.refresh_now()
+            if guild_settings.delete_invite_message and await self.monitor.wait_for_active_messages(
+            registered_subscriptions
+            ):
+            try:
+                await message.delete()
+                LOGGER.info(
                         tr(
                             "trigger_message_deleted",
                             channel_id=message.channel.id,
@@ -114,7 +117,14 @@ class BgaCommands(commands.Cog):
                             error=exc,
                         )
                     )
-            await self.monitor.refresh_now()
+            elif guild_settings.delete_invite_message:
+                LOGGER.info(
+                    tr(
+                        "trigger_message_delete_skipped_no_replacement",
+                        channel_id=message.channel.id,
+                        guild_id=message.guild.id,
+                    )
+                )
 
     @staticmethod
     def _flatten_command_options(options: list[dict] | None) -> list[str]:

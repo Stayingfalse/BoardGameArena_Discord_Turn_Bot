@@ -951,6 +951,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Failed to delete triggering BGA invite message in channel {channel_id}: {error}",
         "FR": "Echec de suppression du message d'invitation BGA declencheur dans le salon {channel_id}: {error}",
     },
+    "trigger_message_delete_skipped_no_replacement": {
+        "EN": "Skipped deleting triggering BGA invite message in channel {channel_id} (guild {guild_id}) because no replacement message was posted yet.",
+        "FR": "Suppression du message d'invitation BGA declencheur ignoree dans le salon {channel_id} (serveur {guild_id}) car aucun message de remplacement n'a encore ete publie.",
+    },
     "command_settings_description": {
         "EN": "Show or update per-server bot settings",
         "FR": "Afficher ou modifier les reglages du bot pour ce serveur",
