@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ import discord
 from discord.components import MediaGalleryItem
 from discord.ext import tasks
 
-from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaTableUnavailableError
+from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaTableUnavailableError
 from .database import Database
 from .i18n import tr
 from .models import BgaTableInfo, BgaTableSnapshot, LinkedUser, WatchSubscription
@@ -175,6 +176,13 @@ class BgaMonitor:
         self._last_follow_sync_at: dict[tuple[str, str, str], float] = {}
         self._recently_finished_tables: dict[str, float] = {}
         self._cover_image_urls: dict[str, str] = {}
+        # Tracks per-table effective poll/backoff seconds for observability.
+        self._table_backoff_seconds: dict[str, float] = {}
+        # Monotonic timestamp before which Discord I/O should be skipped due to
+        # rate-limiting. Zero means no active pause.
+        self._discord_rate_limit_until: float = 0.0
+        # Exponential backoff for Discord rate-limit pauses (seconds).
+        self._discord_rl_backoff: float = 5.0
         self.sync_tables.change_interval(seconds=self._poll_seconds)
 
     def start(self) -> None:
@@ -192,6 +200,17 @@ class BgaMonitor:
         self._last_follow_sync_at.clear()
         self._recently_finished_tables.clear()
         self._cover_image_urls.clear()
+        self._table_backoff_seconds.clear()
+        self._discord_rate_limit_until = 0.0
+        self._discord_rl_backoff = 5.0
+
+    def get_effective_poll_seconds(self, table_id: str) -> float:
+        """Return the current effective poll interval for *table_id*.
+
+        Equals the configured ``_poll_seconds`` floor when the table is healthy,
+        or a larger backoff value while the worker is recovering from errors.
+        """
+        return self._table_backoff_seconds.get(table_id, float(self._poll_seconds))
 
     @tasks.loop(seconds=30)
     async def sync_tables(self) -> None:
@@ -214,14 +233,28 @@ class BgaMonitor:
                 active_message = self._active_messages.pop(subscription_id, None)
                 if active_message is not None:
                     try:
-                        await active_message.message.delete()
-                        LOGGER.info(
-                            tr(
-                                "orphan_watch_message_deleted",
-                                subscription_id=subscription_id,
-                                message_kind=active_message.kind,
-                            )
+                        result = await self._discord_call_with_retry(
+                            "delete_orphan",
+                            "?",
+                            lambda msg=active_message.message: msg.delete(),
                         )
+                        if result is None:
+                            LOGGER.error(
+                                tr(
+                                    "orphan_watch_message_delete_failed",
+                                    subscription_id=subscription_id,
+                                    message_kind=active_message.kind,
+                                    error="rate-limit retries exhausted",
+                                )
+                            )
+                        else:
+                            LOGGER.info(
+                                tr(
+                                    "orphan_watch_message_deleted",
+                                    subscription_id=subscription_id,
+                                    message_kind=active_message.kind,
+                                )
+                            )
                     except discord.NotFound:
                         pass
                     except discord.DiscordException as exc:
@@ -370,7 +403,7 @@ class BgaMonitor:
         return True
 
     async def _run_table_worker(self, table_id: str) -> None:
-        backoff_seconds = 5
+        backoff_seconds = 5.0
         while True:
             try:
                 subscriptions = self._subscriptions_for_table(table_id)
@@ -393,7 +426,9 @@ class BgaMonitor:
                     return
                 if not snapshot.can_watch_turns:
                     await self._apply_invite_state(table_id, subscriptions, snapshot)
-                    backoff_seconds = 5
+                    # Decay backoff toward the configured poll interval on success.
+                    backoff_seconds = max(self._poll_seconds, backoff_seconds / 2)
+                    self._table_backoff_seconds[table_id] = backoff_seconds
                     await asyncio.sleep(self._poll_seconds)
                     continue
 
@@ -408,6 +443,10 @@ class BgaMonitor:
                 known_player_names = self._merge_player_names(subscriptions)
                 known_player_names.update(snapshot.player_names)
 
+                # Successful snapshot fetch — decay backoff toward configured floor.
+                backoff_seconds = max(self._poll_seconds, backoff_seconds / 2)
+                self._table_backoff_seconds[table_id] = backoff_seconds
+
                 async for state in self.bga_client.watch_table(
                     table_info,
                     current_waiting_ids=current_waiting_ids,
@@ -417,7 +456,6 @@ class BgaMonitor:
                     known_player_names.update(state.player_names)
                     await self._apply_table_state(table_id, reference.game_name or "unknown", state)
 
-                backoff_seconds = 5
             except asyncio.CancelledError:
                 raise
             except BgaTableUnavailableError as exc:
@@ -427,19 +465,32 @@ class BgaMonitor:
                     await self._finalize_finished_table(subscriptions, table_id)
                 else:
                     self._table_tasks.pop(table_id, None)
+                self._table_backoff_seconds.pop(table_id, None)
                 return
+            except BgaRateLimitError as exc:
+                # BGA asked us to back off for a specific duration; honour it
+                # exactly and do not penalise the backoff multiplier.
+                wait = min(exc.retry_after, 120)
+                LOGGER.warning(
+                    tr("bga_rate_limited", table_id=table_id, retry_after=wait)
+                )
+                self._table_backoff_seconds[table_id] = float(wait)
+                await asyncio.sleep(wait)
             except BgaNotPublicError as exc:
                 LOGGER.warning(tr("table_not_public", table_id=table_id, error=exc))
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
+                self._table_backoff_seconds[table_id] = backoff_seconds
             except BgaClientError as exc:
                 LOGGER.error(tr("websocket_error", table_id=table_id, error=exc))
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
+                self._table_backoff_seconds[table_id] = backoff_seconds
             except Exception:
                 LOGGER.exception(tr("unexpected_worker_error", table_id=table_id))
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
+                self._table_backoff_seconds[table_id] = backoff_seconds
 
     async def _apply_table_state(self, table_id: str, fallback_game_name: str, state) -> None:
         subscriptions = self._subscriptions_for_table(table_id)
@@ -664,6 +715,9 @@ class BgaMonitor:
         player_names: dict[str, str],
         game_label: str,
     ) -> discord.Message | None:
+        if not self._discord_io_allowed():
+            return None
+
         channel = await self._resolve_channel(subscription, table_id)
         if channel is None:
             return None
@@ -676,20 +730,23 @@ class BgaMonitor:
             game_label=game_label,
         )
 
-        try:
-            message = await channel.send(content)
+        message = await self._discord_call_with_retry(
+            "send_turn",
+            table_id,
+            lambda: channel.send(content),
+        )
+        if message is not None:
             LOGGER.info(tr("notification_sent", table_id=table_id, waiting_ids=waiting_ids))
-            return message
-        except discord.DiscordException as exc:
+        else:
             LOGGER.error(
                 tr(
                     "notification_send_failed",
                     table_id=table_id,
                     channel_id=subscription.channel_id,
-                    error=exc,
+                    error="rate-limit retries exhausted",
                 )
             )
-            return None
+        return message
 
     async def _edit_turn_message(
         self,
@@ -701,6 +758,9 @@ class BgaMonitor:
         player_names: dict[str, str],
         game_label: str,
     ) -> bool:
+        if not self._discord_io_allowed():
+            return False
+
         channel = await self._resolve_channel(subscription, table_id)
         if not self._is_supported_message_channel(channel):
             return False
@@ -715,7 +775,13 @@ class BgaMonitor:
             game_label=game_label,
         )
         try:
-            await message.edit(content=content)
+            result = await self._discord_call_with_retry(
+                "edit_turn",
+                table_id,
+                lambda: message.edit(content=content),
+            )
+            if result is None:
+                return False
             LOGGER.info(tr("turn_message_updated", table_id=table_id, waiting_ids=waiting_ids))
             return True
         except discord.NotFound:
@@ -738,7 +804,22 @@ class BgaMonitor:
 
         message = active_message.message
         try:
-            await message.delete()
+            result = await self._discord_call_with_retry(
+                "delete_message",
+                table_id,
+                lambda: message.delete(),
+            )
+            if result is None:
+                # Retries exhausted — treat as a failed delete.
+                LOGGER.error(
+                    tr(
+                        "watch_message_delete_failed",
+                        table_id=table_id,
+                        message_kind=active_message.kind,
+                        error="rate-limit retries exhausted",
+                    )
+                )
+                return False
             LOGGER.info(
                 tr(
                     "watch_message_deleted",
@@ -798,6 +879,81 @@ class BgaMonitor:
                 snapshot=snapshot,
             )
 
+    async def _discord_call_with_retry(
+        self,
+        operation: str,
+        table_id: str,
+        coro_factory,
+        *,
+        max_retries: int = 3,
+    ):
+        """Call a Discord coroutine, retrying on HTTP 429 rate-limit responses.
+
+        *coro_factory* must be a zero-argument callable that returns a fresh
+        coroutine each time it is called (awaitables cannot be re-awaited).
+
+        On a rate-limit response the helper sleeps for the ``retry_after`` value
+        advertised by Discord plus a small random jitter, then retries up to
+        *max_retries* times.  If retries are exhausted it logs a warning, records
+        a Discord I/O pause and returns ``None``.  All other exceptions are
+        re-raised immediately so callers can handle them normally.
+        """
+        for attempt in range(1, max_retries + 2):
+            try:
+                result = await coro_factory()
+                # Successful call — reset the Discord backoff.
+                self._discord_rate_limit_until = 0.0
+                self._discord_rl_backoff = 5.0
+                return result
+            except (discord.RateLimited, discord.HTTPException) as exc:
+                retry_after: float | None = None
+                if isinstance(exc, discord.RateLimited):
+                    retry_after = exc.retry_after
+                elif isinstance(exc, discord.HTTPException) and exc.status == 429:
+                    # discord.py populates retry_after on HTTPException for 429s too.
+                    retry_after = getattr(exc, "retry_after", None)
+
+                if retry_after is None:
+                    # Not a rate-limit error; let it propagate.
+                    raise
+
+                if attempt > max_retries:
+                    LOGGER.warning(
+                        tr(
+                            "discord_rate_limit_exhausted",
+                            operation=operation,
+                            table_id=table_id,
+                        )
+                    )
+                    # Record a Discord I/O pause so the main loop can skip the
+                    # next tick(s) while rate-limiting persists.
+                    pause = min(self._discord_rl_backoff, 60.0)
+                    self._discord_rate_limit_until = time.monotonic() + pause
+                    self._discord_rl_backoff = min(self._discord_rl_backoff * 2, 60.0)
+                    return None
+
+                sleep_for = retry_after + random.uniform(0.1, 0.5)
+                LOGGER.debug(
+                    tr(
+                        "discord_rate_limited_retry",
+                        operation=operation,
+                        table_id=table_id,
+                        retry_after=sleep_for,
+                        attempt=attempt,
+                        max_retries=max_retries,
+                    )
+                )
+                await asyncio.sleep(sleep_for)
+
+    def _discord_io_allowed(self) -> bool:
+        """Return ``True`` unless Discord I/O is currently paused due to rate-limiting."""
+        now = time.monotonic()
+        if now >= self._discord_rate_limit_until:
+            return True
+        wait = self._discord_rate_limit_until - now
+        LOGGER.debug(tr("discord_io_paused", wait=wait))
+        return False
+
     async def _publish_or_update_lifecycle_message(
         self,
         *,
@@ -808,6 +964,9 @@ class BgaMonitor:
         player_names: dict[str, str],
         snapshot: BgaTableSnapshot | None,
     ) -> None:
+        if not self._discord_io_allowed():
+            return
+
         channel = await self._resolve_channel(subscription, table_id)
         if not self._is_supported_message_channel(channel):
             return
@@ -823,21 +982,31 @@ class BgaMonitor:
         )
 
         if message is None:
-            try:
-                message = await channel.send(view=layout_view)
-            except discord.DiscordException as exc:
+            sent = await self._discord_call_with_retry(
+                "send_lifecycle",
+                table_id,
+                lambda: channel.send(view=layout_view),
+            )
+            if sent is None:
                 LOGGER.error(
                     tr(
                         "notification_send_failed",
                         table_id=table_id,
                         channel_id=subscription.channel_id,
-                        error=exc,
+                        error="rate-limit retries exhausted",
                     )
                 )
                 return
+            message = sent
         else:
             try:
-                await message.edit(view=layout_view)
+                edited = await self._discord_call_with_retry(
+                    "edit_lifecycle",
+                    table_id,
+                    lambda: message.edit(view=layout_view),
+                )
+                if edited is None:
+                    return
             except discord.NotFound:
                 self.database.update_watch_message_tracking(
                     subscription_id=subscription.subscription_id,
@@ -1199,25 +1368,31 @@ class BgaMonitor:
         table_id: str,
         snapshot: BgaTableSnapshot,
     ) -> discord.Message | None:
+        if not self._discord_io_allowed():
+            return None
+
         channel = await self._resolve_channel(subscription, table_id)
         if channel is None:
             return None
 
         embed = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
-        try:
-            message = await channel.send(view=embed)
+        message = await self._discord_call_with_retry(
+            "send_invite",
+            table_id,
+            lambda: channel.send(view=embed),
+        )
+        if message is not None:
             LOGGER.info(tr("invite_message_sent", table_id=table_id))
-            return message
-        except discord.DiscordException as exc:
+        else:
             LOGGER.error(
                 tr(
                     "invite_message_send_failed",
                     table_id=table_id,
                     channel_id=subscription.channel_id,
-                    error=exc,
+                    error="rate-limit retries exhausted",
                 )
             )
-            return None
+        return message
 
     async def _edit_invite_message(
         self,
@@ -1227,13 +1402,22 @@ class BgaMonitor:
         table_id: str,
         snapshot: BgaTableSnapshot,
     ) -> bool:
+        if not self._discord_io_allowed():
+            return False
+
         channel = await self._resolve_channel(subscription, table_id)
         if not self._is_supported_message_channel(channel):
             return False
 
         layout = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
         try:
-            await active_message.message.edit(view=layout)
+            result = await self._discord_call_with_retry(
+                "edit_invite",
+                table_id,
+                lambda: active_message.message.edit(view=layout),
+            )
+            if result is None:
+                return False
             LOGGER.info(tr("invite_message_updated", table_id=table_id))
             return True
         except discord.NotFound:

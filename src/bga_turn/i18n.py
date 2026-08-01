@@ -1007,6 +1007,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "You need the **Manage Server** permission to change bot settings.",
         "FR": "Vous devez avoir la permission **Gérer le serveur** pour modifier les réglages du bot.",
     },
+    "discord_rate_limited_retry": {
+        "EN": "Discord rate-limited on {operation} for table {table_id}; retrying after {retry_after:.1f}s (attempt {attempt}/{max_retries}).",
+        "FR": "Discord a limite le taux sur {operation} pour la table {table_id} ; nouvel essai apres {retry_after:.1f}s (tentative {attempt}/{max_retries}).",
+    },
+    "discord_rate_limit_exhausted": {
+        "EN": "Discord rate-limit retries exhausted for {operation} on table {table_id}; dropping update.",
+        "FR": "Tentatives epuisees apres limitation Discord sur {operation} pour la table {table_id} ; mise a jour abandonnee.",
+    },
+    "bga_rate_limited": {
+        "EN": "BGA returned 429 for table {table_id}; waiting {retry_after}s before retry.",
+        "FR": "BGA a retourne 429 pour la table {table_id} ; attente de {retry_after}s avant nouvel essai.",
+    },
+    "discord_io_paused": {
+        "EN": "Discord I/O paused until rate-limit window clears ({wait:.1f}s remaining).",
+        "FR": "Les operations Discord sont en pause jusqu'a la fin de la fenetre de limitation ({wait:.1f}s restantes).",
+    },
 }
 
 
