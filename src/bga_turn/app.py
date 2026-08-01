@@ -83,7 +83,7 @@ class BgaDiscordBot(commands.Bot):
         database: Database,
         bga_client: BgaClient,
         poll_seconds: int,
-        dev_guild_id: int | None,
+        dev_guild_ids: list[int],
         clear_global_commands: bool,
         default_recruiting_only: bool = False,
         default_delete_invite_message: bool = False,
@@ -94,7 +94,7 @@ class BgaDiscordBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.database = database
         self.bga_client = bga_client
-        self.dev_guild_id = dev_guild_id
+        self.dev_guild_ids = dev_guild_ids
         self.clear_global_commands = clear_global_commands
         self.monitor = BgaMonitor(
             self,
@@ -133,17 +133,18 @@ class BgaDiscordBot(commands.Bot):
             return
 
         if self.clear_global_commands:
-            if self.dev_guild_id is None:
+            if not self.dev_guild_ids:
                 self.logger.info(tr("global_cleanup_skipped_no_guild"))
             else:
                 deleted_count = await self._clear_global_commands()
                 self.logger.info(tr("global_cleanup_done", count=deleted_count))
 
-        if self.dev_guild_id is not None:
-            guild = discord.Object(id=self.dev_guild_id)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            self.logger.info(tr("guild_sync", guild_id=self.dev_guild_id, count=len(synced)))
+        if self.dev_guild_ids:
+            for guild_id in self.dev_guild_ids:
+                guild = discord.Object(id=guild_id)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                self.logger.info(tr("guild_sync", guild_id=guild_id, count=len(synced)))
         else:
             synced = await self.tree.sync()
             self.logger.info(tr("global_sync", count=len(synced)))
@@ -237,7 +238,12 @@ def main() -> None:
         db_path = WORKDIR / db_path
     schema_sql = files("bga_turn").joinpath("schema.sql").read_text(encoding="utf-8")
     poll_seconds = int(os.getenv("BGA_POLL_SECONDS", "15"))
-    dev_guild_id = os.getenv("DISCORD_GUILD_ID")
+    dev_guild_id_raw = os.getenv("DISCORD_GUILD_ID")
+    dev_guild_ids = (
+        [int(x.strip()) for x in dev_guild_id_raw.split(",") if x.strip()]
+        if dev_guild_id_raw
+        else []
+    )
     clear_global_commands = env_flag("DISCORD_CLEAR_GLOBAL_COMMANDS")
     enable_tableinfos_fallback = env_flag("BGA_ENABLE_TABLEINFOS_FALLBACK")
     default_recruiting_only = env_flag("BGA_RECRUITING_ONLY")
@@ -271,7 +277,7 @@ def main() -> None:
         database=database,
         bga_client=bga_client,
         poll_seconds=poll_seconds,
-        dev_guild_id=int(dev_guild_id) if dev_guild_id else None,
+        dev_guild_ids=dev_guild_ids,
         clear_global_commands=clear_global_commands,
         default_recruiting_only=default_recruiting_only,
         default_delete_invite_message=default_delete_invite_message,

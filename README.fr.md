@@ -116,6 +116,8 @@ Renseigner `DISCORD_GUILD_ID` est optionnel mais fortement recommande pendant la
 3. Fais un clic droit sur l'icone ou le nom de ton serveur et clique **Copier l'ID du serveur**.
 4. Colle cette valeur dans `DISCORD_GUILD_ID=...` dans ton `.env`.
 
+Pour enregistrer les commandes sur plusieurs serveurs a la fois, renseigne `DISCORD_GUILD_ID` sous forme de liste d'IDs separes par des virgules (ex. `DISCORD_GUILD_ID=111222333,444555666`).
+
 ---
 
 ### Etape 4 — Configurer `.env`
@@ -177,7 +179,7 @@ DASHBOARD_SECRET_KEY=
 | Variable | Obligatoire | Defaut | Description |
 |---|---|---|---|
 | `DISCORD_TOKEN` | ✅ | — | Token du bot, onglet Bot du portail developpeur Discord |
-| `DISCORD_GUILD_ID` | — | — | ID du serveur pour une sync rapide des commandes (recommande pendant la config) |
+| `DISCORD_GUILD_ID` | — | — | ID(s) de serveur separes par des virgules pour une sync rapide des commandes (recommande pendant la config) |
 | `DISCORD_CLEAR_GLOBAL_COMMANDS` | — | `0` | Mettre a `1` une fois pour supprimer les slash commands globales obsoletes |
 | `BGA_POLL_SECONDS` | — | `15` | Secondes entre deux ticks du scheduler |
 | `BGA_DB_PATH` | — | `bga_bot.db` | Chemin du fichier SQLite |
@@ -217,7 +219,7 @@ bga-turn-bot
 python bot.py
 ```
 
-Si `DISCORD_GUILD_ID` est renseigne, les slash commands sont synchronisees sur ce serveur. Sinon, elles sont synchronisees globalement (peut prendre jusqu'a une heure pour apparaitre).
+Si `DISCORD_GUILD_ID` est renseigne (un seul ID ou une liste separee par des virgules), les slash commands sont synchronisees sur chacun de ces serveurs. Sinon, elles sont synchronisees globalement (peut prendre jusqu'a une heure pour apparaitre).
 
 Si des slash commands en double apparaissent, mets `DISCORD_CLEAR_GLOBAL_COMMANDS=1` le temps d'un demarrage, puis remets `0`.
 
