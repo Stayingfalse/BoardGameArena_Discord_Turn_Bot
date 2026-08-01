@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from .models import FollowedPlayer, GuildSettings, LinkedUser, WatchSubscription
@@ -202,6 +204,133 @@ class Database:
             if updated_count:
                 self._connection.commit()
         return updated_count
+
+    # ------------------------------------------------------------------
+    # Dashboard sessions
+    # ------------------------------------------------------------------
+
+    def create_dashboard_session(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        username: str,
+        avatar: str | None,
+        guilds: list[dict[str, str]],
+        ttl_seconds: int,
+    ) -> None:
+        now = utc_now_iso()
+        expires_at = int(time.time()) + max(1, ttl_seconds)
+        guilds_json = json_dumps(guilds)
+        with self._lock:
+            self._connection.execute(
+                """
+                INSERT INTO dashboard_sessions (
+                    session_id,
+                    user_id,
+                    username,
+                    avatar,
+                    guilds_json,
+                    expires_at,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    username = excluded.username,
+                    avatar = excluded.avatar,
+                    guilds_json = excluded.guilds_json,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, user_id, username, avatar, guilds_json, expires_at, now, now),
+            )
+            self._connection.execute(
+                "DELETE FROM dashboard_sessions WHERE expires_at <= ?",
+                (int(time.time()),),
+            )
+            self._connection.commit()
+
+    def get_dashboard_session(self, session_id: str) -> dict[str, object] | None:
+        now_ts = int(time.time())
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT session_id, user_id, username, avatar, guilds_json, expires_at
+                FROM dashboard_sessions
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if int(row["expires_at"]) <= now_ts:
+                self._connection.execute(
+                    "DELETE FROM dashboard_sessions WHERE session_id = ?",
+                    (session_id,),
+                )
+                self._connection.commit()
+                return None
+            self._connection.execute(
+                "UPDATE dashboard_sessions SET updated_at = ? WHERE session_id = ?",
+                (utc_now_iso(), session_id),
+            )
+            self._connection.commit()
+
+        return {
+            "session_id": str(row["session_id"]),
+            "user_id": str(row["user_id"]),
+            "username": str(row["username"]),
+            "avatar": (str(row["avatar"]) if row["avatar"] is not None else None),
+            "guilds": self._parse_dashboard_session_guilds(row["guilds_json"]),
+            "expires_at": int(row["expires_at"]),
+        }
+
+    def delete_dashboard_session(self, session_id: str) -> None:
+        with self._lock:
+            self._connection.execute(
+                "DELETE FROM dashboard_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            self._connection.commit()
+
+    def cleanup_expired_dashboard_sessions(self) -> int:
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM dashboard_sessions WHERE expires_at <= ?",
+                (int(time.time()),),
+            )
+            self._connection.commit()
+            return cursor.rowcount
+
+    def _parse_dashboard_session_guilds(self, raw: str | None) -> list[dict[str, str]]:
+        if not raw:
+            return []
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(value, list):
+            return []
+        result: list[dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            guild_id = str(item.get("id", "")).strip()
+            guild_name = str(item.get("name", "")).strip()
+            guild_icon = item.get("icon")
+            guild_permissions = str(item.get("permissions", "0")).strip() or "0"
+            if not guild_id:
+                continue
+            result.append(
+                {
+                    "id": guild_id,
+                    "name": guild_name,
+                    "icon": str(guild_icon) if guild_icon is not None else "",
+                    "permissions": guild_permissions,
+                }
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Per-guild settings
@@ -878,4 +1007,3 @@ class Database:
             tracked_message_id=int(row["tracked_message_id"]) if row["tracked_message_id"] else None,
             tracked_message_kind=row["tracked_message_kind"],
         )
-

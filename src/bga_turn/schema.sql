@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS watch_states (
     FOREIGN KEY (subscription_id) REFERENCES watch_subscriptions(subscription_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS dashboard_sessions (
+    session_id TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    avatar TEXT,
+    guilds_json TEXT NOT NULL DEFAULT '[]',
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Members whose BGA tables are watched automatically, per guild + channel.
 -- Deliberately carries no foreign key to `users`: this script runs before
 -- `_migrate_users_to_guild_scope`, which renames `users` away and drops it.
