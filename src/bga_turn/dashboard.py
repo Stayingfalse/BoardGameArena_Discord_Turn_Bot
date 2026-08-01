@@ -241,7 +241,28 @@ _CSS = """
   .feature{background:#16213e;border:1px solid #2c2c54;border-radius:10px;padding:20px}
   .feature h4{color:#fff;margin-bottom:8px}
   .feature p{font-size:.85rem;color:#888}
-  .empty{color:#888;font-style:italic;font-size:.9rem}
+  .discord-preview{margin:40px auto;max-width:760px}
+  .discord-preview h3{color:#fff;font-size:1rem;margin-bottom:16px;text-align:center;color:#888}
+  .discord-previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;margin:32px auto;max-width:860px}
+  .dc-msg{background:#2f3136;border-radius:8px;padding:0;overflow:hidden;border-left:4px solid #faa61a;font-family:'Segoe UI',Arial,sans-serif}
+  .dc-msg-header{background:#292b2f;padding:10px 14px;display:flex;align-items:center;gap:10px}
+  .dc-msg-avatar{width:32px;height:32px;border-radius:50%;background:#7289da;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
+  .dc-msg-meta{flex:1}
+  .dc-msg-author{font-size:.8rem;color:#fff;font-weight:600}
+  .dc-msg-tag{display:inline-block;background:#5865f2;color:#fff;font-size:.65rem;padding:1px 5px;border-radius:3px;margin-left:4px;vertical-align:middle}
+  .dc-msg-body{padding:14px}
+  .dc-section{margin-bottom:12px}
+  .dc-game-title{font-size:.95rem;font-weight:700;color:#fff}
+  .dc-subtitle{font-size:.8rem;color:#b9bbbe;margin-top:2px}
+  .dc-table-id{font-size:.8rem;color:#b9bbbe;margin-top:2px}
+  .dc-label{font-size:.75rem;font-weight:700;color:#fff;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.04em}
+  .dc-mention{background:#3c4270;color:#7289da;padding:0 3px;border-radius:3px;font-size:.85rem}
+  .dc-player{font-size:.85rem;color:#dcddde;margin:2px 0;display:flex;align-items:center;gap:5px}
+  .dc-seat{font-size:.8rem;color:#b9bbbe;margin-top:8px}
+  .dc-btn{display:inline-block;background:#4f545c;color:#fff;font-size:.8rem;padding:6px 14px;border-radius:4px;margin-top:10px;cursor:pointer;margin-right:8px}
+  .dc-btn-link{background:#2f3136;border:1px solid #4f545c}
+  .dc-thumb{float:right;width:60px;height:60px;border-radius:6px;object-fit:cover;background:#36393f;display:flex;align-items:center;justify-content:center;font-size:1.6rem;flex-shrink:0}
+  .dc-row{display:flex;align-items:flex-start;gap:10px}
 </style>
 """
 
@@ -306,8 +327,9 @@ async def _index(request: web.Request) -> web.Response:
 <div class="hero">
   <h2>🎲 BGA Turn Bot</h2>
   <p>
-    A self-hosted Discord bot that spectates public Board Game Arena tables and
-    pings players when it's their turn — no BGA account, no password, no cookie.
+    Share a Board Game Arena invite link in Discord — the bot instantly starts tracking the table,
+    posts live recruitment and turn updates, and @mentions players when it's their move.
+    No BGA account, no password, no manual setup.
   </p>
   {"" if not client_id else f'<a class="btn btn-primary" href="{html.escape(add_bot_url)}">➕ Add to Server</a>'}
   {"" if session else f'&nbsp; <a class="btn btn-secondary" href="/auth/login">Login to manage settings</a>'}
@@ -322,22 +344,87 @@ async def _index(request: web.Request) -> web.Response:
     <div class="label">Currently recruiting</div>
   </div>
 </div>
+
+<div class="discord-previews">
+  <div>
+    <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">📣 Recruiting — players join in Discord</p>
+    <div class="dc-msg">
+      <div class="dc-msg-header">
+        <div class="dc-msg-avatar">🎲</div>
+        <div class="dc-msg-meta">
+          <span class="dc-msg-author">BGA Bot</span>
+          <span class="dc-msg-tag">APP</span>
+        </div>
+      </div>
+      <div class="dc-msg-body">
+        <div class="dc-row">
+          <div style="flex:1">
+            <div class="dc-game-title">🎲 Carcassonne</div>
+            <div class="dc-table-id">Table: 891538070</div>
+            <div style="margin-top:8px"><span class="dc-btn">Join table ↗</span></div>
+          </div>
+          <div class="dc-thumb">🏰</div>
+        </div>
+        <div style="margin-top:14px">
+          <div class="dc-label">Players joined</div>
+          <div class="dc-player"><span class="dc-mention">@YourName</span> YourBGAName (12345678)</div>
+          <div class="dc-seat">🪑&nbsp; 1/5 joined — 4 seat(s) remaining · Status: asyncinit</div>
+        </div>
+        <div style="margin-top:10px"><span class="dc-btn dc-btn-link">🔗 Link your BGA &amp; Discord</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">🎯 In progress — turn updates automatically</p>
+    <div class="dc-msg">
+      <div class="dc-msg-header">
+        <div class="dc-msg-avatar">🎲</div>
+        <div class="dc-msg-meta">
+          <span class="dc-msg-author">BGA Bot</span>
+          <span class="dc-msg-tag">APP</span>
+        </div>
+      </div>
+      <div class="dc-msg-body">
+        <div class="dc-row">
+          <div style="flex:1">
+            <div class="dc-game-title">🎲 Carcassonne · 🎲 BGA Game in Progress</div>
+            <div class="dc-table-id">Table: 891538070</div>
+          </div>
+          <div class="dc-thumb">🏰</div>
+        </div>
+        <div style="margin-top:12px">
+          <div class="dc-label">🎯 Current turn</div>
+          <div class="dc-player"><span class="dc-mention">@YourName</span> YourBGAName (12345678)</div>
+        </div>
+        <div style="margin-top:10px">
+          <div class="dc-label">Players</div>
+          <div class="dc-player">🎲 YourBGAName</div>
+          <div class="dc-player">⏳ FriendBGAName</div>
+        </div>
+        <div style="margin-top:10px"><span class="dc-btn">Join table ↗</span></div>
+        <div style="margin-top:8px"><span class="dc-btn dc-btn-link">🔗 Link your BGA &amp; Discord</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="features">
   <div class="feature">
+    <h4>🔗 Auto-watch from invite links</h4>
+    <p>Just share a BGA table invite link in any channel — the bot detects it automatically and starts tracking the table. No slash commands needed.</p>
+  </div>
+  <div class="feature">
+    <h4>📣 Recruitment tracking</h4>
+    <p>Posts a live recruitment card showing how many seats are filled. Players can join directly from Discord before the game even starts.</p>
+  </div>
+  <div class="feature">
     <h4>🔔 Turn notifications</h4>
-    <p>Posts and updates a single Discord message per table as the active player changes.</p>
-  </div>
-  <div class="feature">
-    <h4>🔗 Discord ↔ BGA linking</h4>
-    <p>Members link their BGA account once and get @mentioned whenever it's their turn.</p>
-  </div>
-  <div class="feature">
-    <h4>👥 Player following</h4>
-    <p>Automatically watch every table a member joins, without adding each link by hand.</p>
+    <p>Posts and updates a single Discord message per table as the active player changes, with @mentions for linked members.</p>
   </div>
   <div class="feature">
     <h4>⚙️ Per-server settings</h4>
-    <p>Recruiting-only mode, forced notification channel, invite message deletion — all per guild.</p>
+    <p>Recruiting-only mode, forced notification channel, invite message deletion — all configurable per server.</p>
   </div>
 </div>
 """
@@ -536,8 +623,7 @@ and the bot is installed.<br><br>
       <h3><a href="/dashboard/{html.escape(guild_id)}">{html.escape(guild["name"])}</a></h3>
       <div class="card-stats">
         {stats["recruiting"]} recruiting &nbsp;·&nbsp;
-        {stats["total"]} total watched &nbsp;·&nbsp;
-        {stats["followed"]} followed players
+        {stats["total"]} total watched
       </div>
     </div>
   </div>
@@ -596,10 +682,6 @@ async def _dashboard_guild(request: web.Request) -> web.Response:
   <div class="stat-card">
     <div class="num">{stats["total"]}</div>
     <div class="label">Total watched</div>
-  </div>
-  <div class="stat-card">
-    <div class="num">{stats["followed"]}</div>
-    <div class="label">Followed players</div>
   </div>
 </div>
 <hr>
