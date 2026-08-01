@@ -1015,6 +1015,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Discord rate-limit retries exhausted for {operation} on table {table_id}; dropping update.",
         "FR": "Tentatives epuisees apres limitation Discord sur {operation} pour la table {table_id} ; mise a jour abandonnee.",
     },
+    "discord_queue_wait": {
+        "EN": "Discord queue delaying {operation} on channel {channel_id} for {wait:.2f}s to avoid hitting limits.",
+        "FR": "La file Discord retarde {operation} sur le salon {channel_id} pendant {wait:.2f}s pour eviter la limitation.",
+    },
     "bga_rate_limited": {
         "EN": "BGA returned 429 for table {table_id}; waiting {retry_after}s before retry.",
         "FR": "BGA a retourne 429 pour la table {table_id} ; attente de {retry_after}s avant nouvel essai.",
