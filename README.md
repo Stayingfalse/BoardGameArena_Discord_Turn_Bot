@@ -116,6 +116,8 @@ Setting `DISCORD_GUILD_ID` is optional but strongly recommended during initial s
 3. Right-click your server icon or name and click **Copy Server ID**.
 4. Paste that value into `DISCORD_GUILD_ID=...` in your `.env`.
 
+To register commands on multiple servers at once, set `DISCORD_GUILD_ID` to a comma-separated list of server IDs (e.g. `DISCORD_GUILD_ID=111222333,444555666`).
+
 ---
 
 ### Step 4 — Configure `.env`
@@ -177,7 +179,7 @@ DASHBOARD_SECRET_KEY=
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DISCORD_TOKEN` | ✅ | — | Bot token from the Discord Developer Portal → Bot tab |
-| `DISCORD_GUILD_ID` | — | — | Server ID for fast guild-scoped command sync (recommended during setup) |
+| `DISCORD_GUILD_ID` | — | — | Comma-separated server ID(s) for fast guild-scoped command sync (recommended during setup) |
 | `DISCORD_CLEAR_GLOBAL_COMMANDS` | — | `0` | Set to `1` once to remove stale global slash commands, then back to `0` |
 | `BGA_POLL_SECONDS` | — | `15` | Seconds between monitor scheduler ticks |
 | `BGA_DB_PATH` | — | `bga_bot.db` | SQLite database file path |
@@ -217,7 +219,7 @@ bga-turn-bot
 python bot.py
 ```
 
-If `DISCORD_GUILD_ID` is set, slash commands are synced to that guild. Otherwise, they are synced globally (may take up to an hour to appear).
+If `DISCORD_GUILD_ID` is set (single server ID or comma-separated list), slash commands are synced to each of those guilds. Otherwise, they are synced globally (may take up to an hour to appear).
 
 If you previously used global slash commands and now see duplicates, set `DISCORD_CLEAR_GLOBAL_COMMANDS=1` for one startup, then set it back to `0`.
 

@@ -98,8 +98,10 @@ class BgaCommands(commands.Cog):
             if guild_settings.delete_invite_message and await self.monitor.wait_for_active_messages(
                 registered_subscriptions
             ):
-                try:
-                    await message.delete()
+                deleted = await self.monitor.delete_discord_message(
+                    message, operation="delete_trigger_message"
+                )
+                if deleted:
                     LOGGER.info(
                         tr(
                             "trigger_message_deleted",
@@ -107,14 +109,12 @@ class BgaCommands(commands.Cog):
                             guild_id=message.guild.id,
                         )
                     )
-                except discord.NotFound:
-                    pass
-                except discord.DiscordException as exc:
+                else:
                     LOGGER.warning(
                         tr(
                             "trigger_message_delete_failed",
                             channel_id=message.channel.id,
-                            error=exc,
+                            error="rate-limit or Discord error",
                         )
                     )
             elif guild_settings.delete_invite_message:
