@@ -923,7 +923,7 @@ class BgaMonitor:
         immediately so callers can handle them normally.
         """
         for attempt in range(1, max_retries + 2):
-            if channel_id is not None:
+            if channel_id is not None and attempt == 1:
                 await self._wait_for_discord_channel_slot(
                     channel_id=channel_id,
                     operation=operation,
