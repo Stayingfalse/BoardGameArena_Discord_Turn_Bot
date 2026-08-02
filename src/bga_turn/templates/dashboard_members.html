@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="breadcrumb"><a href="/dashboard">Dashboard</a> › <a href="/dashboard/{{ guild_id }}">{{ guild_name }}</a> › Members</div>
+<div class="section-title">{{ guild_name }} — Member linking</div>
+{% if link_saved %}<div class="alert-success">✅ Member link saved.</div>{% endif %}
+{% if unlinked %}<div class="alert-success">✅ Member link removed.</div>{% endif %}
+
+<div class="table-section">
+  <h3>Linked members ({{ linked_cards|length }})</h3>
+  {% if linked_cards %}
+    {% for link in linked_cards %}
+    <div class="card table-card">
+      <div class="table-card-header">
+        <h4>{{ link.discord_display_name }} <span class="member-sub">(@{{ link.discord_username }})</span></h4>
+        <form method="post" action="/dashboard/{{ guild_id }}/members/{{ link.discord_user_id }}/unlink" onsubmit="return confirm('Remove this linked member?');">
+          <button type="submit" class="btn btn-danger">Unlink</button>
+        </form>
+      </div>
+      <div class="table-meta">
+        <div>Discord ID: {{ link.discord_user_id }}</div>
+        <div>BGA ID: {{ link.bga_player_id or 'Unknown' }}</div>
+        <div>BGA name: {{ link.bga_player_name or 'Unknown' }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No linked members in this server.</p>
+  {% endif %}
+</div>
+
+<div class="table-section">
+  <h3>Unmatched BGA names ({{ unmatched_cards|length }})</h3>
+  {% if unmatched_cards %}
+    {% for row in unmatched_cards %}
+    <div class="card table-card">
+      <div class="table-meta">
+        <div>BGA name: {{ row.bga_player_name }}</div>
+        <div>BGA ID: {{ row.bga_player_id or 'Unknown' }}</div>
+      </div>
+      <form method="post" action="/dashboard/{{ guild_id }}/members/link" class="link-form">
+        <input type="hidden" name="bga_player_id" value="{{ row.bga_player_id }}">
+        <input type="hidden" name="bga_player_name" value="{{ row.bga_player_name }}">
+        <div class="link-form-row">
+          <input
+            type="text"
+            class="member-search-input"
+            placeholder="Search Discord member"
+            data-search-url="/dashboard/{{ guild_id }}/members/search"
+            autocomplete="off"
+            required
+          >
+          <select name="discord_user_id" class="member-select" required>
+            <option value="">Select a member…</option>
+          </select>
+          <button type="submit" class="btn btn-primary">Link</button>
+        </div>
+      </form>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No unmatched BGA names detected for this server.</p>
+  {% endif %}
+</div>
+
+<script>
+(() => {
+  const forms = document.querySelectorAll('.link-form');
+  forms.forEach((form) => {
+    const searchInput = form.querySelector('.member-search-input');
+    const select = form.querySelector('.member-select');
+    if (!searchInput || !select) return;
+    let timer = null;
+    const updateMembers = async (query) => {
+      const url = `${searchInput.dataset.searchUrl}?q=${encodeURIComponent(query)}`;
+      const response = await fetch(url, {headers: {'Accept': 'application/json'}});
+      if (!response.ok) return;
+      const payload = await response.json();
+      select.innerHTML = '<option value="">Select a member…</option>';
+      for (const member of (payload.members || [])) {
+        const option = document.createElement('option');
+        option.value = member.id;
+        option.textContent = `${member.display_name} (@${member.username})`;
+        select.appendChild(option);
+      }
+    };
+    searchInput.addEventListener('input', () => {
+      const value = searchInput.value || '';
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { updateMembers(value); }, 180);
+    });
+  });
+})();
+</script>
+{% endblock %}

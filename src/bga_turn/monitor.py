@@ -713,10 +713,24 @@ class BgaMonitor:
                         table_id=table_id,
                     )
                     self._active_messages.pop(subscription.subscription_id, None)
+                self.database.update_watch_state(
+                    subscription_id=subscription.subscription_id,
+                    last_packet_id=table_packet_id,
+                    waiting_ids=waiting_ids,
+                    player_names=current_player_names,
+                    seated_player_names=current_player_names,
+                    seats_total=subscription.seats_total,
+                    seats_remaining=subscription.seats_remaining,
+                    is_initialized=True,
+                    game_name=game_name,
+                    lifecycle_state=self.LIFECYCLE_IN_PROGRESS,
+                    player_count=len(current_player_names),
+                )
                 self.database.remove_watch_subscription(
                     table_id=subscription.table_id,
                     guild_id=subscription.guild_id,
                     channel_id=subscription.channel_id,
+                    outcome="unwatched",
                 )
                 LOGGER.info(
                     tr(
@@ -741,9 +755,13 @@ class BgaMonitor:
                 last_packet_id=table_packet_id,
                 waiting_ids=waiting_ids,
                 player_names=current_player_names,
+                seated_player_names=current_player_names,
+                seats_total=subscription.seats_total,
+                seats_remaining=subscription.seats_remaining,
                 is_initialized=True,
                 game_name=game_name,
                 lifecycle_state=self.LIFECYCLE_IN_PROGRESS,
+                player_count=len(current_player_names),
             )
 
     async def _finalize_finished_table(
@@ -785,15 +803,38 @@ class BgaMonitor:
                 last_packet_id=subscription.last_packet_id,
                 waiting_ids=[],
                 player_names=dict(subscription.player_names),
+                seated_player_names=(
+                    dict(snapshot.player_names)
+                    if snapshot is not None and snapshot.player_names
+                    else dict(subscription.seated_player_names or subscription.player_names)
+                ),
+                seats_total=(
+                    snapshot.seats_total
+                    if snapshot is not None and snapshot.seats_total is not None
+                    else subscription.seats_total
+                ),
+                seats_remaining=(
+                    snapshot.seats_remaining
+                    if snapshot is not None and snapshot.seats_remaining is not None
+                    else subscription.seats_remaining
+                ),
                 is_initialized=True,
                 game_name=subscription.game_name,
                 lifecycle_state=self.LIFECYCLE_FINISHED,
+                winner_names=snapshot.winner_names if snapshot is not None else None,
+                final_standings=snapshot.final_standings if snapshot is not None else None,
+                player_count=(
+                    len(snapshot.player_names)
+                    if snapshot is not None and snapshot.player_names
+                    else len(subscription.seated_player_names or subscription.player_names)
+                ),
             )
 
             self.database.remove_watch_subscription(
                 table_id=subscription.table_id,
                 guild_id=subscription.guild_id,
                 channel_id=subscription.channel_id,
+                outcome="finished",
             )
             self._active_messages.pop(subscription.subscription_id, None)
 
@@ -1033,9 +1074,13 @@ class BgaMonitor:
                 last_packet_id=subscription.last_packet_id,
                 waiting_ids=[],
                 player_names=player_names,
+                seated_player_names=dict(snapshot.player_names),
+                seats_total=snapshot.seats_total,
+                seats_remaining=snapshot.seats_remaining,
                 is_initialized=False,
                 game_name=snapshot.game_name or subscription.game_name,
                 lifecycle_state=self.LIFECYCLE_RECRUITING,
+                player_count=len(snapshot.player_names),
             )
             await self._publish_or_update_lifecycle_message(
                 subscription=subscription,

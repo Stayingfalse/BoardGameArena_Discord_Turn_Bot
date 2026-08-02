@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }} — BGA Turn Bot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="nav">
+  <h1>🎲 BGA Turn Bot</h1>
+  <span class="spacer"></span>
+  {% if session %}
+    <a href="/dashboard">Dashboard</a>
+    {% if is_global_admin %}
+    &nbsp;|&nbsp;
+    <a href="/admin/servers">⚙ Admin</a>
+    {% endif %}
+    &nbsp;|&nbsp;
+    <span style="color:#888;font-size:.9rem">{{ session.username }}</span>
+  {% else %}
+    <a href="/auth/login" class="btn btn-secondary">Login with Discord</a>
+  {% endif %}
+</nav>
+<div class="container">
+{% block content %}{% endblock %}
+</div>
+</body>
+</html>

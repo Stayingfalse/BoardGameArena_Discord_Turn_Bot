@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="breadcrumb"><a href="/dashboard">Dashboard</a> › <a href="/dashboard/{{ guild_id }}">{{ guild_name }}</a> › Tables</div>
+<div class="section-title">{{ guild_name }} — Table monitoring</div>
+{% if removed %}<div class="alert-success">✅ Table removed from monitoring.</div>{% endif %}
+
+<div class="table-section">
+  <h3>Recruiting ({{ recruiting_cards|length }})</h3>
+  {% if recruiting_cards %}
+    {% for table in recruiting_cards %}
+    <div class="card table-card">
+      <div class="table-card-header">
+        <h4>{{ table.game_name }}</h4>
+        <form method="post" action="/dashboard/{{ guild_id }}/tables/{{ table.subscription_id }}/unwatch" onsubmit="return confirm('Stop monitoring table {{ table.table_id }}?');">
+          <button type="submit" class="btn btn-danger">Unwatch</button>
+        </form>
+      </div>
+      <div class="table-meta">
+        <div>Table: <a href="{{ table.table_url }}" target="_blank" rel="noopener noreferrer">{{ table.table_id }}</a></div>
+        <div>Channel: {{ table.channel }}</div>
+        <div>Watch started by: {{ table.created_by }}</div>
+      </div>
+      <div class="table-details">
+        <div>Seats: {{ table.seats_total if table.seats_total is not none else "?" }} total / {{ table.seats_remaining if table.seats_remaining is not none else "?" }} remaining</div>
+        <div>Seated players: {% if table.seated_players %}{{ table.seated_players|join(", ") }}{% else %}None yet{% endif %}</div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No recruiting tables are currently being watched.</p>
+  {% endif %}
+</div>
+
+<div class="table-section">
+  <h3>In Progress ({{ in_progress_cards|length }})</h3>
+  {% if in_progress_cards %}
+    {% for table in in_progress_cards %}
+    <div class="card table-card">
+      <div class="table-card-header">
+        <h4>{{ table.game_name }}</h4>
+        <form method="post" action="/dashboard/{{ guild_id }}/tables/{{ table.subscription_id }}/unwatch" onsubmit="return confirm('Stop monitoring table {{ table.table_id }}?');">
+          <button type="submit" class="btn btn-danger">Unwatch</button>
+        </form>
+      </div>
+      <div class="table-meta">
+        <div>Table: <a href="{{ table.table_url }}" target="_blank" rel="noopener noreferrer">{{ table.table_id }}</a></div>
+        <div>Channel: {{ table.channel }}</div>
+        <div>Watch started by: {{ table.created_by }}</div>
+      </div>
+      <div class="table-details">
+        <div>Current turn: {% if table.waiting_players %}{{ table.waiting_players|join(", ") }}{% else %}Unknown{% endif %}</div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No in-progress tables are currently being watched.</p>
+  {% endif %}
+</div>
+
+<div class="table-section">
+  <h3>Recently Finished ({{ finished_cards|length }})</h3>
+  {% if finished_cards %}
+    {% for table in finished_cards %}
+    <div class="card table-card">
+      <div class="table-card-header">
+        <h4>{{ table.game_name }}</h4>
+      </div>
+      <div class="table-meta">
+        <div>Table: <a href="{{ table.table_url }}" target="_blank" rel="noopener noreferrer">{{ table.table_id }}</a></div>
+        <div>Channel: {{ table.channel }}</div>
+        <div>Watch started by: {{ table.created_by }}</div>
+        <div>Finished at: {{ table.finished_at }}</div>
+      </div>
+      <div class="table-details">
+        <div>Winner: {% if table.winner_names %}{{ table.winner_names|join(", ") }}{% else %}Unknown{% endif %}</div>
+        <div>Final standings: {% if table.final_standings %}{{ table.final_standings|join(" · ") }}{% else %}Unavailable{% endif %}</div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No recent finished tables found for this server.</p>
+  {% endif %}
+</div>
+{% endblock %}

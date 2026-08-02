@@ -171,6 +171,7 @@ class BgaDiscordBot(commands.Bot):
         removed_watches = await asyncio.to_thread(
             self.database.remove_all_watch_subscriptions_for_guild,
             guild_id,
+            outcome="cancelled",
         )
         await asyncio.to_thread(self.database.remove_guild_settings, guild_id)
         await asyncio.to_thread(self.database.remove_followed_players_for_guild, guild_id)
@@ -229,6 +230,7 @@ async def _run_bot(
             client_id=client_id,
             client_secret=client_secret,
             secret_key=dashboard_secret_key,
+            global_admin_ids=global_admin_ids,
         )
         dashboard_task = asyncio.create_task(
             run_dashboard(app, port=dashboard_port),  # type: ignore[possibly-undefined]
@@ -281,6 +283,10 @@ def main() -> None:
     client_id = os.getenv("DISCORD_CLIENT_ID", "")
     client_secret = os.getenv("DISCORD_CLIENT_SECRET", "")
     dashboard_secret_key = os.getenv("DASHBOARD_SECRET_KEY", "")
+    global_admin_ids_raw = os.getenv("GLOBAL_ADMIN_DISCORD_IDS", "")
+    global_admin_ids: frozenset[str] = frozenset(
+        x.strip() for x in global_admin_ids_raw.split(",") if x.strip().isdigit()
+    )
     if dashboard_enabled:
         dashboard_base_url = _validate_dashboard_config(
             dashboard_base_url=dashboard_base_url,

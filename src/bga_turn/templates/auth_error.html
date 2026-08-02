@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h3>⚠️ Dashboard login could not be completed</h3>
+  <p style="margin-top:10px">Reason: <code>{{ reason_text }}</code></p>
+  <p style="margin-top:10px">The bot stopped redirecting automatically to prevent a login loop.</p>
+  <p style="margin-top:10px">Troubleshooting:</p>
+  <ul style="margin:8px 0 0 22px;color:#b0b0c0;line-height:1.5">
+    <li>Use an HTTPS public <code>DASHBOARD_BASE_URL</code> in production.</li>
+    <li>Confirm reverse proxy preserves <code>Set-Cookie</code> headers.</li>
+    <li>Confirm <code>DASHBOARD_SECRET_KEY</code>, <code>DISCORD_CLIENT_ID</code>, and <code>DISCORD_CLIENT_SECRET</code> are correct.</li>
+    <li>Clear old dashboard cookies and log in again.</li>
+  </ul>
+  <p style="margin-top:12px;color:#888">Target path: <code>{{ next_path }}</code> · Redirect attempts: <code>{{ login_attempts }}</code></p>
+  <p style="margin-top:14px"><a class="btn btn-primary" href="/auth/login?next={{ quoted_next_path }}">Try login again</a></p>
+</div>
+{% endblock %}

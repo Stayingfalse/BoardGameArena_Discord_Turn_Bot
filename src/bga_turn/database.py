@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from .models import FollowedPlayer, GuildSettings, LinkedUser, WatchSubscription
+from .models import FollowedPlayer, GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
 
 
@@ -449,6 +449,220 @@ class Database:
             return {"total": 0, "recruiting": 0}
         return {"total": int(row["total"] or 0), "recruiting": int(row["recruiting"] or 0)}
 
+    def get_guild_extended_stats(self, guild_id: str) -> dict[str, object]:
+        """Return comprehensive historical and live stats for one guild."""
+        with self._lock:
+            live_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS currently_watching,
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting
+                FROM watch_subscriptions ws
+                LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+                WHERE ws.guild_id = ?
+                """,
+                (guild_id,),
+            ).fetchone()
+
+            hist_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_games,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL
+                            THEN (julianday(game_started_at) - julianday(recruiting_started_at)) * 1440
+                            ELSE NULL
+                        END
+                    ) AS avg_recruiting_minutes,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL AND outcome = 'finished'
+                            THEN (julianday(finished_at) - julianday(game_started_at)) * 24
+                            ELSE NULL
+                        END
+                    ) AS avg_game_hours
+                FROM game_history
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
+            ).fetchone()
+
+            members_row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
+            ).fetchone()
+
+            games_by_name_rows = self._connection.execute(
+                """
+                SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
+                FROM game_history
+                WHERE guild_id = ?
+                GROUP BY game_name
+                ORDER BY count DESC
+                LIMIT 20
+                """,
+                (guild_id,),
+            ).fetchall()
+
+            games_over_time_rows = self._connection.execute(
+                """
+                SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
+                FROM game_history
+                WHERE guild_id = ?
+                  AND finished_at >= date('now', '-90 days')
+                GROUP BY substr(finished_at, 1, 10)
+                ORDER BY day
+                """,
+                (guild_id,),
+            ).fetchall()
+
+            player_rows = self._connection.execute(
+                """
+                SELECT winner_names, final_standings
+                FROM game_history
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
+            ).fetchall()
+
+        return self._build_extended_stats(
+            live_row=live_row,
+            hist_row=hist_row,
+            members_row=members_row,
+            games_by_name_rows=games_by_name_rows,
+            games_over_time_rows=games_over_time_rows,
+            player_rows=player_rows,
+        )
+
+    def get_global_extended_stats(self) -> dict[str, object]:
+        """Return comprehensive historical and live stats across all guilds."""
+        with self._lock:
+            live_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS currently_watching,
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting
+                FROM watch_subscriptions ws
+                LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+                """
+            ).fetchone()
+
+            hist_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_games,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL
+                            THEN (julianday(game_started_at) - julianday(recruiting_started_at)) * 1440
+                            ELSE NULL
+                        END
+                    ) AS avg_recruiting_minutes,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL AND outcome = 'finished'
+                            THEN (julianday(finished_at) - julianday(game_started_at)) * 24
+                            ELSE NULL
+                        END
+                    ) AS avg_game_hours
+                FROM game_history
+                """
+            ).fetchone()
+
+            members_row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
+            ).fetchone()
+
+            games_by_name_rows = self._connection.execute(
+                """
+                SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
+                FROM game_history
+                GROUP BY game_name
+                ORDER BY count DESC
+                LIMIT 20
+                """
+            ).fetchall()
+
+            games_over_time_rows = self._connection.execute(
+                """
+                SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
+                FROM game_history
+                WHERE finished_at >= date('now', '-90 days')
+                GROUP BY substr(finished_at, 1, 10)
+                ORDER BY day
+                """
+            ).fetchall()
+
+            player_rows = self._connection.execute(
+                "SELECT winner_names, final_standings FROM game_history"
+            ).fetchall()
+
+        return self._build_extended_stats(
+            live_row=live_row,
+            hist_row=hist_row,
+            members_row=members_row,
+            games_by_name_rows=games_by_name_rows,
+            games_over_time_rows=games_over_time_rows,
+            player_rows=player_rows,
+        )
+
+    @staticmethod
+    def _build_extended_stats(
+        *,
+        live_row: object,
+        hist_row: object,
+        members_row: object,
+        games_by_name_rows: list,
+        games_over_time_rows: list,
+        player_rows: list,
+    ) -> dict[str, object]:
+        player_appearances: dict[str, int] = {}
+        player_wins: dict[str, int] = {}
+        for row in player_rows:
+            standings = json_loads_list(row["final_standings"])
+            winners = json_loads_list(row["winner_names"])
+            for name in standings:
+                name = (name or "").strip()
+                if name:
+                    player_appearances[name] = player_appearances.get(name, 0) + 1
+            for name in winners:
+                name = (name or "").strip()
+                if name:
+                    player_wins[name] = player_wins.get(name, 0) + 1
+
+        top_players: list[dict[str, object]] = sorted(
+            [
+                {
+                    "name": name,
+                    "appearances": count,
+                    "wins": player_wins.get(name, 0),
+                }
+                for name, count in player_appearances.items()
+            ],
+            key=lambda item: (-int(item["appearances"]), -int(item["wins"]), str(item["name"]).casefold()),
+        )[:10]
+
+        avg_rec = hist_row["avg_recruiting_minutes"] if hist_row else None
+        avg_game = hist_row["avg_game_hours"] if hist_row else None
+
+        return {
+            "currently_watching": int((live_row["currently_watching"] if live_row else 0) or 0),
+            "currently_recruiting": int((live_row["currently_recruiting"] if live_row else 0) or 0),
+            "total_games": int((hist_row["total_games"] if hist_row else 0) or 0),
+            "avg_recruiting_minutes": round(float(avg_rec), 1) if avg_rec is not None else None,
+            "avg_game_hours": round(float(avg_game), 1) if avg_game is not None else None,
+            "members_linked": int((members_row["count"] if members_row else 0) or 0),
+            "games_by_name": [
+                {"name": str(row["name"]), "count": int(row["count"])}
+                for row in games_by_name_rows
+            ],
+            "games_over_time": [
+                {"day": str(row["day"]), "count": int(row["count"])}
+                for row in games_over_time_rows
+            ],
+            "top_players": top_players,
+        }
+
     def get_guild_stats(self, guild_id: str) -> dict[str, int]:
         """Return subscription counts and followed-player count for one guild."""
         with self._lock:
@@ -659,26 +873,152 @@ class Database:
             return None
         return self._row_to_watch_subscription(row)
 
-    def remove_watch_subscription(self, *, table_id: str, guild_id: str, channel_id: str) -> bool:
+    def _archive_watch_subscription_locked(
+        self,
+        *,
+        subscription_id: int,
+        outcome: str,
+        finished_at: str,
+    ) -> bool:
+        normalized_outcome = outcome.strip().lower()
+        if normalized_outcome not in {"finished", "cancelled", "unwatched"}:
+            raise ValueError(f"Invalid watch archive outcome: {outcome}")
+
+        row = self._connection.execute(
+            """
+            SELECT
+                ws.subscription_id,
+                ws.table_id,
+                ws.guild_id,
+                ws.channel_id,
+                ws.created_by_discord_user_id,
+                ws.created_at AS recruiting_started_at,
+                st.game_name,
+                st.game_started_at,
+                COALESCE(st.winner_names, '[]') AS winner_names,
+                COALESCE(st.final_standings, '[]') AS final_standings,
+                st.player_count,
+                st.seats_total,
+                st.seats_remaining,
+                COALESCE(st.seated_player_names, '{}') AS seated_player_names
+            FROM watch_subscriptions ws
+            LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+            WHERE ws.subscription_id = ?
+            """,
+            (subscription_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        winner_names = json_loads_list(row["winner_names"])
+        final_standings = json_loads_list(row["final_standings"])
+        player_count = int(row["player_count"]) if row["player_count"] is not None else None
+
+        seated_player_names = json_loads_dict(row["seated_player_names"])
+        if player_count is None:
+            if row["seats_total"] is not None and row["seats_remaining"] is not None:
+                player_count = max(int(row["seats_total"]) - int(row["seats_remaining"]), 0)
+            elif seated_player_names:
+                player_count = len(seated_player_names)
+            elif final_standings:
+                player_count = len(final_standings)
+
+        self._connection.execute(
+            """
+            INSERT INTO game_history (
+                table_id,
+                game_name,
+                guild_id,
+                channel_id,
+                created_by_discord_user_id,
+                recruiting_started_at,
+                game_started_at,
+                finished_at,
+                outcome,
+                winner_names,
+                final_standings,
+                player_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["table_id"],
+                row["game_name"],
+                row["guild_id"],
+                row["channel_id"],
+                row["created_by_discord_user_id"],
+                row["recruiting_started_at"],
+                row["game_started_at"],
+                finished_at,
+                normalized_outcome,
+                json_dumps(winner_names),
+                json_dumps(final_standings),
+                player_count,
+            ),
+        )
+        self._connection.execute(
+            "DELETE FROM watch_subscriptions WHERE subscription_id = ?",
+            (subscription_id,),
+        )
+        return True
+
+    def _archive_watch_subscription(self, *, subscription_id: int, outcome: str) -> bool:
         with self._lock:
-            cursor = self._connection.execute(
+            archived = self._archive_watch_subscription_locked(
+                subscription_id=subscription_id,
+                outcome=outcome,
+                finished_at=utc_now_iso(),
+            )
+            self._connection.commit()
+            return archived
+
+    def remove_watch_subscription(
+        self,
+        *,
+        table_id: str,
+        guild_id: str,
+        channel_id: str,
+        outcome: str = "unwatched",
+    ) -> bool:
+        with self._lock:
+            row = self._connection.execute(
                 """
-                DELETE FROM watch_subscriptions
+                SELECT subscription_id
+                FROM watch_subscriptions
                 WHERE table_id = ? AND guild_id = ? AND channel_id = ?
                 """,
                 (table_id, guild_id, channel_id),
+            ).fetchone()
+            if row is None:
+                return False
+            archived = self._archive_watch_subscription_locked(
+                subscription_id=int(row["subscription_id"]),
+                outcome=outcome,
+                finished_at=utc_now_iso(),
             )
             self._connection.commit()
-            return cursor.rowcount > 0
+            return archived
 
-    def remove_all_watch_subscriptions_for_guild(self, guild_id: str) -> int:
+    def remove_all_watch_subscriptions_for_guild(self, guild_id: str, *, outcome: str = "cancelled") -> int:
         with self._lock:
-            cursor = self._connection.execute(
-                "DELETE FROM watch_subscriptions WHERE guild_id = ?",
+            rows = self._connection.execute(
+                """
+                SELECT subscription_id
+                FROM watch_subscriptions
+                WHERE guild_id = ?
+                """,
                 (guild_id,),
-            )
+            ).fetchall()
+            removed_count = 0
+            finished_at = utc_now_iso()
+            for row in rows:
+                if self._archive_watch_subscription_locked(
+                    subscription_id=int(row["subscription_id"]),
+                    outcome=outcome,
+                    finished_at=finished_at,
+                ):
+                    removed_count += 1
             self._connection.commit()
-            return int(cursor.rowcount)
+            return removed_count
 
     def list_watch_subscriptions(self) -> list[WatchSubscription]:
         with self._lock:
@@ -695,6 +1035,102 @@ class Database:
             ).fetchall()
         return [self._row_to_watch_subscription(row) for row in rows]
 
+    def list_recent_game_history_for_guild(self, guild_id: str, *, limit: int = 10) -> list[GameHistoryEntry]:
+        effective_limit = max(1, min(100, int(limit)))
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT
+                    history_id,
+                    table_id,
+                    game_name,
+                    guild_id,
+                    channel_id,
+                    created_by_discord_user_id,
+                    recruiting_started_at,
+                    game_started_at,
+                    finished_at,
+                    outcome,
+                    winner_names,
+                    final_standings,
+                    player_count
+                FROM game_history
+                WHERE guild_id = ? AND outcome = 'finished'
+                ORDER BY finished_at DESC, history_id DESC
+                LIMIT ?
+                """,
+                (guild_id, effective_limit),
+            ).fetchall()
+        return [
+            GameHistoryEntry(
+                history_id=int(row["history_id"]),
+                table_id=row["table_id"],
+                game_name=row["game_name"],
+                guild_id=row["guild_id"],
+                channel_id=row["channel_id"],
+                created_by_discord_user_id=row["created_by_discord_user_id"],
+                recruiting_started_at=row["recruiting_started_at"],
+                game_started_at=row["game_started_at"],
+                finished_at=row["finished_at"],
+                outcome=row["outcome"],
+                winner_names=json_loads_list(row["winner_names"]),
+                final_standings=json_loads_list(row["final_standings"]),
+                player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def list_game_history_for_guild(self, guild_id: str, *, limit: int | None = None) -> list[GameHistoryEntry]:
+        limit_clause = ""
+        params: tuple[object, ...]
+        if limit is None:
+            params = (guild_id,)
+        else:
+            effective_limit = max(1, min(5000, int(limit)))
+            limit_clause = " LIMIT ?"
+            params = (guild_id, effective_limit)
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT
+                    history_id,
+                    table_id,
+                    game_name,
+                    guild_id,
+                    channel_id,
+                    created_by_discord_user_id,
+                    recruiting_started_at,
+                    game_started_at,
+                    finished_at,
+                    outcome,
+                    winner_names,
+                    final_standings,
+                    player_count
+                FROM game_history
+                WHERE guild_id = ?
+                ORDER BY finished_at DESC, history_id DESC{limit_clause}
+                """,
+                params,
+            ).fetchall()
+        return [
+            GameHistoryEntry(
+                history_id=int(row["history_id"]),
+                table_id=row["table_id"],
+                game_name=row["game_name"],
+                guild_id=row["guild_id"],
+                channel_id=row["channel_id"],
+                created_by_discord_user_id=row["created_by_discord_user_id"],
+                recruiting_started_at=row["recruiting_started_at"],
+                game_started_at=row["game_started_at"],
+                finished_at=row["finished_at"],
+                outcome=row["outcome"],
+                winner_names=json_loads_list(row["winner_names"]),
+                final_standings=json_loads_list(row["final_standings"]),
+                player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+            )
+            for row in rows
+        ]
+
     def update_watch_state(
         self,
         *,
@@ -702,13 +1138,23 @@ class Database:
         last_packet_id: int,
         waiting_ids: list[str],
         player_names: dict[str, str],
+        seated_player_names: dict[str, str] | None = None,
+        seats_total: int | None = None,
+        seats_remaining: int | None = None,
         is_initialized: bool,
         game_name: str | None,
         lifecycle_state: str | None = None,
+        game_started_at: str | None = None,
+        winner_names: list[str] | None = None,
+        final_standings: list[str] | None = None,
+        player_count: int | None = None,
         tracked_message_id: int | None = None,
         tracked_message_kind: str | None = None,
     ) -> None:
         now = utc_now_iso()
+        effective_game_started_at = game_started_at
+        if effective_game_started_at is None and lifecycle_state == "in_progress":
+            effective_game_started_at = now
         with self._lock:
             self._connection.execute(
                 """
@@ -717,20 +1163,34 @@ class Database:
                     last_packet_id,
                     last_waiting_ids,
                     last_player_names,
+                    seated_player_names,
+                    seats_total,
+                    seats_remaining,
                     is_initialized,
                     game_name,
                     lifecycle_state,
+                    game_started_at,
+                    winner_names,
+                    final_standings,
+                    player_count,
                     tracked_message_id,
                     tracked_message_kind,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'recruiting'), ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'recruiting'), ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(subscription_id) DO UPDATE SET
                     last_packet_id = excluded.last_packet_id,
                     last_waiting_ids = excluded.last_waiting_ids,
                     last_player_names = excluded.last_player_names,
+                    seated_player_names = COALESCE(excluded.seated_player_names, watch_states.seated_player_names),
+                    seats_total = COALESCE(excluded.seats_total, watch_states.seats_total),
+                    seats_remaining = COALESCE(excluded.seats_remaining, watch_states.seats_remaining),
                     is_initialized = excluded.is_initialized,
                     game_name = excluded.game_name,
                     lifecycle_state = COALESCE(excluded.lifecycle_state, watch_states.lifecycle_state),
+                    game_started_at = COALESCE(watch_states.game_started_at, excluded.game_started_at),
+                    winner_names = COALESCE(excluded.winner_names, watch_states.winner_names),
+                    final_standings = COALESCE(excluded.final_standings, watch_states.final_standings),
+                    player_count = COALESCE(excluded.player_count, watch_states.player_count),
                     tracked_message_id = COALESCE(excluded.tracked_message_id, watch_states.tracked_message_id),
                     tracked_message_kind = COALESCE(excluded.tracked_message_kind, watch_states.tracked_message_kind),
                     updated_at = excluded.updated_at
@@ -740,9 +1200,16 @@ class Database:
                     last_packet_id,
                     json_dumps(waiting_ids),
                     json_dumps(player_names),
+                    json_dumps(seated_player_names) if seated_player_names is not None else None,
+                    seats_total,
+                    seats_remaining,
                     1 if is_initialized else 0,
                     game_name,
                     lifecycle_state,
+                    effective_game_started_at,
+                    json_dumps(winner_names) if winner_names is not None else None,
+                    json_dumps(final_standings) if final_standings is not None else None,
+                    player_count,
                     str(tracked_message_id) if tracked_message_id is not None else None,
                     tracked_message_kind,
                     now,
@@ -798,10 +1265,30 @@ class Database:
             self._connection.execute(
                 "ALTER TABLE watch_states ADD COLUMN last_player_names TEXT NOT NULL DEFAULT '{}'"
             )
+        if "seated_player_names" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE watch_states ADD COLUMN seated_player_names TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "seats_total" not in existing_columns:
+            self._connection.execute("ALTER TABLE watch_states ADD COLUMN seats_total INTEGER")
+        if "seats_remaining" not in existing_columns:
+            self._connection.execute("ALTER TABLE watch_states ADD COLUMN seats_remaining INTEGER")
         if "lifecycle_state" not in existing_columns:
             self._connection.execute(
                 "ALTER TABLE watch_states ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'recruiting'"
             )
+        if "game_started_at" not in existing_columns:
+            self._connection.execute("ALTER TABLE watch_states ADD COLUMN game_started_at TEXT")
+        if "winner_names" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE watch_states ADD COLUMN winner_names TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "final_standings" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE watch_states ADD COLUMN final_standings TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "player_count" not in existing_columns:
+            self._connection.execute("ALTER TABLE watch_states ADD COLUMN player_count INTEGER")
         if "tracked_message_id" not in existing_columns:
             self._connection.execute(
                 "ALTER TABLE watch_states ADD COLUMN tracked_message_id TEXT"
@@ -1028,6 +1515,9 @@ class Database:
                 COALESCE(st.last_packet_id, 1) AS last_packet_id,
                 COALESCE(st.last_waiting_ids, '[]') AS last_waiting_ids,
                 COALESCE(st.last_player_names, '{}') AS last_player_names,
+                COALESCE(st.seated_player_names, '{}') AS seated_player_names,
+                st.seats_total,
+                st.seats_remaining,
                 COALESCE(st.is_initialized, 0) AS is_initialized,
                 st.game_name,
                 COALESCE(st.lifecycle_state, 'recruiting') AS lifecycle_state,
@@ -1051,6 +1541,9 @@ class Database:
             last_packet_id=int(row["last_packet_id"]),
             last_waiting_ids=json_loads_list(row["last_waiting_ids"]),
             player_names=json_loads_dict(row["last_player_names"]),
+            seated_player_names=json_loads_dict(row["seated_player_names"]),
+            seats_total=int(row["seats_total"]) if row["seats_total"] is not None else None,
+            seats_remaining=int(row["seats_remaining"]) if row["seats_remaining"] is not None else None,
             is_initialized=bool(row["is_initialized"]),
             game_name=row["game_name"],
             lifecycle_state=row["lifecycle_state"] or "recruiting",
