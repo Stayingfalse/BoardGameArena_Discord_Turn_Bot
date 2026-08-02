@@ -42,6 +42,23 @@ class WatchSubscription:
 
 
 @dataclass(slots=True)
+class GameHistoryEntry:
+    history_id: int
+    table_id: str
+    game_name: str | None
+    guild_id: str
+    channel_id: str
+    created_by_discord_user_id: str
+    recruiting_started_at: str
+    game_started_at: str | None
+    finished_at: str
+    outcome: str
+    winner_names: list[str]
+    final_standings: list[str]
+    player_count: int | None
+
+
+@dataclass(slots=True)
 class FollowedPlayer:
     follow_id: int
     guild_id: str

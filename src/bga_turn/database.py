@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from .models import FollowedPlayer, GuildSettings, LinkedUser, WatchSubscription
+from .models import FollowedPlayer, GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
 
 
@@ -820,6 +820,51 @@ class Database:
                 (guild_id,),
             ).fetchall()
         return [self._row_to_watch_subscription(row) for row in rows]
+
+    def list_recent_game_history_for_guild(self, guild_id: str, *, limit: int = 10) -> list[GameHistoryEntry]:
+        effective_limit = max(1, min(100, int(limit)))
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT
+                    history_id,
+                    table_id,
+                    game_name,
+                    guild_id,
+                    channel_id,
+                    created_by_discord_user_id,
+                    recruiting_started_at,
+                    game_started_at,
+                    finished_at,
+                    outcome,
+                    winner_names,
+                    final_standings,
+                    player_count
+                FROM game_history
+                WHERE guild_id = ? AND outcome = 'finished'
+                ORDER BY finished_at DESC, history_id DESC
+                LIMIT ?
+                """,
+                (guild_id, effective_limit),
+            ).fetchall()
+        return [
+            GameHistoryEntry(
+                history_id=int(row["history_id"]),
+                table_id=row["table_id"],
+                game_name=row["game_name"],
+                guild_id=row["guild_id"],
+                channel_id=row["channel_id"],
+                created_by_discord_user_id=row["created_by_discord_user_id"],
+                recruiting_started_at=row["recruiting_started_at"],
+                game_started_at=row["game_started_at"],
+                finished_at=row["finished_at"],
+                outcome=row["outcome"],
+                winner_names=json_loads_list(row["winner_names"]),
+                final_standings=json_loads_list(row["final_standings"]),
+                player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+            )
+            for row in rows
+        ]
 
     def update_watch_state(
         self,

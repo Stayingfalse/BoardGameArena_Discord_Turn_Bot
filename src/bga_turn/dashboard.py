@@ -10,7 +10,9 @@ GET  /auth/login                Start Discord OAuth2 (user-only: identify + guil
 GET  /auth/callback             Finish OAuth2, set session cookie, redirect to /dashboard.
 GET  /dashboard                 Admin index: guilds where user has MANAGE_GUILD.
 GET  /dashboard/{guild_id}      Per-guild stats + settings form.
+GET  /dashboard/{guild_id}/tables  Per-guild watched table lifecycle view.
 POST /dashboard/{guild_id}/settings  Save per-guild settings.
+POST /dashboard/{guild_id}/tables/{subscription_id}/unwatch  Stop monitoring one table.
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from .utils import build_table_url, format_game_name
 
 if TYPE_CHECKING:
     from .app import BgaDiscordBot
@@ -41,6 +45,7 @@ _OAUTH2_AUTH_URL = "https://discord.com/oauth2/authorize"
 _COOKIE_NAME = "bga_session"
 _COOKIE_MAX_AGE = 86400  # 1 day
 _AUTH_MAX_ATTEMPTS = 2
+_RECENT_FINISHED_LIMIT = 10
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +101,24 @@ def _append_query_value(path: str, key: str, value: str) -> str:
     query = [(item_key, item_value) for item_key, item_value in query if item_key != key]
     query.append((key, value))
     return urllib.parse.urlunsplit(("", "", parsed.path, urllib.parse.urlencode(query), ""))
+
+
+def _resolve_discord_display_name(discord_guild: object | None, discord_user_id: str) -> str:
+    if discord_guild is not None and discord_user_id.isdigit():
+        member = discord_guild.get_member(int(discord_user_id))
+        if member is not None:
+            return member.display_name
+    return discord_user_id
+
+
+def _resolve_channel_label(discord_guild: object | None, channel_id: str) -> str:
+    if discord_guild is None or not channel_id.isdigit():
+        return channel_id
+    channel_lookup = getattr(discord_guild, "get_channel_or_thread", None)
+    channel = channel_lookup(int(channel_id)) if callable(channel_lookup) else discord_guild.get_channel(int(channel_id))
+    if channel is None:
+        return channel_id
+    return f"#{channel.name}"
 
 
 def _auth_error_page(
@@ -465,6 +488,121 @@ async def _dashboard_guild(request: web.Request) -> web.Response:
     )
 
 
+async def _dashboard_guild_tables(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    bot: BgaDiscordBot = request.app["bot"]
+    database: Database = request.app["database"]
+
+    discord_guild = bot.get_guild(int(guild_id))
+    guild_name = discord_guild.name if discord_guild else guild_id
+
+    subscriptions = await asyncio.to_thread(database.list_watch_subscriptions_for_guild, guild_id)
+    recent_finished = await asyncio.to_thread(
+        database.list_recent_game_history_for_guild,
+        guild_id,
+        limit=_RECENT_FINISHED_LIMIT,
+    )
+
+    recruiting_cards: list[dict[str, object]] = []
+    in_progress_cards: list[dict[str, object]] = []
+    for subscription in subscriptions:
+        table_url = subscription.table_url or build_table_url(subscription.table_id)
+        waiting_players = [
+            subscription.player_names.get(player_id, player_id)
+            for player_id in subscription.last_waiting_ids
+        ]
+        seated_players = sorted(
+            [name for name in subscription.seated_player_names.values() if name.strip()],
+            key=lambda name: name.casefold(),
+        )
+        card = {
+            "subscription_id": subscription.subscription_id,
+            "table_id": subscription.table_id,
+            "table_url": table_url,
+            "game_name": format_game_name(subscription.game_name),
+            "channel": _resolve_channel_label(discord_guild, subscription.channel_id),
+            "created_by": _resolve_discord_display_name(discord_guild, subscription.created_by_discord_user_id),
+            "seats_total": subscription.seats_total,
+            "seats_remaining": subscription.seats_remaining,
+            "seated_players": seated_players,
+            "waiting_players": waiting_players,
+        }
+        if subscription.lifecycle_state == "recruiting":
+            recruiting_cards.append(card)
+        else:
+            in_progress_cards.append(card)
+
+    finished_cards = [
+        {
+            "table_id": item.table_id,
+            "table_url": build_table_url(item.table_id),
+            "game_name": format_game_name(item.game_name),
+            "channel": _resolve_channel_label(discord_guild, item.channel_id),
+            "created_by": _resolve_discord_display_name(discord_guild, item.created_by_discord_user_id),
+            "winner_names": item.winner_names,
+            "final_standings": item.final_standings,
+            "finished_at": item.finished_at,
+        }
+        for item in recent_finished
+    ]
+
+    return web.Response(
+        text=_render_template(
+            request,
+            "dashboard_tables.html",
+            title=f"{guild_name} Tables",
+            session=session,
+            guild_id=guild_id,
+            guild_name=guild_name,
+            removed=(request.rel_url.query.get("removed") == "1"),
+            recruiting_cards=recruiting_cards,
+            in_progress_cards=in_progress_cards,
+            finished_cards=finished_cards,
+        ),
+        content_type="text/html",
+    )
+
+
+async def _dashboard_guild_unwatch_post(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    subscription_id_raw = request.match_info["subscription_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not subscription_id_raw.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid subscription ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    database: Database = request.app["database"]
+    subscription_id = int(subscription_id_raw)
+    subscription = await asyncio.to_thread(database.get_watch_subscription, subscription_id)
+    if subscription is None or subscription.guild_id != guild_id:
+        raise web.HTTPNotFound(reason="Watch subscription not found.")
+
+    removed = await asyncio.to_thread(
+        database.remove_watch_subscription,
+        table_id=subscription.table_id,
+        guild_id=guild_id,
+        channel_id=subscription.channel_id,
+        outcome="unwatched",
+    )
+    status_value = "1" if removed else "0"
+    raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}/tables?removed={status_value}")
+
+
 async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
     session, session_reason = _get_session(request)
     if session is None:
@@ -535,7 +673,9 @@ def create_dashboard_app(
     app.router.add_get("/auth/callback", _auth_callback)
     app.router.add_get("/dashboard", _dashboard_index)
     app.router.add_get("/dashboard/{guild_id}", _dashboard_guild)
+    app.router.add_get("/dashboard/{guild_id}/tables", _dashboard_guild_tables)
     app.router.add_post("/dashboard/{guild_id}/settings", _dashboard_guild_settings_post)
+    app.router.add_post("/dashboard/{guild_id}/tables/{subscription_id}/unwatch", _dashboard_guild_unwatch_post)
     app.router.add_static("/static/", str(package_root / "static"))
 
     return app
