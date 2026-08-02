@@ -630,6 +630,13 @@ class BgaMonitor:
                 self._table_backoff_seconds[table_id] = backoff_seconds
             except Exception:
                 LOGGER.exception(tr("unexpected_worker_error", table_id=table_id))
+                consecutive = self._table_consecutive_server_errors.get(table_id, 0) + 1
+                self._table_consecutive_server_errors[table_id] = consecutive
+                if consecutive >= self._SERVER_ERROR_DISCORD_THRESHOLD:
+                    note = tr("table_unexpected_error_note")
+                    if self._table_error_note.get(table_id) != note:
+                        self._table_error_note[table_id] = note
+                        await self._push_error_note_to_discord(table_id)
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
                 self._table_backoff_seconds[table_id] = backoff_seconds

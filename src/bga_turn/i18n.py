@@ -1047,6 +1047,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "⚠️ BGA is reporting a server error for this table. The bot is retrying automatically.",
         "FR": "⚠️ BGA signale une erreur serveur pour cette table. Le bot reessaie automatiquement.",
     },
+    "table_unexpected_error_note": {
+        "EN": "⚠️ The bot encountered a repeated unexpected error on this table. It is still retrying automatically.",
+        "FR": "⚠️ Le bot a rencontre une erreur inattendue repetee sur cette table. Il reessaie automatiquement.",
+    },
 }
 
 
