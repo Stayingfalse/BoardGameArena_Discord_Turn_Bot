@@ -242,7 +242,7 @@ async def _index(request: web.Request) -> web.Response:
     client_id: str = request.app["client_id"]
     base_url: str = request.app["base_url"]
 
-    stats = await asyncio.to_thread(database.get_global_stats)
+    stats = await asyncio.to_thread(database.get_global_extended_stats)
     add_bot_url = _build_add_bot_url(client_id, base_url) if client_id else "#"
 
     return web.Response(

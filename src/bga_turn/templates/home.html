@@ -1,29 +1,55 @@
 {% extends "base.html" %}
 {% block content %}
+
+<!-- ── Hero ── -->
 <div class="hero">
   <h2>🎲 BGA Turn Bot</h2>
+  <p class="hero-tagline">Your board game nights, on autopilot.</p>
   <p>
-    Share a Board Game Arena invite link in Discord — the bot instantly starts tracking the table,
-    posts live recruitment and turn updates, and @mentions players when it's their move.
-    No BGA account, no password, no manual setup.
+    Share a Board Game Arena table link in Discord — the bot instantly starts tracking it,
+    posts live recruitment cards and turn-update messages, @mentions each player when it's
+    their move, and logs every game to a per-server dashboard. No BGA account, no password,
+    no manual setup.
   </p>
-  {% if client_id %}<a class="btn btn-primary" href="{{ add_bot_url }}">➕ Add to Server</a>{% endif %}
-  {% if not session %}&nbsp; <a class="btn btn-secondary" href="/auth/login">Login to manage settings</a>{% endif %}
-</div>
-<div class="stats-row">
-  <div class="stat-card">
-    <div class="num">{{ stats.total }}</div>
-    <div class="label">Tables ever watched</div>
+  <div class="hero-actions">
+    {% if client_id %}<a class="btn btn-primary hero-cta" href="{{ add_bot_url }}">➕ Add to Server — it's free</a>{% endif %}
+    {% if not session %}<a class="btn btn-secondary" href="/auth/login">Login to manage settings</a>{% endif %}
   </div>
-  <div class="stat-card">
-    <div class="num">{{ stats.recruiting }}</div>
-    <div class="label">Currently recruiting</div>
-  </div>
-</div>
-<div style="text-align:center;margin-bottom:8px">
-  <a href="/global/stats" class="btn btn-secondary" style="font-size:.85rem">📊 View global stats</a>
 </div>
 
+<!-- ── Live global stats + activity sparkline ── -->
+<div class="splash-stats-wrap">
+  <div class="splash-stat-nums">
+    <div class="splash-num">
+      <div class="num">{{ stats.total_games }}</div>
+      <div class="label">Games tracked</div>
+    </div>
+    <div class="splash-num">
+      <div class="num">{{ stats.currently_watching }}</div>
+      <div class="label">Active tables</div>
+    </div>
+    <div class="splash-num">
+      <div class="num">{{ stats.currently_recruiting }}</div>
+      <div class="label">Recruiting now</div>
+    </div>
+    <div class="splash-num">
+      <div class="num">{{ stats.members_linked }}</div>
+      <div class="label">Linked players</div>
+    </div>
+  </div>
+  {% if stats.games_over_time %}
+  <div class="splash-chart-block">
+    <div class="splash-chart-label">📈 Global activity — games finished per day (last 90 days)</div>
+    <div class="splash-chart-wrap"><canvas id="splashActivityChart"></canvas></div>
+  </div>
+  {% endif %}
+  <div style="text-align:center;margin-top:14px">
+    <a href="/global/stats" class="btn btn-secondary" style="font-size:.85rem">📊 View full global stats</a>
+  </div>
+</div>
+
+<!-- ── Discord message previews ── -->
+<h3 class="splash-section-heading">What it looks like in Discord</h3>
 <div class="discord-previews">
   <div>
     <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">📣 Recruiting — players join in Discord</p>
@@ -88,6 +114,103 @@
   </div>
 </div>
 
+<!-- ── Dashboard preview: Tables view ── -->
+<h3 class="splash-section-heading">Track every table from your browser</h3>
+<p class="splash-section-sub">Log in with Discord and see a live view of every table your server is watching — recruiting, in-progress, and recently finished — with one-click unwatch controls.</p>
+<div class="dash-preview-frame">
+  <div class="dash-preview-nav">
+    <span style="color:#fff;font-weight:600;font-size:.95rem">🎲 BGA Turn Bot</span>
+    <span style="flex:1"></span>
+    <span class="dash-preview-nav-link">Dashboard</span>
+    <span style="color:#888;font-size:.85rem;margin-left:12px">YourName</span>
+  </div>
+  <div class="dash-preview-body">
+    <div class="breadcrumb" style="margin-bottom:10px">Dashboard › <span style="color:#7289da">Your Server</span> › Tables</div>
+    <div class="section-title" style="margin-bottom:14px">Your Server — Table monitoring</div>
+    <div class="table-section">
+      <h3>Recruiting (2)</h3>
+      <div class="card table-card">
+        <div class="table-card-header">
+          <h4>🎲 Carcassonne</h4>
+          <button class="btn btn-danger" style="font-size:.75rem;padding:4px 10px;cursor:default">Unwatch</button>
+        </div>
+        <div class="table-meta">
+          <div>Table: <span style="color:#7289da">891538070</span></div>
+          <div>Channel: #board-games</div>
+          <div>Watch started by: YourName</div>
+        </div>
+        <div class="table-details">
+          <div>Seats: 5 total / 3 remaining</div>
+          <div>Seated players: YourBGAName, FriendBGAName</div>
+        </div>
+      </div>
+      <div class="card table-card">
+        <div class="table-card-header">
+          <h4>🎲 Ticket to Ride</h4>
+          <button class="btn btn-danger" style="font-size:.75rem;padding:4px 10px;cursor:default">Unwatch</button>
+        </div>
+        <div class="table-meta">
+          <div>Table: <span style="color:#7289da">712345678</span></div>
+          <div>Channel: #board-games</div>
+          <div>Watch started by: FriendName</div>
+        </div>
+        <div class="table-details">
+          <div>Seats: 4 total / 2 remaining</div>
+          <div>Seated players: FriendBGAName, AnotherFriend</div>
+        </div>
+      </div>
+    </div>
+    <div class="table-section">
+      <h3>In Progress (1)</h3>
+      <div class="card table-card">
+        <div class="table-card-header">
+          <h4>🎲 7 Wonders</h4>
+          <button class="btn btn-danger" style="font-size:.75rem;padding:4px 10px;cursor:default">Unwatch</button>
+        </div>
+        <div class="table-meta">
+          <div>Table: <span style="color:#7289da">803456789</span></div>
+          <div>Channel: #board-games</div>
+          <div>Watch started by: YourName</div>
+        </div>
+        <div class="table-details">
+          <div>Current turn: YourBGAName</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Dashboard preview: Stats charts ── -->
+<h3 class="splash-section-heading">Built-in analytics for your server</h3>
+<p class="splash-section-sub">See which games your group plays most, how long they take, and who plays the most — all automatically, with no extra setup.</p>
+<div class="dash-preview-frame dash-preview-charts">
+  {% if stats.games_over_time or stats.games_by_name %}
+  <div class="stats-charts" style="margin:0">
+    {% if stats.games_over_time %}
+    <div class="chart-block">
+      <h3>Activity over time <span style="color:#888;font-size:.8rem">(last 90 days)</span></h3>
+      <div class="chart-wrap"><canvas id="previewChartOverTime"></canvas></div>
+    </div>
+    {% endif %}
+    {% if stats.games_by_name %}
+    <div class="chart-block">
+      <h3>Games by type</h3>
+      <div class="chart-wrap"><canvas id="previewChartByName"></canvas></div>
+    </div>
+    {% endif %}
+  </div>
+  <p class="muted" style="text-align:center;margin-top:16px;font-size:.85rem">
+    Live global data — <a href="/global/stats">view full stats →</a>
+  </p>
+  {% else %}
+  <p class="muted" style="text-align:center;padding:32px 0">
+    Charts appear here once the bot has tracked games on your server.
+    <a href="/global/stats">View global stats →</a>
+  </p>
+  {% endif %}
+</div>
+
+<!-- ── Features ── -->
 <div class="features">
   <div class="feature">
     <h4>🔗 Auto-watch from invite links</h4>
@@ -106,4 +229,116 @@
     <p>Recruiting-only mode, forced notification channel, invite message deletion — all configurable per server.</p>
   </div>
 </div>
+
+{% if stats.games_over_time or stats.games_by_name %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  Chart.defaults.color = '#b0b0c0';
+  Chart.defaults.borderColor = '#2c2c54';
+
+  {% if stats.games_over_time %}
+  var overTimeLabels = {{ stats.games_over_time | map(attribute='day') | list | tojson }};
+  var overTimeData   = {{ stats.games_over_time | map(attribute='count') | list | tojson }};
+
+  /* Splash mini sparkline */
+  (function () {
+    var ctx = document.getElementById('splashActivityChart');
+    if (!ctx) return;
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: overTimeLabels,
+        datasets: [{
+          label: 'Games finished',
+          data: overTimeData,
+          borderColor: '#7289da',
+          backgroundColor: 'rgba(114,137,218,0.15)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8, font: { size: 11 } } },
+          y: { beginAtZero: true, ticks: { stepSize: 1 } }
+        }
+      }
+    });
+  })();
+
+  /* Preview: activity over time */
+  (function () {
+    var ctx = document.getElementById('previewChartOverTime');
+    if (!ctx) return;
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: overTimeLabels,
+        datasets: [{
+          label: 'Games finished',
+          data: overTimeData,
+          borderColor: '#7289da',
+          backgroundColor: 'rgba(114,137,218,0.15)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 10 } },
+          y: { beginAtZero: true, ticks: { stepSize: 1 } }
+        }
+      }
+    });
+  })();
+  {% endif %}
+
+  {% if stats.games_by_name %}
+  var byNameLabels = {{ stats.games_by_name | map(attribute='name') | list | tojson }};
+  var byNameData   = {{ stats.games_by_name | map(attribute='count') | list | tojson }};
+
+  /* Preview: games by type */
+  (function () {
+    var ctx = document.getElementById('previewChartByName');
+    if (!ctx) return;
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: byNameLabels,
+        datasets: [{
+          label: 'Games',
+          data: byNameData,
+          backgroundColor: 'rgba(114,137,218,0.7)',
+          borderColor: '#7289da',
+          borderWidth: 1,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { beginAtZero: true, ticks: { stepSize: 1 } },
+          y: { ticks: { font: { size: 11 } } }
+        }
+      }
+    });
+  })();
+  {% endif %}
+})();
+</script>
+{% endif %}
 {% endblock %}
+

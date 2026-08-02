@@ -89,3 +89,22 @@ hr{border:none;border-top:1px solid #2c2c54;margin:24px 0}
 .stats-table td{padding:8px 10px;border-bottom:1px solid #1a1a2e;color:#e0e0e0}
 .stats-table tbody tr:last-child td{border-bottom:none}
 .stats-table tbody tr:hover td{background:#1e2a45}
+/* Splash page additions */
+.hero-tagline{font-size:1.3rem;font-weight:600;color:#fff;margin-bottom:12px}
+.hero-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px}
+.hero-cta{font-size:1rem;padding:12px 28px}
+.splash-stats-wrap{background:#16213e;border:1px solid #2c2c54;border-radius:12px;padding:24px;margin:24px 0}
+.splash-stat-nums{display:flex;gap:0;justify-content:space-around;flex-wrap:wrap;margin-bottom:20px}
+.splash-num{text-align:center;padding:8px 16px}
+.splash-num .num{font-size:1.8rem;font-weight:700;color:#7289da}
+.splash-num .label{font-size:.8rem;color:#888;margin-top:4px}
+.splash-chart-block{border-top:1px solid #2c2c54;padding-top:16px;margin-bottom:4px}
+.splash-chart-label{font-size:.8rem;color:#888;text-align:center;margin-bottom:10px}
+.splash-chart-wrap{position:relative;height:100px}
+.splash-section-heading{color:#fff;font-size:1.1rem;text-align:center;margin:40px 0 8px}
+.splash-section-sub{color:#888;font-size:.9rem;text-align:center;margin-bottom:18px;max-width:640px;margin-left:auto;margin-right:auto}
+.dash-preview-frame{background:#0d0d1a;border:1px solid #2c2c54;border-radius:10px;overflow:hidden;margin-bottom:8px}
+.dash-preview-nav{background:#0d0d1a;border-bottom:1px solid #2c2c54;padding:10px 20px;display:flex;align-items:center;gap:12px}
+.dash-preview-nav-link{color:#7289da;font-size:.9rem}
+.dash-preview-body{padding:20px;max-height:460px;overflow:hidden}
+.dash-preview-charts{padding:24px}
