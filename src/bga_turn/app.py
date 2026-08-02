@@ -285,6 +285,14 @@ def main() -> None:
     client_secret = os.getenv("DISCORD_CLIENT_SECRET", "")
     dashboard_secret_key = os.getenv("DASHBOARD_SECRET_KEY", "")
     global_admin_ids_raw = os.getenv("GLOBAL_ADMIN_DISCORD_IDS", "")
+    if not global_admin_ids_raw.strip():
+        # Backward-compatible alias kept for older deployments.
+        legacy_admin_ids_raw = os.getenv("GLOBAL_ADMIN_IDS", "")
+        if legacy_admin_ids_raw.strip():
+            logging.getLogger(__name__).warning(
+                "GLOBAL_ADMIN_IDS is deprecated; use GLOBAL_ADMIN_DISCORD_IDS instead."
+            )
+            global_admin_ids_raw = legacy_admin_ids_raw
     global_admin_ids: frozenset[str] = frozenset(
         x.strip() for x in global_admin_ids_raw.split(",") if x.strip().isdigit()
     )

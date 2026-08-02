@@ -484,11 +484,12 @@ class BgaClient:
         return snapshot
 
     def fetch_public_player_names(self, table_info: BgaTableInfo) -> dict[str, str]:
+        tableview_url = f"{table_info.base_url}/tableview?table={table_info.table_id}"
         try:
-            response = self._http_get(table_info.table_url, timeout=self.timeout)
+            response = self._http_get(tableview_url, timeout=self.timeout)
         except requests.RequestException as exc:
             raise BgaClientError(
-                tr("error_load_public_page", table_url=table_info.table_url, error=exc)
+                tr("error_load_public_page", table_url=tableview_url, error=exc)
             ) from exc
 
         self._raise_for_bga_status(response)
@@ -878,6 +879,8 @@ class BgaClient:
     def _load_public_bootstrap(
         self, table_info: BgaTableInfo
     ) -> tuple[SpectatorBootstrap, BgaNotificationState | None, dict[str, str]]:
+        tableview_url = f"{table_info.base_url}/tableview?table={table_info.table_id}"
+        used_tableview_fallback = False
         try:
             response = self._http_get(table_info.table_url, timeout=self.timeout)
         except requests.RequestException as exc:
@@ -885,11 +888,25 @@ class BgaClient:
                 tr("error_load_public_page", table_url=table_info.table_url, error=exc)
             ) from exc
 
-        self._raise_for_bga_status(response)
+        try:
+            self._raise_for_bga_status(response)
+        except BgaServerError:
+            # Some tables intermittently fail on the game-page route (`/{server}/{game}`)
+            # while the tableview route still works. Fall back to tableview to keep
+            # bootstrap + websocket monitoring alive for those tables.
+            try:
+                response = self._http_get(tableview_url, timeout=self.timeout)
+            except requests.RequestException as exc:
+                raise BgaClientError(
+                    tr("error_load_public_page", table_url=tableview_url, error=exc)
+                ) from exc
+            self._raise_for_bga_status(response)
+            used_tableview_fallback = True
+
         if response.status_code >= 400:
             raise BgaNotPublicError(tr("error_public_page_http", status_code=response.status_code))
 
-        if table_info.gameserver and table_info.game_name:
+        if not used_tableview_fallback and table_info.gameserver and table_info.game_name:
             expected_path_segment = f"/{table_info.gameserver}/{table_info.game_name}"
             if expected_path_segment not in response.url:
                 raise BgaTableUnavailableError(

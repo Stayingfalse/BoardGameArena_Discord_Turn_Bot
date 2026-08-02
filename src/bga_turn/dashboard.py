@@ -413,38 +413,55 @@ async def _dashboard_index(request: web.Request) -> web.Response:
     client_id: str = request.app["client_id"]
     base_url: str = request.app["base_url"]
 
-    # Guilds where the user has MANAGE_GUILD and bot is present
-    bot_guild_ids = {str(g.id) for g in bot.guilds}
-    user_guilds = session.get("guilds", [])
-
-    managed_guilds = [
-        g for g in user_guilds
-        if (int(g.get("permissions", 0)) & _MANAGE_GUILD) and g["id"] in bot_guild_ids
-    ]
-
-    # Guilds where the user has MANAGE_GUILD but the bot is NOT yet installed
-    unenrolled_managed_guilds = [
-        g for g in user_guilds
-        if (int(g.get("permissions", 0)) & _MANAGE_GUILD) and g["id"] not in bot_guild_ids
-    ]
-
     add_bot_url = _build_add_bot_url(client_id, base_url) if client_id else "#"
-
     managed_guild_cards: list[dict[str, object]] = []
-    for guild in managed_guilds:
-        guild_id = str(guild["id"])
-        stats = await asyncio.to_thread(database.get_guild_stats, guild_id)
-        icon_url = None
-        if guild.get("icon"):
-            icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{guild['icon']}.png?size=64"
-        managed_guild_cards.append(
-            {
-                "id": guild_id,
-                "name": str(guild["name"]),
-                "icon_url": icon_url,
-                "stats": stats,
-            }
-        )
+    show_add_another = False
+    if _is_global_admin(session, request.app):
+        for discord_guild in sorted(bot.guilds, key=lambda g: g.name.casefold()):
+            guild_id = str(discord_guild.id)
+            stats = await asyncio.to_thread(database.get_guild_stats, guild_id)
+            icon_url = None
+            if discord_guild.icon:
+                icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{discord_guild.icon}.png?size=64"
+            managed_guild_cards.append(
+                {
+                    "id": guild_id,
+                    "name": discord_guild.name,
+                    "icon_url": icon_url,
+                    "stats": stats,
+                }
+            )
+    else:
+        # Guilds where the user has MANAGE_GUILD and bot is present
+        bot_guild_ids = {str(g.id) for g in bot.guilds}
+        user_guilds = session.get("guilds", [])
+
+        managed_guilds = [
+            g for g in user_guilds
+            if (int(g.get("permissions", 0)) & _MANAGE_GUILD) and g["id"] in bot_guild_ids
+        ]
+
+        # Guilds where the user has MANAGE_GUILD but the bot is NOT yet installed
+        unenrolled_managed_guilds = [
+            g for g in user_guilds
+            if (int(g.get("permissions", 0)) & _MANAGE_GUILD) and g["id"] not in bot_guild_ids
+        ]
+        show_add_another = bool(unenrolled_managed_guilds)
+
+        for guild in managed_guilds:
+            guild_id = str(guild["id"])
+            stats = await asyncio.to_thread(database.get_guild_stats, guild_id)
+            icon_url = None
+            if guild.get("icon"):
+                icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{guild['icon']}.png?size=64"
+            managed_guild_cards.append(
+                {
+                    "id": guild_id,
+                    "name": str(guild["name"]),
+                    "icon_url": icon_url,
+                    "stats": stats,
+                }
+            )
 
     return web.Response(
         text=_render_template(
@@ -454,7 +471,7 @@ async def _dashboard_index(request: web.Request) -> web.Response:
             session=session,
             managed_guilds=managed_guild_cards,
             add_bot_url=add_bot_url,
-            show_add_another=bool(unenrolled_managed_guilds),
+            show_add_another=show_add_another,
         ),
         content_type="text/html",
     )

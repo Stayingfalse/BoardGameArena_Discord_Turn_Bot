@@ -196,6 +196,7 @@ DASHBOARD_SECRET_KEY=
 | `DISCORD_CLIENT_ID` | — | — | Discord OAuth2 client ID (required when dashboard is enabled) |
 | `DISCORD_CLIENT_SECRET` | — | — | Discord OAuth2 client secret (required when dashboard is enabled) |
 | `DASHBOARD_SECRET_KEY` | — | — | Random secret for dashboard auth state validation (required when dashboard is enabled) |
+| `GLOBAL_ADMIN_DISCORD_IDS` | — | — | Comma-separated Discord user IDs that can view/manage all bot servers in the dashboard |
 
 ---
 
@@ -369,6 +370,7 @@ DASHBOARD_BASE_URL=https://your-domain.com   # must be HTTPS in production
 DISCORD_CLIENT_ID=your_discord_app_client_id
 DISCORD_CLIENT_SECRET=your_discord_app_client_secret
 DASHBOARD_SECRET_KEY=your_random_secret      # python -c "import secrets; print(secrets.token_hex(32))"
+GLOBAL_ADMIN_DISCORD_IDS=123456789012345678  # optional comma-separated Discord user IDs
 ```
 
 To get `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`:
