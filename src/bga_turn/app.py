@@ -213,6 +213,7 @@ async def _run_bot(
     client_id: str,
     client_secret: str,
     dashboard_secret_key: str,
+    global_admin_ids: frozenset[str],
 ) -> None:
     logger = logging.getLogger(__name__)
     if dashboard_enabled:
@@ -323,6 +324,7 @@ def main() -> None:
             client_id=client_id,
             client_secret=client_secret,
             dashboard_secret_key=dashboard_secret_key,
+            global_admin_ids=global_admin_ids,
         )
     )
 
