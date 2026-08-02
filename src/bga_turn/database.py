@@ -1176,7 +1176,7 @@ class Database:
                     tracked_message_id,
                     tracked_message_kind,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'recruiting'), ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'recruiting'), ?, COALESCE(?, '[]'), COALESCE(?, '[]'), ?, ?, ?, ?)
                 ON CONFLICT(subscription_id) DO UPDATE SET
                     last_packet_id = excluded.last_packet_id,
                     last_waiting_ids = excluded.last_waiting_ids,
