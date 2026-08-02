@@ -11,8 +11,12 @@ GET  /auth/callback             Finish OAuth2, set session cookie, redirect to /
 GET  /dashboard                 Admin index: guilds where user has MANAGE_GUILD.
 GET  /dashboard/{guild_id}      Per-guild stats + settings form.
 GET  /dashboard/{guild_id}/tables  Per-guild watched table lifecycle view.
+GET  /dashboard/{guild_id}/members Per-guild member linking view.
+GET  /dashboard/{guild_id}/members/search?q= Query guild members for linking UI.
 POST /dashboard/{guild_id}/settings  Save per-guild settings.
 POST /dashboard/{guild_id}/tables/{subscription_id}/unwatch  Stop monitoring one table.
+POST /dashboard/{guild_id}/members/link Manually link unmatched BGA name to Discord member.
+POST /dashboard/{guild_id}/members/{discord_user_id}/unlink Remove an existing user link.
 """
 
 from __future__ import annotations
@@ -119,6 +123,15 @@ def _resolve_channel_label(discord_guild: object | None, channel_id: str) -> str
     if channel is None:
         return channel_id
     return f"#{channel.name}"
+
+
+def _member_payload(member: object) -> dict[str, str]:
+    username = getattr(member, "name", "")
+    return {
+        "id": str(getattr(member, "id", "")),
+        "display_name": str(getattr(member, "display_name", username) or username),
+        "username": str(username),
+    }
 
 
 def _auth_error_page(
@@ -603,6 +616,184 @@ async def _dashboard_guild_unwatch_post(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}/tables?removed={status_value}")
 
 
+async def _dashboard_guild_members(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    bot: BgaDiscordBot = request.app["bot"]
+    database: Database = request.app["database"]
+
+    discord_guild = bot.get_guild(int(guild_id))
+    guild_name = discord_guild.name if discord_guild else guild_id
+
+    linked_users = await asyncio.to_thread(database.list_linked_users)
+    subscriptions = await asyncio.to_thread(database.list_watch_subscriptions_for_guild, guild_id)
+    history_rows = await asyncio.to_thread(database.list_game_history_for_guild, guild_id, limit=1000)
+
+    guild_members = list(getattr(discord_guild, "members", [])) if discord_guild is not None else []
+    members_by_id = {str(item.id): item for item in guild_members}
+
+    linked_cards = []
+    linked_by_id: dict[str, object] = {}
+    linked_by_name: dict[str, object] = {}
+    for linked in linked_users:
+        discord_member = members_by_id.get(linked.discord_user_id)
+        if discord_member is None:
+            continue
+        linked_cards.append(
+            {
+                "discord_user_id": linked.discord_user_id,
+                "discord_display_name": discord_member.display_name,
+                "discord_username": discord_member.name,
+                "bga_player_id": linked.bga_player_id,
+                "bga_player_name": linked.bga_player_name,
+            }
+        )
+        if linked.bga_player_id:
+            linked_by_id[linked.bga_player_id] = linked
+        if linked.bga_player_name:
+            linked_by_name[linked.bga_player_name.casefold()] = linked
+    linked_cards.sort(key=lambda item: (str(item["discord_display_name"]).casefold(), str(item["bga_player_name"]).casefold()))
+
+    unmatched_candidates: dict[tuple[str, str], dict[str, str]] = {}
+
+    def _append_unmatched_candidate(player_id: str, player_name: str) -> None:
+        normalized_id = player_id.strip()
+        normalized_name = player_name.strip()
+        if not normalized_id and not normalized_name:
+            return
+        if normalized_id and normalized_id in linked_by_id:
+            return
+        if normalized_name and normalized_name.casefold() in linked_by_name:
+            return
+        key = (normalized_id, normalized_name.casefold())
+        if key in unmatched_candidates:
+            return
+        unmatched_candidates[key] = {
+            "bga_player_id": normalized_id,
+            "bga_player_name": normalized_name or normalized_id,
+        }
+
+    for subscription in subscriptions:
+        for player_id, player_name in subscription.player_names.items():
+            _append_unmatched_candidate(player_id, player_name)
+        for player_id, player_name in subscription.seated_player_names.items():
+            _append_unmatched_candidate(player_id, player_name)
+
+    for history in history_rows:
+        for winner_name in history.winner_names:
+            _append_unmatched_candidate("", winner_name)
+        for standing_name in history.final_standings:
+            _append_unmatched_candidate("", standing_name)
+
+    unmatched_cards = sorted(
+        unmatched_candidates.values(),
+        key=lambda item: (
+            item["bga_player_name"].casefold(),
+            item["bga_player_id"].casefold(),
+        ),
+    )
+
+    return web.Response(
+        text=_render_template(
+            request,
+            "dashboard_members.html",
+            title=f"{guild_name} Members",
+            session=session,
+            guild_id=guild_id,
+            guild_name=guild_name,
+            linked_cards=linked_cards,
+            unmatched_cards=unmatched_cards,
+            link_saved=(request.rel_url.query.get("linked") == "1"),
+            unlinked=(request.rel_url.query.get("unlinked") == "1"),
+        ),
+        content_type="text/html",
+    )
+
+
+async def _dashboard_guild_members_search(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    query = (request.rel_url.query.get("q", "") or "").strip().casefold()
+    bot: BgaDiscordBot = request.app["bot"]
+    discord_guild = bot.get_guild(int(guild_id))
+    guild_members = list(getattr(discord_guild, "members", [])) if discord_guild is not None else []
+
+    if not query:
+        members = guild_members[:25]
+    else:
+        members = [
+            member
+            for member in guild_members
+            if query in member.display_name.casefold() or query in member.name.casefold() or query in str(member.id)
+        ][:25]
+    return web.json_response({"members": [_member_payload(item) for item in members]})
+
+
+async def _dashboard_guild_members_link_post(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    data = await request.post()
+    discord_user_id = (data.get("discord_user_id") or "").strip()
+    bga_player_id = (data.get("bga_player_id") or "").strip()
+    bga_player_name = (data.get("bga_player_name") or "").strip()
+    if not discord_user_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid Discord user ID.")
+    if not bga_player_name:
+        raise web.HTTPBadRequest(reason="Missing BGA player name.")
+
+    database: Database = request.app["database"]
+    await asyncio.to_thread(
+        database.upsert_linked_user,
+        discord_user_id,
+        bga_player_id,
+        bga_player_name,
+    )
+    raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}/members?linked=1")
+
+
+async def _dashboard_guild_members_unlink_post(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    discord_user_id = request.match_info["discord_user_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not discord_user_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid Discord user ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    database: Database = request.app["database"]
+    await asyncio.to_thread(database.remove_linked_user, discord_user_id)
+    raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}/members?unlinked=1")
+
+
 async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
     session, session_reason = _get_session(request)
     if session is None:
@@ -674,8 +865,12 @@ def create_dashboard_app(
     app.router.add_get("/dashboard", _dashboard_index)
     app.router.add_get("/dashboard/{guild_id}", _dashboard_guild)
     app.router.add_get("/dashboard/{guild_id}/tables", _dashboard_guild_tables)
+    app.router.add_get("/dashboard/{guild_id}/members", _dashboard_guild_members)
+    app.router.add_get("/dashboard/{guild_id}/members/search", _dashboard_guild_members_search)
     app.router.add_post("/dashboard/{guild_id}/settings", _dashboard_guild_settings_post)
     app.router.add_post("/dashboard/{guild_id}/tables/{subscription_id}/unwatch", _dashboard_guild_unwatch_post)
+    app.router.add_post("/dashboard/{guild_id}/members/link", _dashboard_guild_members_link_post)
+    app.router.add_post("/dashboard/{guild_id}/members/{discord_user_id}/unlink", _dashboard_guild_members_unlink_post)
     app.router.add_static("/static/", str(package_root / "static"))
 
     return app

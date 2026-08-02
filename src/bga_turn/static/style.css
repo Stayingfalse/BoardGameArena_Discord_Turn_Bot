@@ -75,3 +75,8 @@ hr{border:none;border-top:1px solid #2c2c54;margin:24px 0}
 .table-meta{margin-top:10px;font-size:.85rem;color:#b0b0c0;display:grid;gap:4px}
 .table-details{margin-top:10px;font-size:.9rem;color:#e0e0e0;display:grid;gap:4px}
 .muted{color:#888;font-size:.9rem}
+.member-sub{font-size:.85rem;color:#888;font-weight:400}
+.link-form{margin-top:12px}
+.link-form-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.link-form-row input[type=text]{min-width:240px;flex:1;padding:9px 12px;background:#0d0d1a;border:1px solid #2c2c54;border-radius:6px;color:#e0e0e0;font-size:.95rem}
+.link-form-row select{min-width:280px;flex:1;padding:9px 12px;background:#0d0d1a;border:1px solid #2c2c54;border-radius:6px;color:#e0e0e0;font-size:.95rem}
