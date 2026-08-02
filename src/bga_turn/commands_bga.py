@@ -436,8 +436,16 @@ class BgaCommands(commands.Cog):
             last_packet_id=subscription.last_packet_id,
             waiting_ids=[] if state is None else subscription.last_waiting_ids,
             player_names=persisted_player_names,
+            seated_player_names=(
+                dict(snapshot.player_names)
+                if snapshot is not None and snapshot.player_names
+                else dict(persisted_player_names)
+            ),
+            seats_total=snapshot.seats_total if snapshot is not None else subscription.seats_total,
+            seats_remaining=snapshot.seats_remaining if snapshot is not None else subscription.seats_remaining,
             is_initialized=subscription.is_initialized if state is not None else False,
             game_name=resolved_game_name or subscription.game_name,
+            player_count=len(persisted_player_names),
         )
         await asyncio.to_thread(
             self.database.enrich_linked_users_from_players, persisted_player_names

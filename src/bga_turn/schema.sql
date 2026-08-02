@@ -38,13 +38,36 @@ CREATE TABLE IF NOT EXISTS watch_states (
     last_packet_id INTEGER NOT NULL DEFAULT 1,
     last_waiting_ids TEXT NOT NULL DEFAULT '[]',
     last_player_names TEXT NOT NULL DEFAULT '{}',
+    seated_player_names TEXT NOT NULL DEFAULT '{}',
+    seats_total INTEGER,
+    seats_remaining INTEGER,
     is_initialized INTEGER NOT NULL DEFAULT 0,
     game_name TEXT,
     lifecycle_state TEXT NOT NULL DEFAULT 'recruiting',
+    game_started_at TEXT,
+    winner_names TEXT NOT NULL DEFAULT '[]',
+    final_standings TEXT NOT NULL DEFAULT '[]',
+    player_count INTEGER,
     tracked_message_id TEXT,
     tracked_message_kind TEXT,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (subscription_id) REFERENCES watch_subscriptions(subscription_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS game_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id TEXT NOT NULL,
+    game_name TEXT,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    created_by_discord_user_id TEXT NOT NULL,
+    recruiting_started_at TEXT NOT NULL,
+    game_started_at TEXT,
+    finished_at TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('finished', 'cancelled', 'unwatched')),
+    winner_names TEXT NOT NULL DEFAULT '[]',
+    final_standings TEXT NOT NULL DEFAULT '[]',
+    player_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS dashboard_sessions (

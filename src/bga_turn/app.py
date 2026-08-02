@@ -171,6 +171,7 @@ class BgaDiscordBot(commands.Bot):
         removed_watches = await asyncio.to_thread(
             self.database.remove_all_watch_subscriptions_for_guild,
             guild_id,
+            outcome="cancelled",
         )
         await asyncio.to_thread(self.database.remove_guild_settings, guild_id)
         await asyncio.to_thread(self.database.remove_followed_players_for_guild, guild_id)

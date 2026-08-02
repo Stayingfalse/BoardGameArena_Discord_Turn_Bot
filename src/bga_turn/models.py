@@ -31,6 +31,9 @@ class WatchSubscription:
     last_packet_id: int
     last_waiting_ids: list[str]
     player_names: dict[str, str]
+    seated_player_names: dict[str, str]
+    seats_total: int | None
+    seats_remaining: int | None
     is_initialized: bool
     game_name: str | None
     lifecycle_state: str
