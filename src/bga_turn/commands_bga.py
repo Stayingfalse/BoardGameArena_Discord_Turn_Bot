@@ -185,8 +185,22 @@ class BgaCommands(commands.Cog):
         permissions = interaction.permissions
         return permissions.manage_guild or permissions.administrator
 
-    @staticmethod
+    async def _interaction_send_with_retry(
+        self,
+        interaction: discord.Interaction,
+        operation: str,
+        coro_factory,
+    ) -> None:
+        await self.monitor._discord_call_with_retry(
+            operation=operation,
+            table_id=f"interaction:{interaction.guild_id or 'dm'}",
+            coro_factory=coro_factory,
+            channel_id=str(interaction.channel_id) if interaction.channel_id is not None else None,
+            operation_kind="send",
+        )
+
     async def _send_ephemeral_embeds(
+        self,
         interaction: discord.Interaction,
         embeds: list[discord.Embed],
     ) -> None:
@@ -196,12 +210,26 @@ class BgaCommands(commands.Cog):
         batches = [embeds[index : index + 10] for index in range(0, len(embeds), 10)]
         first_batch, *remaining_batches = batches
         if interaction.response.is_done():
-            await interaction.followup.send(embeds=first_batch, ephemeral=True)
+            await self._interaction_send_with_retry(
+                interaction,
+                "interaction_followup_embeds",
+                lambda: interaction.followup.send(embeds=first_batch, ephemeral=True),
+            )
         else:
-            await interaction.response.send_message(embeds=first_batch, ephemeral=True)
+            await self._interaction_send_with_retry(
+                interaction,
+                "interaction_response_embeds",
+                lambda: interaction.response.send_message(embeds=first_batch, ephemeral=True),
+            )
 
         for batch in remaining_batches:
-            await interaction.followup.send(embeds=batch, ephemeral=True)
+            await self._interaction_send_with_retry(
+                interaction,
+                "interaction_followup_embeds",
+                lambda current_batch=batch: interaction.followup.send(
+                    embeds=current_batch, ephemeral=True
+                ),
+            )
 
     @bga.command(name="link-member", description=tr("command_link_member_description"))
     @app_commands.describe(
@@ -217,30 +245,46 @@ class BgaCommands(commands.Cog):
         bga_player_id: str | None = None,
     ) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message(
-                tr("error_command_server_only"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "link_member_server_only",
+                lambda: interaction.response.send_message(
+                    tr("error_command_server_only"),
+                    ephemeral=True,
+                ),
             )
             return
         if not self._has_manage_permissions(interaction):
-            await interaction.response.send_message(
-                tr("error_manage_server_required_link"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "link_member_no_permission",
+                lambda: interaction.response.send_message(
+                    tr("error_manage_server_required_link"),
+                    ephemeral=True,
+                ),
             )
             return
 
         candidate_id = (bga_player_id or "").strip()
         candidate_name = (bga_player_name or "").strip()
         if not candidate_id and not candidate_name:
-            await interaction.response.send_message(
-                tr("error_need_bga_name_or_id"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "link_member_missing_input",
+                lambda: interaction.response.send_message(
+                    tr("error_need_bga_name_or_id"),
+                    ephemeral=True,
+                ),
             )
             return
         if candidate_id and not candidate_id.isdigit():
-            await interaction.response.send_message(
-                tr("error_invalid_bga_player_id"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "link_member_invalid_id",
+                lambda: interaction.response.send_message(
+                    tr("error_invalid_bga_player_id"),
+                    ephemeral=True,
+                ),
             )
             return
 
@@ -255,14 +299,18 @@ class BgaCommands(commands.Cog):
             raise RuntimeError("Failed to load the linked BGA user after saving it.")
         name_display = linked_user.bga_player_name or tr("link_missing_value_placeholder")
         id_display = linked_user.bga_player_id or tr("link_missing_value_placeholder")
-        await interaction.response.send_message(
-            tr(
-                "link_saved",
-                member_mention=member.mention,
-                bga_name=name_display,
-                bga_id=id_display,
+        await self._interaction_send_with_retry(
+            interaction,
+            "link_member_saved",
+            lambda: interaction.response.send_message(
+                tr(
+                    "link_saved",
+                    member_mention=member.mention,
+                    bga_name=name_display,
+                    bga_id=id_display,
+                ),
+                ephemeral=True,
             ),
-            ephemeral=True,
         )
 
     @bga.command(name="unlink-member", description=tr("command_unlink_member_description"))
@@ -273,29 +321,45 @@ class BgaCommands(commands.Cog):
         member: discord.Member,
     ) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message(
-                tr("error_command_server_only"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "unlink_member_server_only",
+                lambda: interaction.response.send_message(
+                    tr("error_command_server_only"),
+                    ephemeral=True,
+                ),
             )
             return
         if not self._has_manage_permissions(interaction):
-            await interaction.response.send_message(
-                tr("error_manage_server_required_unlink"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "unlink_member_no_permission",
+                lambda: interaction.response.send_message(
+                    tr("error_manage_server_required_unlink"),
+                    ephemeral=True,
+                ),
             )
             return
 
         removed = self.database.remove_linked_user(str(member.id))
         if not removed:
-            await interaction.response.send_message(
-                tr("unlink_not_found", member_mention=member.mention),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "unlink_member_not_found",
+                lambda: interaction.response.send_message(
+                    tr("unlink_not_found", member_mention=member.mention),
+                    ephemeral=True,
+                ),
             )
             return
 
-        await interaction.response.send_message(
-            tr("unlink_saved", member_mention=member.mention),
-            ephemeral=True,
+        await self._interaction_send_with_retry(
+            interaction,
+            "unlink_member_saved",
+            lambda: interaction.response.send_message(
+                tr("unlink_saved", member_mention=member.mention),
+                ephemeral=True,
+            ),
         )
 
     async def _register_watch(
@@ -419,17 +483,25 @@ class BgaCommands(commands.Cog):
     @bga.command(name="status", description=tr("command_status_description"))
     async def status(self, interaction: discord.Interaction) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message(
-                tr("error_command_server_only"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "status_server_only",
+                lambda: interaction.response.send_message(
+                    tr("error_command_server_only"),
+                    ephemeral=True,
+                ),
             )
             return
 
         subscriptions = self.database.list_watch_subscriptions_for_guild(str(interaction.guild_id))
         if not subscriptions:
-            await interaction.response.send_message(
-                tr("status_none"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "status_none",
+                lambda: interaction.response.send_message(
+                    tr("status_none"),
+                    ephemeral=True,
+                ),
             )
             return
 
@@ -501,15 +573,23 @@ class BgaCommands(commands.Cog):
         clear_forced_channel: bool | None = None,
     ) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message(
-                tr("error_command_server_only"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "settings_server_only",
+                lambda: interaction.response.send_message(
+                    tr("error_command_server_only"),
+                    ephemeral=True,
+                ),
             )
             return
         if not self._has_manage_permissions(interaction):
-            await interaction.response.send_message(
-                tr("error_manage_server_required_settings"),
-                ephemeral=True,
+            await self._interaction_send_with_retry(
+                interaction,
+                "settings_no_permission",
+                lambda: interaction.response.send_message(
+                    tr("error_manage_server_required_settings"),
+                    ephemeral=True,
+                ),
             )
             return
 
@@ -524,14 +604,18 @@ class BgaCommands(commands.Cog):
         # No changes requested — show current settings.
         if recruiting_only is None and delete_invite_message is None and forced_channel is None and clear_forced_channel is None:
             channel_display = f"<#{current.forced_channel_id}>" if current.forced_channel_id else tr("value_none")
-            await interaction.response.send_message(
-                tr(
-                    "settings_display",
-                    recruiting_only=current.recruiting_only,
-                    delete_invite_message=current.delete_invite_message,
-                    forced_channel_id=channel_display,
+            await self._interaction_send_with_retry(
+                interaction,
+                "settings_display",
+                lambda: interaction.response.send_message(
+                    tr(
+                        "settings_display",
+                        recruiting_only=current.recruiting_only,
+                        delete_invite_message=current.delete_invite_message,
+                        forced_channel_id=channel_display,
+                    ),
+                    ephemeral=True,
                 ),
-                ephemeral=True,
             )
             return
 
@@ -552,12 +636,16 @@ class BgaCommands(commands.Cog):
         )
 
         channel_display = f"<#{new_forced_channel_id}>" if new_forced_channel_id else tr("value_none")
-        await interaction.response.send_message(
-            tr(
-                "settings_saved",
-                recruiting_only=new_recruiting_only,
-                delete_invite_message=new_delete_invite_message,
-                forced_channel_id=channel_display,
+        await self._interaction_send_with_retry(
+            interaction,
+            "settings_saved",
+            lambda: interaction.response.send_message(
+                tr(
+                    "settings_saved",
+                    recruiting_only=new_recruiting_only,
+                    delete_invite_message=new_delete_invite_message,
+                    forced_channel_id=channel_display,
+                ),
+                ephemeral=True,
             ),
-            ephemeral=True,
         )

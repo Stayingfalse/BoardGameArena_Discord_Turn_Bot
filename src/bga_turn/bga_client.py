@@ -212,27 +212,13 @@ class BgaClient:
         self.timeout = timeout
         self.websocket_url = websocket_url
         self.enable_tableinfos_fallback = enable_tableinfos_fallback
-        self._request_token: str | None = None
-        # The client is shared across concurrent table workers (asyncio + to_thread).
-        # `requests.Session` and the request token are not safe for concurrent use,
-        # so serialize HTTP access; the roster cache has its own lock.
-        self._http_lock = threading.Lock()
+        # Each table worker runs in its own thread (asyncio.to_thread).  Using
+        # thread-local sessions means every thread gets its own requests.Session
+        # with no shared state and no lock needed, so table workers can make HTTP
+        # calls concurrently.  The roster cache has its own lock.
+        self._thread_local = threading.local()
         self._roster_cache_lock = threading.Lock()
         self._roster_cache: dict[str, tuple[float, dict[str, str]]] = {}
-        self._http = requests.Session()
-        self._http.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/146.0.0.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en,en-US;q=0.9,fr;q=0.8,fr-FR;q=0.7",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-            }
-        )
 
     def build_public_table_info(
         self,
@@ -326,12 +312,11 @@ class BgaClient:
             raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
 
         token_match = self._REQUEST_TOKEN_PATTERN.search(response.text)
-        if token_match is not None:
-            self._request_token = token_match.group("token")
-        if not self._request_token:
+        request_token: str | None = token_match.group("token") if token_match is not None else None
+        if not request_token:
             raise BgaClientError(tr("error_player_tables_missing_request_token", player_id=player_id))
 
-        data = self._fetch_player_tables_data(player_id=player_id, base_url=base)
+        data = self._fetch_player_tables_data(player_id=player_id, base_url=base, request_token=request_token)
 
         tables: list[BgaTableInfo] = []
         raw_tables = data.get("tables")
@@ -371,15 +356,15 @@ class BgaClient:
         LOGGER.info(tr("player_tables_resolved", player_id=player_id, count=len(tables)))
         return PlayerTables(player_id=str(player_id), player_name=player_name, tables=tables)
 
-    def _fetch_player_tables_data(self, *, player_id: str, base_url: str) -> dict[str, Any]:
+    def _fetch_player_tables_data(self, *, player_id: str, base_url: str, request_token: str | None = None) -> dict[str, Any]:
         endpoint = f"{base_url}/tablemanager/tablemanager/tableinfos.html"
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Origin": base_url,
             "Referer": f"{base_url}/playertables?player={player_id}",
         }
-        if self._request_token:
-            headers["X-Request-Token"] = self._request_token
+        if request_token:
+            headers["X-Request-Token"] = request_token
         try:
             response = self._http_post(
                 endpoint,
@@ -505,14 +490,32 @@ class BgaClient:
             return roster
         return self._extract_player_names_from_html(response.text)
 
+    def _get_session(self) -> requests.Session:
+        """Return the thread-local HTTP session, creating it on first access."""
+        session: requests.Session | None = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(
+                {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/146.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en,en-US;q=0.9,fr;q=0.8,fr-FR;q=0.7",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                }
+            )
+            self._thread_local.session = session
+        return session
+
     def _http_get(self, url: str, **kwargs: Any) -> requests.Response:
-        # Serialize access to the shared, non-thread-safe requests.Session.
-        with self._http_lock:
-            return self._http.get(url, **kwargs)
+        return self._get_session().get(url, **kwargs)
 
     def _http_post(self, url: str, **kwargs: Any) -> requests.Response:
-        with self._http_lock:
-            return self._http.post(url, **kwargs)
+        return self._get_session().post(url, **kwargs)
 
     @staticmethod
     def _raise_for_bga_status(response: requests.Response) -> None:
@@ -542,13 +545,12 @@ class BgaClient:
     def _fetch_tableinfos_with_token(
         self, *, table_id: str, base_url: str, html: str
     ) -> dict[str, Any]:
-        """Refresh the anti-CSRF token from ``html`` then fetch the tableinfos data."""
+        """Extract the anti-CSRF token from ``html`` then fetch the tableinfos data."""
         token_match = self._REQUEST_TOKEN_PATTERN.search(html)
-        if token_match is not None:
-            self._request_token = token_match.group("token")
-        if not self._request_token:
+        request_token: str | None = token_match.group("token") if token_match is not None else None
+        if not request_token:
             raise BgaNotPublicError(tr("error_resolve_missing_request_token", table_id=table_id))
-        return self._fetch_public_tableinfos_data(table_id=table_id, base_url=base_url)
+        return self._fetch_public_tableinfos_data(table_id=table_id, base_url=base_url, request_token=request_token)
 
     def _get_cached_roster(self, table_id: str) -> dict[str, str] | None:
         with self._roster_cache_lock:
@@ -567,15 +569,15 @@ class BgaClient:
         with self._roster_cache_lock:
             self._roster_cache[table_id] = (time.monotonic(), dict(roster))
 
-    def _fetch_public_tableinfos_data(self, *, table_id: str, base_url: str) -> dict[str, Any]:
+    def _fetch_public_tableinfos_data(self, *, table_id: str, base_url: str, request_token: str | None = None) -> dict[str, Any]:
         endpoint = (
             f"{base_url}/table/table/tableinfos.html"
             f"?id={table_id}&nosuggest=true&table={table_id}"
             f"&noerrortracking=true&dojo.preventCache={int(time.time() * 1000)}"
         )
         headers = {"X-Requested-With": "XMLHttpRequest"}
-        if self._request_token:
-            headers["X-Request-Token"] = self._request_token
+        if request_token:
+            headers["X-Request-Token"] = request_token
         try:
             response = self._http_get(endpoint, headers=headers, timeout=self.timeout)
         except requests.RequestException as exc:
