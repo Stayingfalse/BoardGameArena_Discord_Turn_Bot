@@ -1027,6 +1027,26 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Discord I/O paused until rate-limit window clears ({wait:.1f}s remaining).",
         "FR": "Les operations Discord sont en pause jusqu'a la fin de la fenetre de limitation ({wait:.1f}s restantes).",
     },
+    "bga_server_error_http": {
+        "EN": "BGA returned HTTP {status_code} (server error).",
+        "FR": "BGA a retourne HTTP {status_code} (erreur serveur).",
+    },
+    "bga_site_down": {
+        "EN": "BGA appears to be down ({error_count}/{total_count} tables reporting server errors, including table {table_id}): {error}. Waiting before retry.",
+        "FR": "BGA semble etre en panne ({error_count}/{total_count} tables signalent des erreurs serveur, dont la table {table_id}) : {error}. Attente avant nouvel essai.",
+    },
+    "bga_table_server_error": {
+        "EN": "BGA server error on table {table_id} (consecutive: {consecutive}): {error}",
+        "FR": "Erreur serveur BGA sur la table {table_id} (consecutif : {consecutive}) : {error}",
+    },
+    "bga_server_error_cleared": {
+        "EN": "BGA server error resolved for table {table_id}; removing error banner from Discord.",
+        "FR": "L'erreur serveur BGA pour la table {table_id} est resolue ; suppression de la banniere d'erreur Discord.",
+    },
+    "table_server_error_note": {
+        "EN": "⚠️ BGA is reporting a server error for this table. The bot is retrying automatically.",
+        "FR": "⚠️ BGA signale une erreur serveur pour cette table. Le bot reessaie automatiquement.",
+    },
 }
 
 

@@ -52,6 +52,17 @@ class BgaRateLimitError(BgaClientError):
         self.retry_after = retry_after
 
 
+class BgaServerError(BgaClientError):
+    """Raised when BGA responds with an HTTP 5xx server error.
+
+    ``status_code`` carries the actual HTTP status code received.
+    """
+
+    def __init__(self, message: str, status_code: int = 500) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 @dataclass(frozen=True)
 class SpectatorBootstrap:
     user_id: str
@@ -505,8 +516,9 @@ class BgaClient:
 
     @staticmethod
     def _raise_for_bga_status(response: requests.Response) -> None:
-        """Raise ``BgaRateLimitError`` if BGA responded with HTTP 429.
+        """Raise a typed exception for BGA HTTP 429 or 5xx responses.
 
+        HTTP 429 raises ``BgaRateLimitError``; HTTP 5xx raises ``BgaServerError``.
         All other error status codes are left to the individual callsite to
         handle so that they can raise the correct exception subtype
         (``BgaNotPublicError``, ``BgaTableUnavailableError``, etc.).
@@ -520,6 +532,11 @@ class BgaClient:
             raise BgaRateLimitError(
                 tr("bga_rate_limited", table_id="?", retry_after=retry_after),
                 retry_after=retry_after,
+            )
+        if response.status_code >= 500:
+            raise BgaServerError(
+                tr("bga_server_error_http", status_code=response.status_code),
+                status_code=response.status_code,
             )
 
     def _fetch_tableinfos_with_token(

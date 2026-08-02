@@ -25,6 +25,7 @@ class WatchRegistrationResult:
     source: str
     detected_player_names: dict[str, str]
     init_state: str
+    replaced_existing_watch: bool = False
 
 
 class BgaCommands(commands.Cog):
@@ -62,6 +63,7 @@ class BgaCommands(commands.Cog):
             return
 
         registered_subscriptions: list[int] = []
+        subscriptions_to_repost: dict[int, WatchSubscription] = {}
         for table_reference in table_references:
             try:
                 registration = await self._register_watch(
@@ -81,8 +83,12 @@ class BgaCommands(commands.Cog):
                 )
                 continue
             registered_subscriptions.append(registration.subscription.subscription_id)
+            if registration.replaced_existing_watch:
+                subscriptions_to_repost[registration.subscription.subscription_id] = registration.subscription
 
         if registered_subscriptions:
+            for subscription in subscriptions_to_repost.values():
+                await self.monitor.reset_tracked_message(subscription)
             LOGGER.info(
                 tr(
                     "auto_watch_registered",
@@ -301,6 +307,11 @@ class BgaCommands(commands.Cog):
         table_or_url: str,
     ) -> WatchRegistrationResult:
         table_id, table_url, base_url, gameserver, game_name = parse_public_table_url(table_or_url)
+        existing_subscription = self.database.get_watch_subscription_by_scope(
+            table_id=table_id,
+            guild_id=guild_id,
+            channel_id=channel_id,
+        )
 
         snapshot = None
         state = None
@@ -374,6 +385,7 @@ class BgaCommands(commands.Cog):
                 source=source,
                 detected_player_names=detected_player_names,
                 init_state=init_state,
+                replaced_existing_watch=existing_subscription is not None,
             )
 
         subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
@@ -386,6 +398,7 @@ class BgaCommands(commands.Cog):
                 if subscription.is_initialized
                 else tr("watch_init_waiting_event")
             ),
+            replaced_existing_watch=existing_subscription is not None,
         )
 
     def _extract_table_references(cls, message_content: str) -> list[str]:

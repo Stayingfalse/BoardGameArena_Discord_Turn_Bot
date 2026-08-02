@@ -609,6 +609,23 @@ class Database:
             return None
         return self._row_to_watch_subscription(row)
 
+    def get_watch_subscription_by_scope(
+        self,
+        *,
+        table_id: str,
+        guild_id: str,
+        channel_id: str,
+    ) -> WatchSubscription | None:
+        with self._lock:
+            row = self._connection.execute(
+                self._watch_subscription_query()
+                + " WHERE ws.table_id = ? AND ws.guild_id = ? AND ws.channel_id = ?",
+                (table_id, guild_id, channel_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_watch_subscription(row)
+
     def remove_watch_subscription(self, *, table_id: str, guild_id: str, channel_id: str) -> bool:
         with self._lock:
             cursor = self._connection.execute(
