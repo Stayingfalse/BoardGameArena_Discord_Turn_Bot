@@ -80,3 +80,12 @@ hr{border:none;border-top:1px solid #2c2c54;margin:24px 0}
 .link-form-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .link-form-row input[type=text]{min-width:240px;flex:1;padding:9px 12px;background:#0d0d1a;border:1px solid #2c2c54;border-radius:6px;color:#e0e0e0;font-size:.95rem}
 .link-form-row select{min-width:280px;flex:1;padding:9px 12px;background:#0d0d1a;border:1px solid #2c2c54;border-radius:6px;color:#e0e0e0;font-size:.95rem}
+.stats-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;margin:24px 0}
+.chart-block{background:#16213e;border:1px solid #2c2c54;border-radius:10px;padding:20px}
+.chart-block h3{color:#fff;font-size:.95rem;margin-bottom:16px}
+.chart-wrap{position:relative;height:260px}
+.stats-table{width:100%;border-collapse:collapse;font-size:.9rem}
+.stats-table th{text-align:left;color:#888;font-weight:600;padding:6px 10px;border-bottom:1px solid #2c2c54;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.stats-table td{padding:8px 10px;border-bottom:1px solid #1a1a2e;color:#e0e0e0}
+.stats-table tbody tr:last-child td{border-bottom:none}
+.stats-table tbody tr:hover td{background:#1e2a45}

@@ -794,6 +794,61 @@ async def _dashboard_guild_members_unlink_post(request: web.Request) -> web.Resp
     raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}/members?unlinked=1")
 
 
+async def _dashboard_guild_stats(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    guild_id = request.match_info["guild_id"]
+    if not guild_id.isdigit():
+        raise web.HTTPBadRequest(reason="Invalid guild ID.")
+    if not _session_manages_guild(session, guild_id):
+        raise web.HTTPForbidden(reason="You do not manage this server.")
+
+    bot: BgaDiscordBot = request.app["bot"]
+    database: Database = request.app["database"]
+
+    discord_guild = bot.get_guild(int(guild_id))
+    guild_name = discord_guild.name if discord_guild else guild_id
+
+    stats = await asyncio.to_thread(database.get_guild_extended_stats, guild_id)
+
+    return web.Response(
+        text=_render_template(
+            request,
+            "dashboard_stats.html",
+            title=f"{guild_name} Stats",
+            session=session,
+            guild_id=guild_id,
+            guild_name=guild_name,
+            stats=stats,
+            is_global=False,
+        ),
+        content_type="text/html",
+    )
+
+
+async def _global_stats(request: web.Request) -> web.Response:
+    session, _ = _get_session(request)
+    database: Database = request.app["database"]
+
+    stats = await asyncio.to_thread(database.get_global_extended_stats)
+
+    return web.Response(
+        text=_render_template(
+            request,
+            "dashboard_stats.html",
+            title="Global Stats",
+            session=session,
+            guild_id=None,
+            guild_name=None,
+            stats=stats,
+            is_global=True,
+        ),
+        content_type="text/html",
+    )
+
+
 async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
     session, session_reason = _get_session(request)
     if session is None:
@@ -860,10 +915,12 @@ def create_dashboard_app(
 
     app.router.add_get("/", _index)
     app.router.add_get("/stats", _stats_json)
+    app.router.add_get("/global/stats", _global_stats)
     app.router.add_get("/auth/login", _auth_login)
     app.router.add_get("/auth/callback", _auth_callback)
     app.router.add_get("/dashboard", _dashboard_index)
     app.router.add_get("/dashboard/{guild_id}", _dashboard_guild)
+    app.router.add_get("/dashboard/{guild_id}/stats", _dashboard_guild_stats)
     app.router.add_get("/dashboard/{guild_id}/tables", _dashboard_guild_tables)
     app.router.add_get("/dashboard/{guild_id}/members", _dashboard_guild_members)
     app.router.add_get("/dashboard/{guild_id}/members/search", _dashboard_guild_members_search)

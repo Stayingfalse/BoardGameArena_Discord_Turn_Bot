@@ -449,6 +449,220 @@ class Database:
             return {"total": 0, "recruiting": 0}
         return {"total": int(row["total"] or 0), "recruiting": int(row["recruiting"] or 0)}
 
+    def get_guild_extended_stats(self, guild_id: str) -> dict[str, object]:
+        """Return comprehensive historical and live stats for one guild."""
+        with self._lock:
+            live_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS currently_watching,
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting
+                FROM watch_subscriptions ws
+                LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+                WHERE ws.guild_id = ?
+                """,
+                (guild_id,),
+            ).fetchone()
+
+            hist_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_games,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL
+                            THEN (julianday(game_started_at) - julianday(recruiting_started_at)) * 1440
+                            ELSE NULL
+                        END
+                    ) AS avg_recruiting_minutes,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL AND outcome = 'finished'
+                            THEN (julianday(finished_at) - julianday(game_started_at)) * 24
+                            ELSE NULL
+                        END
+                    ) AS avg_game_hours
+                FROM game_history
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
+            ).fetchone()
+
+            members_row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
+            ).fetchone()
+
+            games_by_name_rows = self._connection.execute(
+                """
+                SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
+                FROM game_history
+                WHERE guild_id = ?
+                GROUP BY game_name
+                ORDER BY count DESC
+                LIMIT 20
+                """,
+                (guild_id,),
+            ).fetchall()
+
+            games_over_time_rows = self._connection.execute(
+                """
+                SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
+                FROM game_history
+                WHERE guild_id = ?
+                  AND finished_at >= date('now', '-90 days')
+                GROUP BY substr(finished_at, 1, 10)
+                ORDER BY day
+                """,
+                (guild_id,),
+            ).fetchall()
+
+            player_rows = self._connection.execute(
+                """
+                SELECT winner_names, final_standings
+                FROM game_history
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
+            ).fetchall()
+
+        return self._build_extended_stats(
+            live_row=live_row,
+            hist_row=hist_row,
+            members_row=members_row,
+            games_by_name_rows=games_by_name_rows,
+            games_over_time_rows=games_over_time_rows,
+            player_rows=player_rows,
+        )
+
+    def get_global_extended_stats(self) -> dict[str, object]:
+        """Return comprehensive historical and live stats across all guilds."""
+        with self._lock:
+            live_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS currently_watching,
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting
+                FROM watch_subscriptions ws
+                LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+                """
+            ).fetchone()
+
+            hist_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_games,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL
+                            THEN (julianday(game_started_at) - julianday(recruiting_started_at)) * 1440
+                            ELSE NULL
+                        END
+                    ) AS avg_recruiting_minutes,
+                    AVG(
+                        CASE
+                            WHEN game_started_at IS NOT NULL AND outcome = 'finished'
+                            THEN (julianday(finished_at) - julianday(game_started_at)) * 24
+                            ELSE NULL
+                        END
+                    ) AS avg_game_hours
+                FROM game_history
+                """
+            ).fetchone()
+
+            members_row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
+            ).fetchone()
+
+            games_by_name_rows = self._connection.execute(
+                """
+                SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
+                FROM game_history
+                GROUP BY game_name
+                ORDER BY count DESC
+                LIMIT 20
+                """
+            ).fetchall()
+
+            games_over_time_rows = self._connection.execute(
+                """
+                SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
+                FROM game_history
+                WHERE finished_at >= date('now', '-90 days')
+                GROUP BY substr(finished_at, 1, 10)
+                ORDER BY day
+                """
+            ).fetchall()
+
+            player_rows = self._connection.execute(
+                "SELECT winner_names, final_standings FROM game_history"
+            ).fetchall()
+
+        return self._build_extended_stats(
+            live_row=live_row,
+            hist_row=hist_row,
+            members_row=members_row,
+            games_by_name_rows=games_by_name_rows,
+            games_over_time_rows=games_over_time_rows,
+            player_rows=player_rows,
+        )
+
+    @staticmethod
+    def _build_extended_stats(
+        *,
+        live_row: object,
+        hist_row: object,
+        members_row: object,
+        games_by_name_rows: list,
+        games_over_time_rows: list,
+        player_rows: list,
+    ) -> dict[str, object]:
+        player_appearances: dict[str, int] = {}
+        player_wins: dict[str, int] = {}
+        for row in player_rows:
+            standings = json_loads_list(row["final_standings"])
+            winners = json_loads_list(row["winner_names"])
+            for name in standings:
+                name = (name or "").strip()
+                if name:
+                    player_appearances[name] = player_appearances.get(name, 0) + 1
+            for name in winners:
+                name = (name or "").strip()
+                if name:
+                    player_wins[name] = player_wins.get(name, 0) + 1
+
+        top_players: list[dict[str, object]] = sorted(
+            [
+                {
+                    "name": name,
+                    "appearances": count,
+                    "wins": player_wins.get(name, 0),
+                }
+                for name, count in player_appearances.items()
+            ],
+            key=lambda item: (-int(item["appearances"]), -int(item["wins"]), str(item["name"]).casefold()),
+        )[:10]
+
+        avg_rec = hist_row["avg_recruiting_minutes"] if hist_row else None
+        avg_game = hist_row["avg_game_hours"] if hist_row else None
+
+        return {
+            "currently_watching": int((live_row["currently_watching"] if live_row else 0) or 0),
+            "currently_recruiting": int((live_row["currently_recruiting"] if live_row else 0) or 0),
+            "total_games": int((hist_row["total_games"] if hist_row else 0) or 0),
+            "avg_recruiting_minutes": round(float(avg_rec), 1) if avg_rec is not None else None,
+            "avg_game_hours": round(float(avg_game), 1) if avg_game is not None else None,
+            "members_linked": int((members_row["count"] if members_row else 0) or 0),
+            "games_by_name": [
+                {"name": str(row["name"]), "count": int(row["count"])}
+                for row in games_by_name_rows
+            ],
+            "games_over_time": [
+                {"day": str(row["day"]), "count": int(row["count"])}
+                for row in games_over_time_rows
+            ],
+            "top_players": top_players,
+        }
+
     def get_guild_stats(self, guild_id: str) -> dict[str, int]:
         """Return subscription counts and followed-player count for one guild."""
         with self._lock:
