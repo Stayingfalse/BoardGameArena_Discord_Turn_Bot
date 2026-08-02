@@ -935,18 +935,16 @@ class BgaClient:
 
     @classmethod
     def _extract_roster_from_tableinfos(cls, data: dict[str, Any]) -> dict[str, str]:
-        players = data.get("players")
-        if isinstance(players, dict):
-            entries: Any = players.values()
-        elif isinstance(players, list):
-            entries = players
-        else:
-            return {}
         roster: dict[str, str] = {}
-        for entry in entries:
+        for entry in cls._iter_table_players(data, prefer_result=True):
             if not isinstance(entry, dict):
                 continue
-            player_id = cls._coerce_player_id(entry.get("id"))
+            player_id = cls._coerce_player_id(
+                entry.get("id")
+                or entry.get("player_id")
+                or entry.get("playerId")
+                or entry.get("user_id")
+            )
             if not player_id:
                 continue
             raw_name = str(entry.get("fullname") or entry.get("name") or "").strip()
@@ -964,7 +962,25 @@ class BgaClient:
         return None
 
     @classmethod
-    def _iter_table_players(cls, data: dict[str, Any]) -> list[dict[str, Any]]:
+    def _iter_result_players(cls, data: dict[str, Any]) -> list[dict[str, Any]]:
+        result = data.get("result")
+        result_dict = result if isinstance(result, dict) else {}
+        result_players = result_dict.get("player")
+        if isinstance(result_players, list):
+            return [entry for entry in result_players if isinstance(entry, dict)]
+        return []
+
+    @classmethod
+    def _iter_table_players(
+        cls,
+        data: dict[str, Any],
+        *,
+        prefer_result: bool = False,
+    ) -> list[dict[str, Any]]:
+        if prefer_result:
+            result_entries = cls._iter_result_players(data)
+            if result_entries:
+                return result_entries
         players = data.get("players")
         if isinstance(players, dict):
             values: Any = players.values()
@@ -996,7 +1012,7 @@ class BgaClient:
     @classmethod
     def _extract_player_scores(cls, data: dict[str, Any]) -> dict[str, str]:
         scores: dict[str, str] = {}
-        for entry in cls._iter_table_players(data):
+        for entry in cls._iter_table_players(data, prefer_result=True):
             player_id = cls._coerce_player_id(
                 entry.get("id")
                 or entry.get("player_id")
@@ -1022,7 +1038,10 @@ class BgaClient:
     @classmethod
     def _extract_player_ranks(cls, data: dict[str, Any]) -> dict[str, int]:
         ranks: dict[str, int] = {}
-        for entry in cls._iter_table_players(data):
+        result_players = cls._iter_result_players(data)
+        using_result_players = bool(result_players)
+        entries = result_players if using_result_players else cls._iter_table_players(data)
+        for entry in entries:
             player_id = cls._coerce_player_id(
                 entry.get("id")
                 or entry.get("player_id")
@@ -1031,7 +1050,14 @@ class BgaClient:
             )
             if not player_id:
                 continue
-            for key in ("rank", "table_order", "tableOrder", "position", "place"):
+            rank_keys = ("gamerank",) if using_result_players else (
+                "rank",
+                "table_order",
+                "tableOrder",
+                "position",
+                "place",
+            )
+            for key in rank_keys:
                 parsed = cls._coerce_int(entry.get(key))
                 if parsed is not None and parsed > 0:
                     ranks[player_id] = parsed
