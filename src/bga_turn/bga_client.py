@@ -411,9 +411,22 @@ class BgaClient:
         return data
 
     def fetch_public_table_finished_status(self, table_info: BgaTableInfo) -> bool | None:
-        data = self._fetch_public_tableinfos_data(
+        tableview_url = f"{table_info.base_url}/tableview?table={table_info.table_id}"
+        try:
+            response = self._http_get(tableview_url, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise BgaClientError(
+                tr("error_load_public_page", table_url=tableview_url, error=exc)
+            ) from exc
+
+        self._raise_for_bga_status(response)
+        if response.status_code >= 400:
+            raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
+
+        data = self._fetch_tableinfos_with_token(
             table_id=table_info.table_id,
             base_url=table_info.base_url,
+            html=response.text,
         )
         status_value = str(data.get("status") or "").strip().lower()
         result = data.get("result")
