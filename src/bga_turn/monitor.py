@@ -13,7 +13,7 @@ import discord
 from discord.components import MediaGalleryItem
 from discord.ext import tasks
 
-from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaTableUnavailableError
+from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaServerError, BgaTableUnavailableError
 from .database import Database
 from .i18n import tr
 from .models import BgaTableInfo, BgaTableSnapshot, LinkedUser, WatchSubscription
@@ -161,6 +161,18 @@ class BgaMonitor:
     _DISCORD_OLD_EDIT_THRESHOLD = 3
     _DISCORD_OLD_EDIT_WINDOW_SECONDS = 6.0
     _DISCORD_OLD_EDIT_AGE = timedelta(hours=1)
+    # Cross-table 500 error tracking: how many seconds a server error is counted
+    # as "recent" when deciding whether the outage is site-wide or table-specific.
+    _SERVER_ERROR_WINDOW_SECONDS = 120.0
+    # Number of consecutive server errors on a single table before we add an error
+    # banner to the Discord message for that table.
+    _SERVER_ERROR_DISCORD_THRESHOLD = 3
+    # Fraction of active tables that must report a server error within the window
+    # before we conclude BGA itself is down (rather than a per-table problem).
+    _SITE_DOWN_TABLE_FRACTION = 0.5
+    # Minimum number of active tables required before we apply the site-down
+    # heuristic (with only 1–2 tables we always treat it as table-specific).
+    _SITE_DOWN_MIN_TABLES = 3
 
     def __init__(
         self,
@@ -193,6 +205,14 @@ class BgaMonitor:
         self._discord_rate_limit_until: float = 0.0
         # Exponential backoff for Discord rate-limit pauses (seconds).
         self._discord_rl_backoff: float = 5.0
+        # Per-table 500 error tracking for site-wide vs table-specific detection.
+        # Monotonic time of the most recent server error per table.
+        self._table_server_error_at: dict[str, float] = {}
+        # Number of consecutive server errors per table (reset on success).
+        self._table_consecutive_server_errors: dict[str, int] = {}
+        # Optional error note displayed in the Discord message for a table when it
+        # has seen enough consecutive server errors to warrant user-visible feedback.
+        self._table_error_note: dict[str, str | None] = {}
         self.sync_tables.change_interval(seconds=self._poll_seconds)
 
     def start(self) -> None:
@@ -215,6 +235,9 @@ class BgaMonitor:
         self._discord_channel_requests.clear()
         self._discord_rate_limit_until = 0.0
         self._discord_rl_backoff = 5.0
+        self._table_server_error_at.clear()
+        self._table_consecutive_server_errors.clear()
+        self._table_error_note.clear()
 
     def get_effective_poll_seconds(self, table_id: str) -> float:
         """Return the current effective poll interval for *table_id*.
@@ -223,6 +246,65 @@ class BgaMonitor:
         or a larger backoff value while the worker is recovering from errors.
         """
         return self._table_backoff_seconds.get(table_id, float(self._poll_seconds))
+
+    def _is_site_wide_outage(self) -> bool:
+        """Return True if enough active tables are seeing recent 500 errors to suggest BGA is down.
+
+        Requires at least ``_SITE_DOWN_MIN_TABLES`` active tables, and that at
+        least ``_SITE_DOWN_TABLE_FRACTION`` of them reported a server error within
+        the last ``_SERVER_ERROR_WINDOW_SECONDS``.  With fewer than the minimum
+        number of tables we conservatively treat any 500 as table-specific.
+        """
+        active_tables = set(self._table_tasks.keys())
+        total = len(active_tables)
+        if total < self._SITE_DOWN_MIN_TABLES:
+            return False
+        now = time.monotonic()
+        recent_errors = sum(
+            1 for tid in active_tables
+            if (now - self._table_server_error_at.get(tid, 0.0)) < self._SERVER_ERROR_WINDOW_SECONDS
+        )
+        threshold = max(self._SITE_DOWN_MIN_TABLES, int(total * self._SITE_DOWN_TABLE_FRACTION))
+        return recent_errors >= threshold
+
+    def _clear_server_error_state(self, table_id: str) -> None:
+        """Clear per-table server error counters on a successful BGA response.
+
+        If a Discord error note was previously shown for this table, the note is
+        removed here; the change will propagate to Discord on the next lifecycle
+        message update (the payload signature will differ, triggering a re-render).
+        """
+        self._table_server_error_at.pop(table_id, None)
+        self._table_consecutive_server_errors.pop(table_id, None)
+        if self._table_error_note.pop(table_id, None) is not None:
+            LOGGER.info(tr("bga_server_error_cleared", table_id=table_id))
+            # Invalidate any cached payload signatures so the next lifecycle
+            # message update will re-render without the error banner.
+            subscriptions = self._subscriptions_for_table(table_id)
+            for sub in subscriptions:
+                active = self._active_messages.get(sub.subscription_id)
+                if active is not None:
+                    active.payload_signature = None
+
+    async def _push_error_note_to_discord(self, table_id: str) -> None:
+        """Force an immediate update of the tracked Discord message for *table_id*.
+
+        Called once the error-note threshold is reached so that the error banner
+        appears in Discord without waiting for the next natural state change.
+        """
+        subscriptions = self._subscriptions_for_table(table_id)
+        for subscription in subscriptions:
+            lifecycle_state = subscription.lifecycle_state or self.LIFECYCLE_IN_PROGRESS
+            waiting_ids = list(subscription.last_waiting_ids)
+            player_names = dict(subscription.player_names)
+            await self._publish_or_update_lifecycle_message(
+                subscription=subscription,
+                table_id=table_id,
+                lifecycle_state=lifecycle_state,
+                waiting_ids=waiting_ids,
+                player_names=player_names,
+                snapshot=None,
+            )
 
     @tasks.loop(seconds=30)
     async def sync_tables(self) -> None:
@@ -443,6 +525,7 @@ class BgaMonitor:
                     # Decay backoff toward the configured poll interval on success.
                     backoff_seconds = max(self._poll_seconds, backoff_seconds / 2)
                     self._table_backoff_seconds[table_id] = backoff_seconds
+                    self._clear_server_error_state(table_id)
                     await asyncio.sleep(self._poll_seconds)
                     continue
 
@@ -460,6 +543,7 @@ class BgaMonitor:
                 # Successful snapshot fetch — decay backoff toward configured floor.
                 backoff_seconds = max(self._poll_seconds, backoff_seconds / 2)
                 self._table_backoff_seconds[table_id] = backoff_seconds
+                self._clear_server_error_state(table_id)
 
                 async for state in self.bga_client.watch_table(
                     table_info,
@@ -490,6 +574,50 @@ class BgaMonitor:
                 )
                 self._table_backoff_seconds[table_id] = float(wait)
                 await asyncio.sleep(wait)
+            except BgaServerError as exc:
+                # BGA returned a 5xx error.  Record it for site-wide detection.
+                self._table_server_error_at[table_id] = time.monotonic()
+                consecutive = self._table_consecutive_server_errors.get(table_id, 0) + 1
+                self._table_consecutive_server_errors[table_id] = consecutive
+                if self._is_site_wide_outage():
+                    # Many tables are failing — likely BGA itself is down.  Wait
+                    # quietly without marking individual tables as errored in Discord.
+                    LOGGER.warning(
+                        tr(
+                            "bga_site_down",
+                            table_id=table_id,
+                            error=exc,
+                            error_count=sum(
+                                1 for tid in self._table_tasks
+                                if (time.monotonic() - self._table_server_error_at.get(tid, 0.0))
+                                < self._SERVER_ERROR_WINDOW_SECONDS
+                            ),
+                            total_count=len(self._table_tasks),
+                        )
+                    )
+                    # Use a longer wait for site-wide outages to reduce hammering.
+                    wait = min(backoff_seconds * 2, 120)
+                    self._table_backoff_seconds[table_id] = wait
+                    await asyncio.sleep(wait)
+                    backoff_seconds = min(backoff_seconds * 2, 120)
+                else:
+                    # Isolated table error — update Discord message after threshold.
+                    LOGGER.warning(
+                        tr(
+                            "bga_table_server_error",
+                            table_id=table_id,
+                            consecutive=consecutive,
+                            error=exc,
+                        )
+                    )
+                    if consecutive >= self._SERVER_ERROR_DISCORD_THRESHOLD:
+                        note = tr("table_server_error_note")
+                        if self._table_error_note.get(table_id) != note:
+                            self._table_error_note[table_id] = note
+                            await self._push_error_note_to_discord(table_id)
+                    await asyncio.sleep(backoff_seconds)
+                    backoff_seconds = min(backoff_seconds * 2, 120)
+                    self._table_backoff_seconds[table_id] = backoff_seconds
             except BgaNotPublicError as exc:
                 LOGGER.warning(tr("table_not_public", table_id=table_id, error=exc))
                 await asyncio.sleep(backoff_seconds)
@@ -1270,6 +1398,7 @@ class BgaMonitor:
             snapshot_final_standings,
             "" if snapshot is None else (snapshot.finished_at or ""),
             "" if snapshot is None else (snapshot.finish_reason or ""),
+            self._table_error_note.get(table_id) or "",
         )
         return repr(signature)
 
@@ -1351,6 +1480,10 @@ class BgaMonitor:
         footer_text = f"_{seats_line} · {tr('label_status')}: {status}_"
         items.append(discord.ui.TextDisplay(footer_text))
         items.append(discord.ui.Separator())
+        error_note = self._table_error_note.get(table_id)
+        if error_note:
+            items.append(discord.ui.TextDisplay(error_note))
+            items.append(discord.ui.Separator())
         items.append(discord.ui.ActionRow(LinkSelfButton()))
 
         container = discord.ui.Container(*items, accent_color=discord.Color.gold())
@@ -1417,6 +1550,10 @@ class BgaMonitor:
             )
 
         items.append(discord.ui.Separator())
+        error_note = self._table_error_note.get(table_id)
+        if error_note:
+            items.append(discord.ui.TextDisplay(error_note))
+            items.append(discord.ui.Separator())
         items.append(discord.ui.ActionRow(LinkSelfButton()))
 
         container = discord.ui.Container(*items, accent_color=discord.Color.blurple())
@@ -1467,6 +1604,11 @@ class BgaMonitor:
 
         if snapshot is not None and snapshot.finish_reason:
             items.append(discord.ui.TextDisplay(f"_{tr('label_finish_reason')}: {snapshot.finish_reason}_"))
+
+        error_note = self._table_error_note.get(table_id)
+        if error_note:
+            items.append(discord.ui.Separator())
+            items.append(discord.ui.TextDisplay(error_note))
 
         container = discord.ui.Container(*items, accent_color=discord.Color.dark_green())
         view = discord.ui.LayoutView(timeout=None)
