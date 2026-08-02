@@ -16,13 +16,14 @@ POST /dashboard/{guild_id}/settings  Save per-guild settings.
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import secrets
 import urllib.parse
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 if TYPE_CHECKING:
     from .app import BgaDiscordBot
@@ -98,6 +99,7 @@ def _append_query_value(path: str, key: str, value: str) -> str:
 
 
 def _auth_error_page(
+    request: web.Request,
     *,
     session_reason: str,
     next_path: str,
@@ -109,23 +111,16 @@ def _auth_error_page(
         "invalid_session_cookie": "Dashboard session cookie format is invalid.",
         "session_missing_or_expired": "Dashboard session cookie does not match a valid server session.",
     }.get(session_reason, "Dashboard authentication state is invalid.")
-    body = f"""
-<div class="card">
-  <h3>⚠️ Dashboard login could not be completed</h3>
-  <p style="margin-top:10px">Reason: <code>{html.escape(reason_text)}</code></p>
-  <p style="margin-top:10px">The bot stopped redirecting automatically to prevent a login loop.</p>
-  <p style="margin-top:10px">Troubleshooting:</p>
-  <ul style="margin:8px 0 0 22px;color:#b0b0c0;line-height:1.5">
-    <li>Use an HTTPS public <code>DASHBOARD_BASE_URL</code> in production.</li>
-    <li>Confirm reverse proxy preserves <code>Set-Cookie</code> headers.</li>
-    <li>Confirm <code>DASHBOARD_SECRET_KEY</code>, <code>DISCORD_CLIENT_ID</code>, and <code>DISCORD_CLIENT_SECRET</code> are correct.</li>
-    <li>Clear old dashboard cookies and log in again.</li>
-  </ul>
-  <p style="margin-top:12px;color:#888">Target path: <code>{html.escape(next_path)}</code> · Redirect attempts: <code>{login_attempts}</code></p>
-  <p style="margin-top:14px"><a class="btn btn-primary" href="/auth/login?next={urllib.parse.quote(next_path, safe='/?=&')}">Try login again</a></p>
-</div>
-"""
-    return _page("Dashboard Login Error", body, session=session)
+    return _render_template(
+        request,
+        "auth_error.html",
+        title="Dashboard Login Error",
+        session=session,
+        reason_text=reason_text,
+        next_path=next_path,
+        login_attempts=login_attempts,
+        quoted_next_path=urllib.parse.quote(next_path, safe="/?=&"),
+    )
 
 
 def _raise_auth_redirect_or_error(request: web.Request, *, session_reason: str) -> None:
@@ -135,6 +130,7 @@ def _raise_auth_redirect_or_error(request: web.Request, *, session_reason: str) 
     if auth_result or login_attempt >= _AUTH_MAX_ATTEMPTS:
         raise web.HTTPUnauthorized(
             text=_auth_error_page(
+                request,
                 session_reason=session_reason,
                 next_path=next_path,
                 login_attempts=login_attempt,
@@ -185,128 +181,17 @@ def _build_oauth2_url(client_id: str, redirect_uri: str, state: str) -> str:
     return f"{_OAUTH2_AUTH_URL}?{params}"
 
 
-# ---------------------------------------------------------------------------
-# HTML templates
-# ---------------------------------------------------------------------------
-
-_CSS = """
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Segoe UI',Arial,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh}
-  a{color:#7289da;text-decoration:none}
-  a:hover{text-decoration:underline}
-  .nav{background:#0d0d1a;padding:12px 24px;display:flex;align-items:center;gap:16px;border-bottom:1px solid #2c2c54}
-  .nav h1{font-size:1.1rem;color:#fff}
-  .nav .spacer{flex:1}
-  .btn{display:inline-block;padding:8px 18px;border-radius:6px;font-size:.9rem;cursor:pointer;border:none}
-  .btn-primary{background:#7289da;color:#fff}
-  .btn-primary:hover{background:#5b73c7}
-  .btn-danger{background:#ed4245;color:#fff}
-  .btn-danger:hover{background:#c23b3e}
-  .btn-secondary{background:#4f545c;color:#fff}
-  .btn-secondary:hover{background:#686d75}
-  .container{max-width:960px;margin:0 auto;padding:32px 24px}
-  .hero{text-align:center;padding:64px 24px}
-  .hero h2{font-size:2rem;color:#fff;margin-bottom:16px}
-  .hero p{font-size:1.05rem;color:#b0b0c0;max-width:600px;margin:0 auto 28px}
-  .stats-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin:24px 0}
-  .stat-card{background:#16213e;border:1px solid #2c2c54;border-radius:10px;padding:20px 36px;text-align:center}
-  .stat-card .num{font-size:2rem;font-weight:700;color:#7289da}
-  .stat-card .label{font-size:.85rem;color:#888;margin-top:4px}
-  .card{background:#16213e;border:1px solid #2c2c54;border-radius:10px;padding:20px;margin-bottom:16px}
-  .card h3{color:#fff;margin-bottom:8px;font-size:1rem}
-  .card-row{display:flex;align-items:center;gap:12px}
-  .card-row img{border-radius:50%;width:40px;height:40px}
-  .card-stats{font-size:.85rem;color:#888;margin-top:6px}
-  .form-group{margin-bottom:18px}
-  .form-group label{display:block;font-size:.9rem;color:#b0b0c0;margin-bottom:6px}
-  .form-group input[type=text]{width:100%;padding:9px 12px;background:#0d0d1a;border:1px solid #2c2c54;
-    border-radius:6px;color:#e0e0e0;font-size:.95rem}
-  .form-group input[type=text]:focus{outline:none;border-color:#7289da}
-  .toggle-row{display:flex;align-items:center;gap:10px}
-  .toggle{position:relative;display:inline-block;width:44px;height:24px}
-  .toggle input{opacity:0;width:0;height:0}
-  .slider{position:absolute;inset:0;background:#333;border-radius:24px;transition:.2s}
-  .slider:before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;
-    background:#fff;border-radius:50%;transition:.2s}
-  input:checked+.slider{background:#7289da}
-  input:checked+.slider:before{transform:translateX(20px)}
-  .alert-success{background:#1e3a2f;border:1px solid #2d6a4f;border-radius:6px;
-    padding:10px 16px;margin-bottom:16px;color:#74c69d}
-  .breadcrumb{font-size:.85rem;color:#888;margin-bottom:16px}
-  .breadcrumb a{color:#7289da}
-  .section-title{font-size:1.2rem;color:#fff;margin-bottom:20px}
-  hr{border:none;border-top:1px solid #2c2c54;margin:24px 0}
-  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:32px}
-  .feature{background:#16213e;border:1px solid #2c2c54;border-radius:10px;padding:20px}
-  .feature h4{color:#fff;margin-bottom:8px}
-  .feature p{font-size:.85rem;color:#888}
-  .discord-preview{margin:40px auto;max-width:760px}
-  .discord-preview h3{color:#fff;font-size:1rem;margin-bottom:16px;text-align:center;color:#888}
-  .discord-previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;margin:32px auto;max-width:860px}
-  .dc-msg{background:#2f3136;border-radius:8px;padding:0;overflow:hidden;border-left:4px solid #faa61a;font-family:'Segoe UI',Arial,sans-serif}
-  .dc-msg-header{background:#292b2f;padding:10px 14px;display:flex;align-items:center;gap:10px}
-  .dc-msg-avatar{width:32px;height:32px;border-radius:50%;background:#7289da;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
-  .dc-msg-meta{flex:1}
-  .dc-msg-author{font-size:.8rem;color:#fff;font-weight:600}
-  .dc-msg-tag{display:inline-block;background:#5865f2;color:#fff;font-size:.65rem;padding:1px 5px;border-radius:3px;margin-left:4px;vertical-align:middle}
-  .dc-msg-body{padding:14px}
-  .dc-section{margin-bottom:12px}
-  .dc-game-title{font-size:.95rem;font-weight:700;color:#fff}
-  .dc-subtitle{font-size:.8rem;color:#b9bbbe;margin-top:2px}
-  .dc-table-id{font-size:.8rem;color:#b9bbbe;margin-top:2px}
-  .dc-label{font-size:.75rem;font-weight:700;color:#fff;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.04em}
-  .dc-mention{background:#3c4270;color:#7289da;padding:0 3px;border-radius:3px;font-size:.85rem}
-  .dc-player{font-size:.85rem;color:#dcddde;margin:2px 0;display:flex;align-items:center;gap:5px}
-  .dc-seat{font-size:.8rem;color:#b9bbbe;margin-top:8px}
-  .dc-btn{display:inline-block;background:#4f545c;color:#fff;font-size:.8rem;padding:6px 14px;border-radius:4px;margin-top:10px;cursor:pointer;margin-right:8px}
-  .dc-btn-link{background:#2f3136;border:1px solid #4f545c}
-  .dc-thumb{float:right;width:60px;height:60px;border-radius:6px;object-fit:cover;background:#36393f;display:flex;align-items:center;justify-content:center;font-size:1.6rem;flex-shrink:0}
-  .dc-row{display:flex;align-items:flex-start;gap:10px}
-</style>
-"""
-
-_NAV_LOGGED_IN = """
-<nav class="nav">
-  <h1>🎲 BGA Turn Bot</h1>
-  <span class="spacer"></span>
-  <a href="/dashboard">Dashboard</a>
-  &nbsp;|&nbsp;
-  <span style="color:#888;font-size:.9rem">{username}</span>
-</nav>
-"""
-
-_NAV_ANONYMOUS = """
-<nav class="nav">
-  <h1>🎲 BGA Turn Bot</h1>
-  <span class="spacer"></span>
-  <a href="/auth/login" class="btn btn-secondary">Login with Discord</a>
-</nav>
-"""
-
-_PAGE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{title} — BGA Turn Bot</title>
-  {css}
-</head>
-<body>
-{nav}
-<div class="container">
-{body}
-</div>
-</body>
-</html>"""
-
-
-def _page(title: str, body: str, *, session: dict | None = None) -> str:
-    if session:
-        nav = _NAV_LOGGED_IN.format(username=html.escape(session.get("username", "")))
-    else:
-        nav = _NAV_ANONYMOUS
-    return _PAGE.format(title=html.escape(title), css=_CSS, nav=nav, body=body)
+def _render_template(
+    request: web.Request,
+    template_name: str,
+    *,
+    title: str,
+    session: dict | None = None,
+    **context: object,
+) -> str:
+    env: Environment = request.app["jinja_env"]
+    template = env.get_template(template_name)
+    return template.render(title=title, session=session, **context)
 
 
 # ---------------------------------------------------------------------------
@@ -323,113 +208,16 @@ async def _index(request: web.Request) -> web.Response:
     stats = await asyncio.to_thread(database.get_global_stats)
     add_bot_url = _build_add_bot_url(client_id, base_url) if client_id else "#"
 
-    body = f"""
-<div class="hero">
-  <h2>🎲 BGA Turn Bot</h2>
-  <p>
-    Share a Board Game Arena invite link in Discord — the bot instantly starts tracking the table,
-    posts live recruitment and turn updates, and @mentions players when it's their move.
-    No BGA account, no password, no manual setup.
-  </p>
-  {"" if not client_id else f'<a class="btn btn-primary" href="{html.escape(add_bot_url)}">➕ Add to Server</a>'}
-  {"" if session else f'&nbsp; <a class="btn btn-secondary" href="/auth/login">Login to manage settings</a>'}
-</div>
-<div class="stats-row">
-  <div class="stat-card">
-    <div class="num">{stats["total"]}</div>
-    <div class="label">Tables ever watched</div>
-  </div>
-  <div class="stat-card">
-    <div class="num">{stats["recruiting"]}</div>
-    <div class="label">Currently recruiting</div>
-  </div>
-</div>
-
-<div class="discord-previews">
-  <div>
-    <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">📣 Recruiting — players join in Discord</p>
-    <div class="dc-msg">
-      <div class="dc-msg-header">
-        <div class="dc-msg-avatar">🎲</div>
-        <div class="dc-msg-meta">
-          <span class="dc-msg-author">BGA Bot</span>
-          <span class="dc-msg-tag">APP</span>
-        </div>
-      </div>
-      <div class="dc-msg-body">
-        <div class="dc-row">
-          <div style="flex:1">
-            <div class="dc-game-title">🎲 Carcassonne</div>
-            <div class="dc-table-id">Table: 891538070</div>
-            <div style="margin-top:8px"><span class="dc-btn">Join table ↗</span></div>
-          </div>
-          <div class="dc-thumb">🏰</div>
-        </div>
-        <div style="margin-top:14px">
-          <div class="dc-label">Players joined</div>
-          <div class="dc-player"><span class="dc-mention">@YourName</span> YourBGAName (12345678)</div>
-          <div class="dc-seat">🪑&nbsp; 1/5 joined — 4 seat(s) remaining · Status: asyncinit</div>
-        </div>
-        <div style="margin-top:10px"><span class="dc-btn dc-btn-link">🔗 Link your BGA &amp; Discord</span></div>
-      </div>
-    </div>
-  </div>
-
-  <div>
-    <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">🎯 In progress — turn updates automatically</p>
-    <div class="dc-msg">
-      <div class="dc-msg-header">
-        <div class="dc-msg-avatar">🎲</div>
-        <div class="dc-msg-meta">
-          <span class="dc-msg-author">BGA Bot</span>
-          <span class="dc-msg-tag">APP</span>
-        </div>
-      </div>
-      <div class="dc-msg-body">
-        <div class="dc-row">
-          <div style="flex:1">
-            <div class="dc-game-title">🎲 Carcassonne · 🎲 BGA Game in Progress</div>
-            <div class="dc-table-id">Table: 891538070</div>
-          </div>
-          <div class="dc-thumb">🏰</div>
-        </div>
-        <div style="margin-top:12px">
-          <div class="dc-label">🎯 Current turn</div>
-          <div class="dc-player"><span class="dc-mention">@YourName</span> YourBGAName (12345678)</div>
-        </div>
-        <div style="margin-top:10px">
-          <div class="dc-label">Players</div>
-          <div class="dc-player">🎲 YourBGAName</div>
-          <div class="dc-player">⏳ FriendBGAName</div>
-        </div>
-        <div style="margin-top:10px"><span class="dc-btn">Join table ↗</span></div>
-        <div style="margin-top:8px"><span class="dc-btn dc-btn-link">🔗 Link your BGA &amp; Discord</span></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="features">
-  <div class="feature">
-    <h4>🔗 Auto-watch from invite links</h4>
-    <p>Just share a BGA table invite link in any channel — the bot detects it automatically and starts tracking the table. No slash commands needed.</p>
-  </div>
-  <div class="feature">
-    <h4>📣 Recruitment tracking</h4>
-    <p>Posts a live recruitment card showing how many seats are filled. Players can join directly from Discord before the game even starts.</p>
-  </div>
-  <div class="feature">
-    <h4>🔔 Turn notifications</h4>
-    <p>Posts and updates a single Discord message per table as the active player changes, with @mentions for linked members.</p>
-  </div>
-  <div class="feature">
-    <h4>⚙️ Per-server settings</h4>
-    <p>Recruiting-only mode, forced notification channel, invite message deletion — all configurable per server.</p>
-  </div>
-</div>
-"""
     return web.Response(
-        text=_page("Home", body, session=session),
+        text=_render_template(
+            request,
+            "home.html",
+            title="Home",
+            session=session,
+            client_id=client_id,
+            add_bot_url=add_bot_url,
+            stats=stats,
+        ),
         content_type="text/html",
     )
 
@@ -605,48 +393,32 @@ async def _dashboard_index(request: web.Request) -> web.Response:
 
     add_bot_url = _build_add_bot_url(client_id, base_url) if client_id else "#"
 
-    if not managed_guilds:
-        add_btn = f'<a class="btn btn-primary" href="{html.escape(add_bot_url)}">➕ Add to Server</a>'
-        body = f"""
-<div class="section-title">Your Servers</div>
-<p style="color:#b0b0c0">No servers found where you have <strong>Manage Server</strong> permission
-and the bot is installed.<br><br>
-{add_btn}</p>
-"""
-        return web.Response(
-            text=_page("Dashboard", body, session=session),
-            content_type="text/html",
-        )
-
-    cards = []
+    managed_guild_cards: list[dict[str, object]] = []
     for guild in managed_guilds:
-        guild_id = guild["id"]
+        guild_id = str(guild["id"])
         stats = await asyncio.to_thread(database.get_guild_stats, guild_id)
-        icon_html = ""
+        icon_url = None
         if guild.get("icon"):
             icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{guild['icon']}.png?size=64"
-            icon_html = f'<img src="{html.escape(icon_url)}" alt="">'
-        cards.append(f"""
-<div class="card">
-  <div class="card-row">
-    {icon_html}
-    <div>
-      <h3><a href="/dashboard/{html.escape(guild_id)}">{html.escape(guild["name"])}</a></h3>
-      <div class="card-stats">
-        {stats["recruiting"]} recruiting &nbsp;·&nbsp;
-        {stats["total"]} total watched
-      </div>
-    </div>
-  </div>
-</div>""")
+        managed_guild_cards.append(
+            {
+                "id": guild_id,
+                "name": str(guild["name"]),
+                "icon_url": icon_url,
+                "stats": stats,
+            }
+        )
 
-    add_another_btn = ""
-    if unenrolled_managed_guilds:
-        add_another_btn = f'<div style="margin-top:16px"><a class="btn btn-primary" href="{html.escape(add_bot_url)}">➕ Add another Server</a></div>'
-
-    body = f'<div class="section-title">Your Servers</div>' + "".join(cards) + add_another_btn
     return web.Response(
-        text=_page("Dashboard", body, session=session),
+        text=_render_template(
+            request,
+            "dashboard_index.html",
+            title="Dashboard",
+            session=session,
+            managed_guilds=managed_guild_cards,
+            add_bot_url=add_bot_url,
+            show_add_another=bool(unenrolled_managed_guilds),
+        ),
         content_type="text/html",
     )
 
@@ -677,57 +449,18 @@ async def _dashboard_guild(request: web.Request) -> web.Response:
         default_forced_channel_id=bot.monitor._default_forced_channel_id,
     )
 
-    saved_msg = ""
-    if request.rel_url.query.get("saved") == "1":
-        saved_msg = '<div class="alert-success">✅ Settings saved.</div>'
-
-    ro_checked = "checked" if settings.recruiting_only else ""
-    di_checked = "checked" if settings.delete_invite_message else ""
-    fc_value = html.escape(settings.forced_channel_id or "")
-
-    body = f"""
-<div class="breadcrumb"><a href="/dashboard">Dashboard</a> › {html.escape(guild_name)}</div>
-<div class="section-title">{html.escape(guild_name)}</div>
-{saved_msg}
-<div class="stats-row" style="justify-content:flex-start">
-  <div class="stat-card">
-    <div class="num">{stats["recruiting"]}</div>
-    <div class="label">Recruiting</div>
-  </div>
-  <div class="stat-card">
-    <div class="num">{stats["total"]}</div>
-    <div class="label">Total watched</div>
-  </div>
-</div>
-<hr>
-<form method="post" action="/dashboard/{html.escape(guild_id)}/settings">
-  <div class="form-group">
-    <div class="toggle-row">
-      <label class="toggle">
-        <input type="checkbox" name="recruiting_only" value="1" {ro_checked}>
-        <span class="slider"></span>
-      </label>
-      <span>Recruiting-only mode — remove watch once the game starts</span>
-    </div>
-  </div>
-  <div class="form-group">
-    <div class="toggle-row">
-      <label class="toggle">
-        <input type="checkbox" name="delete_invite_message" value="1" {di_checked}>
-        <span class="slider"></span>
-      </label>
-      <span>Delete the Discord message that triggered auto-watch</span>
-    </div>
-  </div>
-  <div class="form-group">
-    <label>Forced notification channel ID <span style="color:#888;font-size:.8rem">(leave blank to post in the channel where the link was shared)</span></label>
-    <input type="text" name="forced_channel_id" value="{fc_value}" placeholder="e.g. 1234567890123456789">
-  </div>
-  <button type="submit" class="btn btn-primary">Save settings</button>
-</form>
-"""
     return web.Response(
-        text=_page(guild_name, body, session=session),
+        text=_render_template(
+            request,
+            "dashboard_guild.html",
+            title=guild_name,
+            session=session,
+            guild_id=guild_id,
+            guild_name=guild_name,
+            stats=stats,
+            settings=settings,
+            saved=(request.rel_url.query.get("saved") == "1"),
+        ),
         content_type="text/html",
     )
 
@@ -783,6 +516,11 @@ def create_dashboard_app(
     secret_key: str,
 ) -> web.Application:
     app = web.Application()
+    package_root = Path(__file__).resolve().parent
+    app["jinja_env"] = Environment(
+        loader=FileSystemLoader(str(package_root / "templates")),
+        autoescape=select_autoescape(enabled_extensions=("html",), default_for_string=True),
+    )
     app["bot"] = bot
     app["database"] = database
     app["base_url"] = base_url
@@ -798,6 +536,7 @@ def create_dashboard_app(
     app.router.add_get("/dashboard", _dashboard_index)
     app.router.add_get("/dashboard/{guild_id}", _dashboard_guild)
     app.router.add_post("/dashboard/{guild_id}/settings", _dashboard_guild_settings_post)
+    app.router.add_static("/static/", str(package_root / "static"))
 
     return app
 

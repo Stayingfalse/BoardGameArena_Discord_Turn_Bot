@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="breadcrumb"><a href="/dashboard">Dashboard</a> › {{ guild_name }}</div>
+<div class="section-title">{{ guild_name }}</div>
+{% if saved %}<div class="alert-success">✅ Settings saved.</div>{% endif %}
+<div class="stats-row" style="justify-content:flex-start">
+  <div class="stat-card">
+    <div class="num">{{ stats.recruiting }}</div>
+    <div class="label">Recruiting</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ stats.total }}</div>
+    <div class="label">Total watched</div>
+  </div>
+</div>
+<hr>
+<form method="post" action="/dashboard/{{ guild_id }}/settings">
+  <div class="form-group">
+    <div class="toggle-row">
+      <label class="toggle">
+        <input type="checkbox" name="recruiting_only" value="1"{% if settings.recruiting_only %} checked{% endif %}>
+        <span class="slider"></span>
+      </label>
+      <span>Recruiting-only mode — remove watch once the game starts</span>
+    </div>
+  </div>
+  <div class="form-group">
+    <div class="toggle-row">
+      <label class="toggle">
+        <input type="checkbox" name="delete_invite_message" value="1"{% if settings.delete_invite_message %} checked{% endif %}>
+        <span class="slider"></span>
+      </label>
+      <span>Delete the Discord message that triggered auto-watch</span>
+    </div>
+  </div>
+  <div class="form-group">
+    <label>Forced notification channel ID <span style="color:#888;font-size:.8rem">(leave blank to post in the channel where the link was shared)</span></label>
+    <input type="text" name="forced_channel_id" value="{{ settings.forced_channel_id or '' }}" placeholder="e.g. 1234567890123456789">
+  </div>
+  <button type="submit" class="btn btn-primary">Save settings</button>
+</form>
+{% endblock %}

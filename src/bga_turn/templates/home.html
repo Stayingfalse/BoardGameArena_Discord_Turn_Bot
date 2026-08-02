@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="hero">
+  <h2>🎲 BGA Turn Bot</h2>
+  <p>
+    Share a Board Game Arena invite link in Discord — the bot instantly starts tracking the table,
+    posts live recruitment and turn updates, and @mentions players when it's their move.
+    No BGA account, no password, no manual setup.
+  </p>
+  {% if client_id %}<a class="btn btn-primary" href="{{ add_bot_url }}">➕ Add to Server</a>{% endif %}
+  {% if not session %}&nbsp; <a class="btn btn-secondary" href="/auth/login">Login to manage settings</a>{% endif %}
+</div>
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="num">{{ stats.total }}</div>
+    <div class="label">Tables ever watched</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ stats.recruiting }}</div>
+    <div class="label">Currently recruiting</div>
+  </div>
+</div>
+
+<div class="discord-previews">
+  <div>
+    <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">📣 Recruiting — players join in Discord</p>
+    <div class="dc-msg">
+      <div class="dc-msg-header">
+        <div class="dc-msg-avatar">🎲</div>
+        <div class="dc-msg-meta">
+          <span class="dc-msg-author">BGA Bot</span>
+          <span class="dc-msg-tag">APP</span>
+        </div>
+      </div>
+      <div class="dc-msg-body">
+        <div class="dc-row">
+          <div style="flex:1">
+            <div class="dc-game-title">🎲 Carcassonne</div>
+            <div class="dc-table-id">Table: 891538070</div>
+            <div style="margin-top:8px"><span class="dc-btn">Join table ↗</span></div>
+          </div>
+          <div class="dc-thumb">🏰</div>
+        </div>
+        <div style="margin-top:14px">
+          <div class="dc-label">Players joined</div>
+          <div class="dc-player"><span class="dc-mention">@YourName</span> YourBGAName (12345678)</div>
+          <div class="dc-seat">🪑&nbsp; 1/5 joined — 4 seat(s) remaining · Status: asyncinit</div>
+        </div>
+        <div style="margin-top:10px"><span class="dc-btn dc-btn-link">🔗 Link your BGA &amp; Discord</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <p style="text-align:center;color:#888;font-size:.85rem;margin-bottom:12px">🎯 In progress — turn updates automatically</p>
+    <div class="dc-msg">
+      <div class="dc-msg-header">
+        <div class="dc-msg-avatar">🎲</div>
+        <div class="dc-msg-meta">
+          <span class="dc-msg-author">BGA Bot</span>
+          <span class="dc-msg-tag">APP</span>
+        </div>
+      </div>
+      <div class="dc-msg-body">
+        <div class="dc-row">
+          <div style="flex:1">
+            <div class="dc-game-title">🎲 Carcassonne · 🎲 BGA Game in Progress</div>
+            <div class="dc-table-id">Table: 891538070</div>
+          </div>
+          <div class="dc-thumb">🏰</div>
+        </div>
+        <div style="margin-top:12px">
+          <div class="dc-label">🎯 Current turn</div>
+          <div class="dc-player"><span class="dc-mention">@YourName</span> YourBGAName (12345678)</div>
+        </div>
+        <div style="margin-top:10px">
+          <div class="dc-label">Players</div>
+          <div class="dc-player">🎲 YourBGAName</div>
+          <div class="dc-player">⏳ FriendBGAName</div>
+        </div>
+        <div style="margin-top:10px"><span class="dc-btn">Join table ↗</span></div>
+        <div style="margin-top:8px"><span class="dc-btn dc-btn-link">🔗 Link your BGA &amp; Discord</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="features">
+  <div class="feature">
+    <h4>🔗 Auto-watch from invite links</h4>
+    <p>Just share a BGA table invite link in any channel — the bot detects it automatically and starts tracking the table. No slash commands needed.</p>
+  </div>
+  <div class="feature">
+    <h4>📣 Recruitment tracking</h4>
+    <p>Posts a live recruitment card showing how many seats are filled. Players can join directly from Discord before the game even starts.</p>
+  </div>
+  <div class="feature">
+    <h4>🔔 Turn notifications</h4>
+    <p>Posts and updates a single Discord message per table as the active player changes, with @mentions for linked members.</p>
+  </div>
+  <div class="feature">
+    <h4>⚙️ Per-server settings</h4>
+    <p>Recruiting-only mode, forced notification channel, invite message deletion — all configurable per server.</p>
+  </div>
+</div>
+{% endblock %}
