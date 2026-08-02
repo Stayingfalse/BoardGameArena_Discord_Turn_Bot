@@ -104,6 +104,8 @@ class BgaDiscordBot(commands.Bot):
             default_recruiting_only=default_recruiting_only,
             default_forced_channel_id=default_forced_channel_id,
         )
+        self._default_recruiting_only = default_recruiting_only
+        self._default_forced_channel_id = default_forced_channel_id
         self._default_delete_invite_message = default_delete_invite_message
         self.logger = logging.getLogger(__name__)
         self._startup_completed = False
@@ -152,6 +154,28 @@ class BgaDiscordBot(commands.Bot):
         self._log_invite_url()
         self.monitor.start()
         self._startup_completed = True
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        guild_id = str(guild.id)
+        await asyncio.to_thread(
+            self.database.upsert_guild_settings,
+            guild_id,
+            recruiting_only=self._default_recruiting_only,
+            delete_invite_message=self._default_delete_invite_message,
+            forced_channel_id=self._default_forced_channel_id,
+        )
+        self.logger.info("Initialized guild settings for joined guild %s.", guild_id)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        guild_id = str(guild.id)
+        removed_watches = await asyncio.to_thread(
+            self.database.remove_all_watch_subscriptions_for_guild,
+            guild_id,
+        )
+        await asyncio.to_thread(self.database.remove_guild_settings, guild_id)
+        await asyncio.to_thread(self.database.remove_followed_players_for_guild, guild_id)
+        await asyncio.to_thread(self.database.remove_guild_scoped_users_for_guild, guild_id)
+        self.logger.info("Cleaned up guild data for removed guild %s (watches=%d).", guild_id, removed_watches)
 
     async def close(self) -> None:
         self.monitor.stop()

@@ -161,6 +161,8 @@ class BgaMonitor:
     _DISCORD_OLD_EDIT_THRESHOLD = 3
     _DISCORD_OLD_EDIT_WINDOW_SECONDS = 6.0
     _DISCORD_OLD_EDIT_AGE = timedelta(hours=1)
+    _DISCORD_GLOBAL_CONCURRENT_CALLS = 8
+    _DISCORD_CHANNEL_STATE_TTL_SECONDS = 1800.0
     # Cross-table 500 error tracking: how many seconds a server error is counted
     # as "recent" when deciding whether the outage is site-wide or table-specific.
     _SERVER_ERROR_WINDOW_SECONDS = 120.0
@@ -200,6 +202,10 @@ class BgaMonitor:
         self._table_backoff_seconds: dict[str, float] = {}
         self._discord_channel_locks: dict[str, asyncio.Lock] = {}
         self._discord_channel_requests: dict[tuple[str, str], deque[float]] = {}
+        self._discord_channel_activity: dict[str, float] = {}
+        self._discord_global_call_semaphore = asyncio.Semaphore(
+            self._DISCORD_GLOBAL_CONCURRENT_CALLS
+        )
         # Monotonic timestamp before which Discord I/O should be skipped due to
         # rate-limiting. Zero means no active pause.
         self._discord_rate_limit_until: float = 0.0
@@ -233,6 +239,7 @@ class BgaMonitor:
         self._table_backoff_seconds.clear()
         self._discord_channel_locks.clear()
         self._discord_channel_requests.clear()
+        self._discord_channel_activity.clear()
         self._discord_rate_limit_until = 0.0
         self._discord_rl_backoff = 5.0
         self._table_server_error_at.clear()
@@ -321,6 +328,8 @@ class BgaMonitor:
         subscriptions = self.database.list_watch_subscriptions()
         active_table_ids = {subscription.table_id for subscription in subscriptions}
         active_subscription_ids = {subscription.subscription_id for subscription in subscriptions}
+        active_channel_ids = {subscription.channel_id for subscription in subscriptions}
+        self._sweep_discord_channel_rate_limit_state(active_channel_ids)
 
         for subscription_id in list(self._active_messages):
             if subscription_id not in active_subscription_ids:
@@ -1071,7 +1080,8 @@ class BgaMonitor:
                     message_created_at=message_created_at,
                 )
             try:
-                result = await coro_factory()
+                async with self._discord_global_call_semaphore:
+                    result = await coro_factory()
                 # Successful call — reset the Discord backoff.
                 self._discord_rate_limit_until = 0.0
                 self._discord_rl_backoff = 5.0
@@ -1136,6 +1146,7 @@ class BgaMonitor:
             sleep_for: float | None = None
             async with lock:
                 now = time.monotonic()
+                self._discord_channel_activity[channel_id] = now
                 bucket_limits: list[tuple[str, int, float]] = [
                     (
                         "write",
@@ -1183,6 +1194,24 @@ class BgaMonitor:
                 )
             )
             await asyncio.sleep(sleep_for)
+
+    def _sweep_discord_channel_rate_limit_state(self, active_channel_ids: set[str]) -> None:
+        now = time.monotonic()
+        stale_channels = [
+            channel_id
+            for channel_id, last_seen in self._discord_channel_activity.items()
+            if channel_id not in active_channel_ids
+            and (now - last_seen) > self._DISCORD_CHANNEL_STATE_TTL_SECONDS
+        ]
+        if not stale_channels:
+            return
+        stale_set = set(stale_channels)
+        for channel_id in stale_channels:
+            self._discord_channel_locks.pop(channel_id, None)
+            self._discord_channel_activity.pop(channel_id, None)
+        for bucket_key in list(self._discord_channel_requests):
+            if bucket_key[0] in stale_set:
+                self._discord_channel_requests.pop(bucket_key, None)
 
     @classmethod
     def _is_old_discord_message(cls, created_at: datetime) -> bool:

@@ -19,6 +19,8 @@ class Database:
         self._connection = sqlite3.connect(self.db_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA synchronous=NORMAL")
 
     def initialize(self) -> None:
         with self._lock:
@@ -395,6 +397,37 @@ class Database:
                 (guild_id, 1 if recruiting_only else 0, 1 if delete_invite_message else 0, forced_channel_id, now),
             )
             self._connection.commit()
+
+    def remove_guild_settings(self, guild_id: str) -> bool:
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM guild_settings WHERE guild_id = ?",
+                (guild_id,),
+            )
+            self._connection.commit()
+            return cursor.rowcount > 0
+
+    def remove_followed_players_for_guild(self, guild_id: str) -> int:
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM followed_players WHERE guild_id = ?",
+                (guild_id,),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount)
+
+    def remove_guild_scoped_users_for_guild(self, guild_id: str) -> int:
+        # Current schema stores one global users row per Discord user. This cleanup
+        # only applies to legacy guild-scoped deployments that still have guild_id.
+        with self._lock:
+            if "guild_id" not in self._column_names("users"):
+                return 0
+            cursor = self._connection.execute(
+                "DELETE FROM users WHERE guild_id = ?",
+                (guild_id,),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount)
 
     # ------------------------------------------------------------------
     # Stats
