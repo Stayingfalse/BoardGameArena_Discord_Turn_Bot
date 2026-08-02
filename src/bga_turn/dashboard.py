@@ -227,7 +227,8 @@ def _render_template(
 ) -> str:
     env: Environment = request.app["jinja_env"]
     template = env.get_template(template_name)
-    return template.render(title=title, session=session, **context)
+    is_global_admin = _is_global_admin(session, request.app) if session is not None else False
+    return template.render(title=title, session=session, is_global_admin=is_global_admin, **context)
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +468,7 @@ async def _dashboard_guild(request: web.Request) -> web.Response:
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     bot: BgaDiscordBot = request.app["bot"]
@@ -509,7 +510,7 @@ async def _dashboard_guild_tables(request: web.Request) -> web.Response:
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     bot: BgaDiscordBot = request.app["bot"]
@@ -596,7 +597,7 @@ async def _dashboard_guild_unwatch_post(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
     if not subscription_id_raw.isdigit():
         raise web.HTTPBadRequest(reason="Invalid subscription ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     database: Database = request.app["database"]
@@ -624,7 +625,7 @@ async def _dashboard_guild_members(request: web.Request) -> web.Response:
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     bot: BgaDiscordBot = request.app["bot"]
@@ -726,7 +727,7 @@ async def _dashboard_guild_members_search(request: web.Request) -> web.Response:
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     query = (request.rel_url.query.get("q", "") or "").strip().casefold()
@@ -753,7 +754,7 @@ async def _dashboard_guild_members_link_post(request: web.Request) -> web.Respon
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     data = await request.post()
@@ -786,7 +787,7 @@ async def _dashboard_guild_members_unlink_post(request: web.Request) -> web.Resp
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
     if not discord_user_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid Discord user ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     database: Database = request.app["database"]
@@ -802,7 +803,7 @@ async def _dashboard_guild_stats(request: web.Request) -> web.Response:
     guild_id = request.match_info["guild_id"]
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     bot: BgaDiscordBot = request.app["bot"]
@@ -858,7 +859,7 @@ async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
     # Validate guild_id is a Discord snowflake before using in a redirect.
     if not guild_id.isdigit():
         raise web.HTTPBadRequest(reason="Invalid guild ID.")
-    if not _session_manages_guild(session, guild_id):
+    if not _session_manages_guild(session, guild_id, request.app):
         raise web.HTTPForbidden(reason="You do not manage this server.")
 
     database: Database = request.app["database"]
@@ -878,11 +879,58 @@ async def _dashboard_guild_settings_post(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=f"/dashboard/{int(guild_id)}?saved=1")
 
 
-def _session_manages_guild(session: dict, guild_id: str) -> bool:
+async def _admin_servers(request: web.Request) -> web.Response:
+    session, session_reason = _get_session(request)
+    if session is None:
+        _raise_auth_redirect_or_error(request, session_reason=session_reason or "missing_session_cookie")
+
+    if not _is_global_admin(session, request.app):
+        raise web.HTTPForbidden(reason="Global admin access required.")
+
+    bot: BgaDiscordBot = request.app["bot"]
+    database: Database = request.app["database"]
+
+    guild_cards: list[dict[str, object]] = []
+    for discord_guild in sorted(bot.guilds, key=lambda g: g.name.casefold()):
+        guild_id = str(discord_guild.id)
+        stats = await asyncio.to_thread(database.get_guild_stats, guild_id)
+        icon_url = None
+        if discord_guild.icon:
+            icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{discord_guild.icon}.png?size=64"
+        guild_cards.append(
+            {
+                "id": guild_id,
+                "name": discord_guild.name,
+                "icon_url": icon_url,
+                "member_count": discord_guild.member_count,
+                "stats": stats,
+            }
+        )
+
+    return web.Response(
+        text=_render_template(
+            request,
+            "admin_servers.html",
+            title="Admin — All Servers",
+            session=session,
+            guild_cards=guild_cards,
+        ),
+        content_type="text/html",
+    )
+
+
+def _session_manages_guild(session: dict, guild_id: str, app: web.Application | None = None) -> bool:
+    if app is not None and _is_global_admin(session, app):
+        return True
     for guild in session.get("guilds", []):
         if guild.get("id") == guild_id:
             return bool(int(guild.get("permissions", 0)) & _MANAGE_GUILD)
     return False
+
+
+def _is_global_admin(session: dict, app: web.Application) -> bool:
+    admin_ids: frozenset[str] = app.get("global_admin_ids", frozenset())
+    return str(session.get("user_id", "")) in admin_ids
 
 
 # ---------------------------------------------------------------------------
@@ -898,6 +946,7 @@ def create_dashboard_app(
     client_id: str,
     client_secret: str,
     secret_key: str,
+    global_admin_ids: frozenset[str] | None = None,
 ) -> web.Application:
     app = web.Application()
     package_root = Path(__file__).resolve().parent
@@ -912,12 +961,14 @@ def create_dashboard_app(
     app["client_secret"] = client_secret
     app["secret_key"] = secret_key
     app["cookie_secure"] = urllib.parse.urlparse(base_url).scheme.lower() == "https"
+    app["global_admin_ids"] = global_admin_ids if global_admin_ids is not None else frozenset()
 
     app.router.add_get("/", _index)
     app.router.add_get("/stats", _stats_json)
     app.router.add_get("/global/stats", _global_stats)
     app.router.add_get("/auth/login", _auth_login)
     app.router.add_get("/auth/callback", _auth_callback)
+    app.router.add_get("/admin/servers", _admin_servers)
     app.router.add_get("/dashboard", _dashboard_index)
     app.router.add_get("/dashboard/{guild_id}", _dashboard_guild)
     app.router.add_get("/dashboard/{guild_id}/stats", _dashboard_guild_stats)
