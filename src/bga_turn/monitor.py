@@ -1916,6 +1916,40 @@ class BgaMonitor:
                 return False
             await asyncio.sleep(max(0.1, poll_seconds))
 
+    async def reset_tracked_message(self, subscription: WatchSubscription) -> bool:
+        active_message = self._active_messages.get(subscription.subscription_id)
+        refreshed_subscription = subscription
+
+        if active_message is None and subscription.tracked_message_id is not None:
+            channel = await self._resolve_channel(subscription, subscription.table_id)
+            if not self._is_supported_message_channel(channel):
+                return False
+            message = await self._resolve_tracked_message(subscription, channel)
+            refreshed_subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+            if message is None:
+                if refreshed_subscription.tracked_message_id is not None:
+                    return False
+            else:
+                active_message = self._active_messages.get(subscription.subscription_id)
+
+        if active_message is not None:
+            deleted = await self._delete_tracked_message(
+                subscription=refreshed_subscription,
+                active_message=active_message,
+                table_id=refreshed_subscription.table_id,
+            )
+            if not deleted:
+                return False
+
+        self._active_messages.pop(subscription.subscription_id, None)
+        self.database.update_watch_message_tracking(
+            subscription_id=subscription.subscription_id,
+            lifecycle_state=self._normalize_lifecycle_state(refreshed_subscription.lifecycle_state),
+            tracked_message_id=None,
+            tracked_message_kind=None,
+        )
+        return True
+
     @staticmethod
     def _is_supported_message_channel(channel: object | None) -> bool:
         return isinstance(channel, (discord.TextChannel, discord.Thread))
