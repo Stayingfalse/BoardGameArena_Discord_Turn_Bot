@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -616,17 +617,26 @@ class Database:
         games_over_time_rows: list,
         player_rows: list,
     ) -> dict[str, object]:
+        def _normalize_player_name(raw_name: str) -> str:
+            candidate = (raw_name or "").strip()
+            if not candidate:
+                return ""
+            match = re.fullmatch(r"(?:#\d+|-)\s+(.+?)\s+\(\d+\)\s+•\s+score\s+.+", candidate)
+            if match:
+                return match.group(1).strip()
+            return candidate
+
         player_appearances: dict[str, int] = {}
         player_wins: dict[str, int] = {}
         for row in player_rows:
             standings = json_loads_list(row["final_standings"])
             winners = json_loads_list(row["winner_names"])
             for name in standings:
-                name = (name or "").strip()
+                name = _normalize_player_name(name)
                 if name:
                     player_appearances[name] = player_appearances.get(name, 0) + 1
             for name in winners:
-                name = (name or "").strip()
+                name = _normalize_player_name(name)
                 if name:
                     player_wins[name] = player_wins.get(name, 0) + 1
 
