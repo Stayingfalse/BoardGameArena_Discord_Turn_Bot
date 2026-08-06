@@ -1051,6 +1051,66 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "⚠️ The bot encountered a repeated unexpected error on this table. It is still retrying automatically.",
         "FR": "⚠️ Le bot a rencontre une erreur inattendue repetee sur cette table. Il reessaie automatiquement.",
     },
+    "command_recruiting_description": {
+        "EN": "Show all tables currently recruiting players on this server",
+        "FR": "Afficher toutes les tables en cours de recrutement sur ce serveur",
+    },
+    "recruiting_none": {
+        "EN": "No tables are currently recruiting on this server.",
+        "FR": "Aucune table n'est actuellement en recrutement sur ce serveur.",
+    },
+    "recruiting_header": {
+        "EN": "🎲 Tables currently recruiting",
+        "FR": "🎲 Tables en cours de recrutement",
+    },
+    "recruiting_summary": {
+        "EN": "{count} table(s) currently recruiting.",
+        "FR": "{count} table(s) en cours de recrutement.",
+    },
+    "recruiting_card_title": {
+        "EN": "Table {table_id} — {game_name}",
+        "FR": "Table {table_id} — {game_name}",
+    },
+    "recruiting_label_creator": {
+        "EN": "👤 Created by",
+        "FR": "👤 Créé par",
+    },
+    "recruiting_label_seats_free": {
+        "EN": "💺 Seats free",
+        "FR": "💺 Places libres",
+    },
+    "recruiting_label_players": {
+        "EN": "🃏 Players",
+        "FR": "🃏 Joueurs",
+    },
+    "recruiting_label_age": {
+        "EN": "⏱ Open since",
+        "FR": "⏱ Ouvert depuis",
+    },
+    "recruiting_age_minutes": {
+        "EN": "{minutes}m",
+        "FR": "{minutes}min",
+    },
+    "recruiting_age_hours": {
+        "EN": "{hours}h {minutes}m",
+        "FR": "{hours}h {minutes}min",
+    },
+    "recruiting_age_days": {
+        "EN": "{days}d {hours}h",
+        "FR": "{days}j {hours}h",
+    },
+    "recruiting_age_unknown": {
+        "EN": "unknown",
+        "FR": "inconnu",
+    },
+    "recruiting_seats_unknown": {
+        "EN": "unknown",
+        "FR": "inconnu",
+    },
+    "recruiting_players_none": {
+        "EN": "none yet",
+        "FR": "aucun pour l'instant",
+    },
 }
 
 

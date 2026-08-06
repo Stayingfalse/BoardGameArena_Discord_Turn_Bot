@@ -1512,6 +1512,7 @@ class Database:
                 ws.guild_id,
                 ws.channel_id,
                 ws.created_by_discord_user_id,
+                ws.created_at AS recruiting_started_at,
                 COALESCE(st.last_packet_id, 1) AS last_packet_id,
                 COALESCE(st.last_waiting_ids, '[]') AS last_waiting_ids,
                 COALESCE(st.last_player_names, '{}') AS last_player_names,
@@ -1549,4 +1550,5 @@ class Database:
             lifecycle_state=row["lifecycle_state"] or "recruiting",
             tracked_message_id=int(row["tracked_message_id"]) if row["tracked_message_id"] else None,
             tracked_message_kind=row["tracked_message_kind"],
+            recruiting_started_at=row["recruiting_started_at"],
         )

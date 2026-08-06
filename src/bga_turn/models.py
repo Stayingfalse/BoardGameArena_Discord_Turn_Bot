@@ -39,6 +39,7 @@ class WatchSubscription:
     lifecycle_state: str
     tracked_message_id: int | None
     tracked_message_kind: str | None
+    recruiting_started_at: str | None = None
 
 
 @dataclass(slots=True)
