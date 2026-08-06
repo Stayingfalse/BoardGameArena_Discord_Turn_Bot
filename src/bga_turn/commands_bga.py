@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -657,3 +658,112 @@ class BgaCommands(commands.Cog):
                 ephemeral=True,
             ),
         )
+
+    @staticmethod
+    def _format_recruiting_age(recruiting_started_at: str | None) -> str:
+        if not recruiting_started_at:
+            return tr("recruiting_age_unknown")
+        try:
+            started = datetime.fromisoformat(recruiting_started_at)
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            delta_seconds = int((datetime.now(timezone.utc) - started).total_seconds())
+            if delta_seconds < 0:
+                delta_seconds = 0
+            total_minutes = delta_seconds // 60
+            hours, minutes = divmod(total_minutes, 60)
+            days, hours = divmod(hours, 24)
+            if days > 0:
+                return tr("recruiting_age_days", days=days, hours=hours)
+            if hours > 0:
+                return tr("recruiting_age_hours", hours=hours, minutes=minutes)
+            return tr("recruiting_age_minutes", minutes=total_minutes)
+        except (ValueError, OverflowError):
+            return tr("recruiting_age_unknown")
+
+    @bga.command(name="recruiting", description=tr("command_recruiting_description"))
+    async def recruiting(self, interaction: discord.Interaction) -> None:
+        if interaction.guild_id is None:
+            await self._interaction_send_with_retry(
+                interaction,
+                "recruiting_server_only",
+                lambda: interaction.response.send_message(
+                    tr("error_command_server_only"),
+                    ephemeral=True,
+                ),
+            )
+            return
+
+        all_subscriptions = self.database.list_watch_subscriptions_for_guild(str(interaction.guild_id))
+        subscriptions = [s for s in all_subscriptions if s.lifecycle_state == "recruiting"]
+
+        if not subscriptions:
+            await self._interaction_send_with_retry(
+                interaction,
+                "recruiting_none",
+                lambda: interaction.response.send_message(
+                    tr("recruiting_none"),
+                    ephemeral=True,
+                ),
+            )
+            return
+
+        embeds = [
+            discord.Embed(
+                title=tr("recruiting_header"),
+                description=tr("recruiting_summary", count=len(subscriptions)),
+                color=discord.Color.gold(),
+            )
+        ]
+
+        for subscription in subscriptions:
+            table_url = subscription.table_url or build_table_url(subscription.table_id)
+            card = discord.Embed(
+                title=tr(
+                    "recruiting_card_title",
+                    table_id=subscription.table_id,
+                    game_name=format_game_name(subscription.game_name),
+                ),
+                url=table_url,
+                color=discord.Color.gold(),
+            )
+
+            # Creator
+            card.add_field(
+                name=tr("recruiting_label_creator"),
+                value=f"<@{subscription.created_by_discord_user_id}>",
+                inline=True,
+            )
+
+            # Seats free
+            if subscription.seats_remaining is not None:
+                seats_value = str(subscription.seats_remaining)
+                if subscription.seats_total is not None:
+                    seats_value += f"/{subscription.seats_total}"
+            else:
+                seats_value = tr("recruiting_seats_unknown")
+            card.add_field(
+                name=tr("recruiting_label_seats_free"),
+                value=seats_value,
+                inline=True,
+            )
+
+            # Age
+            card.add_field(
+                name=tr("recruiting_label_age"),
+                value=self._format_recruiting_age(subscription.recruiting_started_at),
+                inline=True,
+            )
+
+            # Players
+            player_names = list(subscription.seated_player_names.values()) or list(subscription.player_names.values())
+            players_value = ", ".join(player_names) if player_names else tr("recruiting_players_none")
+            card.add_field(
+                name=tr("recruiting_label_players"),
+                value=players_value,
+                inline=False,
+            )
+
+            embeds.append(card)
+
+        await self._send_ephemeral_embeds(interaction, embeds)
