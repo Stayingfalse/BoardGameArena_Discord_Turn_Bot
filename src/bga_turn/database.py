@@ -457,7 +457,8 @@ class Database:
                 """
                 SELECT
                     COUNT(*) AS currently_watching,
-                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting,
+                    COUNT(DISTINCT ws.channel_id) AS live_channels
                 FROM watch_subscriptions ws
                 LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
                 WHERE ws.guild_id = ?
@@ -469,6 +470,9 @@ class Database:
                 """
                 SELECT
                     COUNT(*) AS total_games,
+                    SUM(CASE WHEN outcome = 'finished' THEN 1 ELSE 0 END) AS finished_games,
+                    SUM(CASE WHEN outcome = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_games,
+                    SUM(CASE WHEN outcome = 'unwatched' THEN 1 ELSE 0 END) AS unwatched_games,
                     AVG(
                         CASE
                             WHEN game_started_at IS NOT NULL
@@ -482,7 +486,10 @@ class Database:
                             THEN (julianday(finished_at) - julianday(game_started_at)) * 24
                             ELSE NULL
                         END
-                    ) AS avg_game_hours
+                    ) AS avg_game_hours,
+                    AVG(CASE WHEN player_count IS NOT NULL THEN player_count ELSE NULL END) AS avg_players_per_game,
+                    COUNT(DISTINCT channel_id) AS tracked_channels,
+                    COUNT(DISTINCT created_by_discord_user_id) AS recruiter_count
                 FROM game_history
                 WHERE guild_id = ?
                 """,
@@ -491,6 +498,15 @@ class Database:
 
             members_row = self._connection.execute(
                 "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
+            ).fetchone()
+
+            followed_row = self._connection.execute(
+                """
+                SELECT COUNT(DISTINCT discord_user_id) AS count
+                FROM followed_players
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
             ).fetchone()
 
             games_by_name_rows = self._connection.execute(
@@ -526,13 +542,39 @@ class Database:
                 (guild_id,),
             ).fetchall()
 
+            recruiter_rows = self._connection.execute(
+                """
+                SELECT created_by_discord_user_id, COUNT(*) AS count
+                FROM game_history
+                WHERE guild_id = ?
+                GROUP BY created_by_discord_user_id
+                ORDER BY count DESC, created_by_discord_user_id
+                LIMIT 10
+                """,
+                (guild_id,),
+            ).fetchall()
+
+            channel_rows = self._connection.execute(
+                """
+                SELECT channel_id, COUNT(*) AS count
+                FROM game_history
+                WHERE guild_id = ?
+                GROUP BY channel_id
+                ORDER BY count DESC, channel_id
+                LIMIT 10
+                """,
+                (guild_id,),
+            ).fetchall()
         return self._build_extended_stats(
             live_row=live_row,
             hist_row=hist_row,
             members_row=members_row,
+            followed_row=followed_row,
             games_by_name_rows=games_by_name_rows,
             games_over_time_rows=games_over_time_rows,
             player_rows=player_rows,
+            recruiter_rows=recruiter_rows,
+            channel_rows=channel_rows,
         )
 
     def get_global_extended_stats(self) -> dict[str, object]:
@@ -542,7 +584,8 @@ class Database:
                 """
                 SELECT
                     COUNT(*) AS currently_watching,
-                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS currently_recruiting,
+                    COUNT(DISTINCT ws.channel_id) AS live_channels
                 FROM watch_subscriptions ws
                 LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
                 """
@@ -552,6 +595,9 @@ class Database:
                 """
                 SELECT
                     COUNT(*) AS total_games,
+                    SUM(CASE WHEN outcome = 'finished' THEN 1 ELSE 0 END) AS finished_games,
+                    SUM(CASE WHEN outcome = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_games,
+                    SUM(CASE WHEN outcome = 'unwatched' THEN 1 ELSE 0 END) AS unwatched_games,
                     AVG(
                         CASE
                             WHEN game_started_at IS NOT NULL
@@ -565,13 +611,32 @@ class Database:
                             THEN (julianday(finished_at) - julianday(game_started_at)) * 24
                             ELSE NULL
                         END
-                    ) AS avg_game_hours
+                    ) AS avg_game_hours,
+                    AVG(CASE WHEN player_count IS NOT NULL THEN player_count ELSE NULL END) AS avg_players_per_game,
+                    COUNT(DISTINCT channel_id) AS tracked_channels,
+                    COUNT(DISTINCT created_by_discord_user_id) AS recruiter_count
                 FROM game_history
                 """
             ).fetchone()
 
             members_row = self._connection.execute(
                 "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
+            ).fetchone()
+
+            followed_row = self._connection.execute(
+                """
+                SELECT COUNT(DISTINCT discord_user_id) AS count
+                FROM followed_players
+                """
+            ).fetchone()
+
+            scope_row = self._connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS guild_count,
+                    COUNT(DISTINCT forced_channel_id) AS forced_channels
+                FROM guild_settings
+                """
             ).fetchone()
 
             games_by_name_rows = self._connection.execute(
@@ -598,13 +663,37 @@ class Database:
                 "SELECT winner_names, final_standings FROM game_history"
             ).fetchall()
 
+            recruiter_rows = self._connection.execute(
+                """
+                SELECT created_by_discord_user_id, COUNT(*) AS count
+                FROM game_history
+                GROUP BY created_by_discord_user_id
+                ORDER BY count DESC, created_by_discord_user_id
+                LIMIT 10
+                """
+            ).fetchall()
+
+            channel_rows = self._connection.execute(
+                """
+                SELECT channel_id, COUNT(*) AS count
+                FROM game_history
+                GROUP BY channel_id
+                ORDER BY count DESC, channel_id
+                LIMIT 10
+                """
+            ).fetchall()
+
         return self._build_extended_stats(
             live_row=live_row,
             hist_row=hist_row,
             members_row=members_row,
+            followed_row=followed_row,
             games_by_name_rows=games_by_name_rows,
             games_over_time_rows=games_over_time_rows,
             player_rows=player_rows,
+            recruiter_rows=recruiter_rows,
+            channel_rows=channel_rows,
+            scope_row=scope_row,
         )
 
     @staticmethod
@@ -613,9 +702,13 @@ class Database:
         live_row: object,
         hist_row: object,
         members_row: object,
+        followed_row: object,
         games_by_name_rows: list,
         games_over_time_rows: list,
         player_rows: list,
+        recruiter_rows: list,
+        channel_rows: list,
+        scope_row: object | None = None,
     ) -> dict[str, object]:
         def _normalize_player_name(raw_name: str) -> str:
             candidate = (raw_name or "").strip()
@@ -652,25 +745,60 @@ class Database:
             key=lambda item: (-int(item["appearances"]), -int(item["wins"]), str(item["name"]).casefold()),
         )[:10]
 
+        top_winners: list[dict[str, object]] = sorted(
+            [{"name": name, "wins": count} for name, count in player_wins.items()],
+            key=lambda item: (-int(item["wins"]), str(item["name"]).casefold()),
+        )[:10]
+
         avg_rec = hist_row["avg_recruiting_minutes"] if hist_row else None
         avg_game = hist_row["avg_game_hours"] if hist_row else None
+        avg_players = hist_row["avg_players_per_game"] if hist_row else None
+        games_over_time = [
+            {"day": str(row["day"]), "count": int(row["count"])}
+            for row in games_over_time_rows
+        ]
+        busiest_day = max(games_over_time, key=lambda item: (int(item["count"]), str(item["day"])), default=None)
 
         return {
             "currently_watching": int((live_row["currently_watching"] if live_row else 0) or 0),
             "currently_recruiting": int((live_row["currently_recruiting"] if live_row else 0) or 0),
+            "live_channels": int((live_row["live_channels"] if live_row else 0) or 0),
             "total_games": int((hist_row["total_games"] if hist_row else 0) or 0),
+            "finished_games": int((hist_row["finished_games"] if hist_row else 0) or 0),
+            "cancelled_games": int((hist_row["cancelled_games"] if hist_row else 0) or 0),
+            "unwatched_games": int((hist_row["unwatched_games"] if hist_row else 0) or 0),
             "avg_recruiting_minutes": round(float(avg_rec), 1) if avg_rec is not None else None,
             "avg_game_hours": round(float(avg_game), 1) if avg_game is not None else None,
+            "avg_players_per_game": round(float(avg_players), 1) if avg_players is not None else None,
             "members_linked": int((members_row["count"] if members_row else 0) or 0),
+            "followed_members": int((followed_row["count"] if followed_row else 0) or 0),
+            "tracked_channels": int((hist_row["tracked_channels"] if hist_row else 0) or 0),
+            "recruiter_count": int((hist_row["recruiter_count"] if hist_row else 0) or 0),
+            "guild_count": int((scope_row["guild_count"] if scope_row else 0) or 0),
+            "forced_channels": int((scope_row["forced_channels"] if scope_row else 0) or 0),
             "games_by_name": [
                 {"name": str(row["name"]), "count": int(row["count"])}
                 for row in games_by_name_rows
             ],
-            "games_over_time": [
-                {"day": str(row["day"]), "count": int(row["count"])}
-                for row in games_over_time_rows
-            ],
+            "games_over_time": games_over_time,
+            "busiest_day": busiest_day,
             "top_players": top_players,
+            "top_winners": top_winners,
+            "unique_players": len(player_appearances),
+            "top_recruiters": [
+                {
+                    "discord_user_id": str(row["created_by_discord_user_id"]),
+                    "count": int(row["count"]),
+                }
+                for row in recruiter_rows
+            ],
+            "top_channels": [
+                {
+                    "channel_id": str(row["channel_id"]),
+                    "count": int(row["count"]),
+                }
+                for row in channel_rows
+            ],
         }
 
     def get_guild_stats(self, guild_id: str) -> dict[str, int]:
