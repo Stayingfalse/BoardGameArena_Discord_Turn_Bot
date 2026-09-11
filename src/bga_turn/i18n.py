@@ -255,6 +255,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Show the known state of watched tables on this server",
         "FR": "Affiche l'etat connu des tables surveillees sur ce serveur",
     },
+    "command_stats_description": {
+        "EN": "Show server stats, or global stats with `global:true`",
+        "FR": "Affiche les stats du serveur, ou les stats globales avec `global:true`",
+    },
+    "command_stats_global": {
+        "EN": "When true, show global bot stats instead of this server only",
+        "FR": "Si vrai, affiche les stats globales du bot au lieu de ce serveur seulement",
+    },
     "error_manage_server_required_link": {
         "EN": "You need the `Manage Server` permission to link a Discord member to BGA.",
         "FR": "Il faut la permission `Manage Server` pour lier un membre Discord a un joueur BGA.",
@@ -438,6 +446,214 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "status_no_waiting": {
         "EN": "no player waiting",
         "FR": "aucun joueur attendu",
+    },
+    "stats_view_expired": {
+        "EN": "This stats view is no longer active. Run `/bga stats` again.",
+        "FR": "Cette vue de stats n'est plus active. Relance `/bga stats`.",
+    },
+    "stats_title_guild": {
+        "EN": "{guild_name} — Stats",
+        "FR": "{guild_name} — Stats",
+    },
+    "stats_title_global": {
+        "EN": "Global Bot Stats",
+        "FR": "Stats globales du bot",
+    },
+    "stats_this_server": {
+        "EN": "this server",
+        "FR": "ce serveur",
+    },
+    "stats_page_overview": {
+        "EN": "Overview",
+        "FR": "Vue d'ensemble",
+    },
+    "stats_page_leaders": {
+        "EN": "Leaders",
+        "FR": "Classements",
+    },
+    "stats_page_activity": {
+        "EN": "Activity",
+        "FR": "Activite",
+    },
+    "stats_scope_summary_guild": {
+        "EN": "{tables} live table(s) across {channels} channel(s) • {recruiting} recruiting now",
+        "FR": "{tables} table(s) actives dans {channels} salon(s) • {recruiting} en recrutement",
+    },
+    "stats_scope_summary_global": {
+        "EN": "{tables} live table(s) across {channels} channel(s) • {recruiting} recruiting now globally",
+        "FR": "{tables} table(s) actives dans {channels} salon(s) • {recruiting} en recrutement au global",
+    },
+    "stats_section_quick_numbers": {
+        "EN": "Quick numbers",
+        "FR": "Chiffres cles",
+    },
+    "stats_section_highlights": {
+        "EN": "Highlights",
+        "FR": "Temps forts",
+    },
+    "stats_section_top_games": {
+        "EN": "Most played games",
+        "FR": "Jeux les plus joues",
+    },
+    "stats_section_top_players": {
+        "EN": "Most active players",
+        "FR": "Joueurs les plus actifs",
+    },
+    "stats_section_top_recruiters": {
+        "EN": "Most active recruiters",
+        "FR": "Recruteurs les plus actifs",
+    },
+    "stats_section_activity": {
+        "EN": "Activity breakdown",
+        "FR": "Repartition de l'activite",
+    },
+    "stats_section_recent_pace": {
+        "EN": "Recent pace (last 90 days)",
+        "FR": "Rythme recent (90 derniers jours)",
+    },
+    "stats_section_top_channels": {
+        "EN": "Most active channels",
+        "FR": "Salons les plus actifs",
+    },
+    "stats_metric_games_tracked": {
+        "EN": "Games tracked",
+        "FR": "Parties suivies",
+    },
+    "stats_metric_live_tables": {
+        "EN": "Live tables",
+        "FR": "Tables actives",
+    },
+    "stats_metric_recruiting_now": {
+        "EN": "Recruiting now",
+        "FR": "En recrutement",
+    },
+    "stats_metric_linked_accounts": {
+        "EN": "Linked accounts",
+        "FR": "Comptes lies",
+    },
+    "stats_metric_followed_members": {
+        "EN": "Auto-followed members",
+        "FR": "Membres suivis auto",
+    },
+    "stats_metric_channels": {
+        "EN": "Tracked channels",
+        "FR": "Salons suivis",
+    },
+    "stats_metric_avg_recruiting": {
+        "EN": "Avg recruiting time",
+        "FR": "Temps moyen de recrutement",
+    },
+    "stats_metric_avg_game": {
+        "EN": "Avg game duration",
+        "FR": "Duree moyenne d'une partie",
+    },
+    "stats_metric_avg_players": {
+        "EN": "Avg players / game",
+        "FR": "Joueurs moyens / partie",
+    },
+    "stats_metric_finished_games": {
+        "EN": "Finished games",
+        "FR": "Parties terminees",
+    },
+    "stats_metric_cancelled_games": {
+        "EN": "Cancelled watches",
+        "FR": "Watches annulees",
+    },
+    "stats_metric_unwatched_games": {
+        "EN": "Unwatched manually",
+        "FR": "Arretees manuellement",
+    },
+    "stats_metric_unique_players": {
+        "EN": "Unique players seen",
+        "FR": "Joueurs uniques vus",
+    },
+    "stats_metric_live_channels": {
+        "EN": "Live channels right now",
+        "FR": "Salons actifs maintenant",
+    },
+    "stats_metric_recruiters": {
+        "EN": "Recruiters seen",
+        "FR": "Recruteurs vus",
+    },
+    "stats_metric_guilds": {
+        "EN": "Guilds configured",
+        "FR": "Serveurs configures",
+    },
+    "stats_metric_forced_channels": {
+        "EN": "Forced channels set",
+        "FR": "Salons forces configures",
+    },
+    "stats_metric_busiest_day": {
+        "EN": "Busiest day",
+        "FR": "Jour le plus actif",
+    },
+    "stats_highlight_most_played": {
+        "EN": "Most played game",
+        "FR": "Jeu le plus joue",
+    },
+    "stats_highlight_most_active_player": {
+        "EN": "Most active player",
+        "FR": "Joueur le plus actif",
+    },
+    "stats_highlight_top_recruiter": {
+        "EN": "Top recruiter",
+        "FR": "Top recruteur",
+    },
+    "stats_highlight_busiest_day": {
+        "EN": "📅 Busiest day: {day} ({count} finished)",
+        "FR": "📅 Jour le plus actif : {day} ({count} terminees)",
+    },
+    "stats_none_available": {
+        "EN": "No stats recorded yet.",
+        "FR": "Aucune stat enregistree pour l'instant.",
+    },
+    "stats_game_count_line": {
+        "EN": "{name} ({count})",
+        "FR": "{name} ({count})",
+    },
+    "stats_player_record_line": {
+        "EN": "{name} ({appearances} games, {wins} wins)",
+        "FR": "{name} ({appearances} parties, {wins} victoires)",
+    },
+    "stats_recruiter_record_line": {
+        "EN": "{recruiter} ({count} tables)",
+        "FR": "{recruiter} ({count} tables)",
+    },
+    "stats_game_ranking_line": {
+        "EN": "{rank}. {name} — {count}",
+        "FR": "{rank}. {name} — {count}",
+    },
+    "stats_player_ranking_line": {
+        "EN": "{rank}. {name} — {appearances} games / {wins} wins",
+        "FR": "{rank}. {name} — {appearances} parties / {wins} victoires",
+    },
+    "stats_recruiter_ranking_line": {
+        "EN": "{rank}. {recruiter} — {count} tables",
+        "FR": "{rank}. {recruiter} — {count} tables",
+    },
+    "stats_channel_ranking_line": {
+        "EN": "{rank}. {channel} — {count} games",
+        "FR": "{rank}. {channel} — {count} parties",
+    },
+    "stats_recent_total_line": {
+        "EN": "🎯 {count} game(s) finished in the last 90 days",
+        "FR": "🎯 {count} partie(s) terminee(s) sur les 90 derniers jours",
+    },
+    "stats_recent_active_days_line": {
+        "EN": "🗓 Activity was recorded on {count} day(s)",
+        "FR": "🗓 Activite relevee sur {count} jour(s)",
+    },
+    "stats_recent_busiest_line": {
+        "EN": "🔥 Peak day: {day} with {count} finished game(s)",
+        "FR": "🔥 Pic d'activite : {day} avec {count} partie(s) terminee(s)",
+    },
+    "stats_masked_user": {
+        "EN": "User •••{suffix}",
+        "FR": "Utilisateur •••{suffix}",
+    },
+    "stats_masked_channel": {
+        "EN": "Channel •••{suffix}",
+        "FR": "Salon •••{suffix}",
     },
     "label_game": {
         "EN": "Game",
