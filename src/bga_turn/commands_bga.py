@@ -29,6 +29,192 @@ class WatchRegistrationResult:
     replaced_existing_watch: bool = False
 
 
+class StatsPageButton(discord.ui.Button["StatsLayoutView"]):
+    def __init__(self, page_key: str, label: str, *, active: bool) -> None:
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
+            disabled=active,
+        )
+        self.page_key = page_key
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.view is None:
+            await interaction.response.send_message(tr("stats_view_expired"), ephemeral=True)
+            return
+        await self.view.show_page(interaction, self.page_key)
+
+
+class StatsLayoutView(discord.ui.LayoutView):
+    _PAGE_LABELS = {
+        "overview": "stats_page_overview",
+        "leaders": "stats_page_leaders",
+        "activity": "stats_page_activity",
+    }
+    _PAGE_COLORS = {
+        "overview": discord.Color.blurple(),
+        "leaders": discord.Color.gold(),
+        "activity": discord.Color.dark_green(),
+    }
+
+    def __init__(
+        self,
+        *,
+        cog: "BgaCommands",
+        guild: discord.Guild | None,
+        stats: dict[str, object],
+        is_global: bool,
+        page: str = "overview",
+    ) -> None:
+        super().__init__(timeout=300)
+        self._cog = cog
+        self._guild = guild
+        self._stats = stats
+        self._is_global = is_global
+        self._page = page if page in self._PAGE_LABELS else "overview"
+        self._build()
+
+    async def show_page(self, interaction: discord.Interaction, page_key: str) -> None:
+        await interaction.response.edit_message(
+            view=StatsLayoutView(
+                cog=self._cog,
+                guild=self._guild,
+                stats=self._stats,
+                is_global=self._is_global,
+                page=page_key,
+            )
+        )
+
+    def _build(self) -> None:
+        title = (
+            tr("stats_title_global")
+            if self._is_global
+            else tr(
+                "stats_title_guild",
+                guild_name=getattr(self._guild, "name", tr("stats_this_server")),
+            )
+        )
+        items: list[discord.ui.Item] = [
+            discord.ui.TextDisplay(
+                f"## {title}\n_{self._cog._build_stats_scope_summary(self._stats, is_global=self._is_global)}_"
+            ),
+            discord.ui.Separator(),
+        ]
+
+        if self._page == "overview":
+            items.extend(self._build_overview_items())
+        elif self._page == "leaders":
+            items.extend(self._build_leaders_items())
+        else:
+            items.extend(self._build_activity_items())
+
+        items.append(discord.ui.Separator())
+        items.append(
+            discord.ui.ActionRow(
+                *[
+                    StatsPageButton(
+                        page_key=page_key,
+                        label=tr(label_key),
+                        active=page_key == self._page,
+                    )
+                    for page_key, label_key in self._PAGE_LABELS.items()
+                ]
+            )
+        )
+        self.add_item(discord.ui.Container(*items, accent_color=self._PAGE_COLORS[self._page]))
+
+    def _build_overview_items(self) -> list[discord.ui.Item]:
+        return [
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_quick_numbers"),
+                    [
+                        f"🎲 {tr('stats_metric_games_tracked')}: **{self._cog._stat_int(self._stats, 'total_games')}**",
+                        f"🟢 {tr('stats_metric_live_tables')}: **{self._cog._stat_int(self._stats, 'currently_watching')}**",
+                        f"📣 {tr('stats_metric_recruiting_now')}: **{self._cog._stat_int(self._stats, 'currently_recruiting')}**",
+                        f"🔗 {tr('stats_metric_linked_accounts')}: **{self._cog._stat_int(self._stats, 'members_linked')}**",
+                        f"👀 {tr('stats_metric_followed_members')}: **{self._cog._stat_int(self._stats, 'followed_members')}**",
+                        f"💬 {tr('stats_metric_channels')}: **{self._cog._stat_int(self._stats, 'tracked_channels')}**",
+                        f"⏱ {tr('stats_metric_avg_recruiting')}: **{self._cog._format_minutes(self._stats.get('avg_recruiting_minutes'))}**",
+                        f"⌛ {tr('stats_metric_avg_game')}: **{self._cog._format_hours(self._stats.get('avg_game_hours'))}**",
+                        f"👥 {tr('stats_metric_avg_players')}: **{self._cog._format_decimal(self._stats.get('avg_players_per_game'))}**",
+                    ],
+                )
+            ),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_highlights"),
+                    self._cog._build_highlight_lines(
+                        self._stats, guild=self._guild, is_global=self._is_global
+                    ),
+                )
+            ),
+        ]
+
+    def _build_leaders_items(self) -> list[discord.ui.Item]:
+        return [
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_top_games"),
+                    self._cog._format_game_rankings(self._stats),
+                )
+            ),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_top_players"),
+                    self._cog._format_player_rankings(self._stats),
+                )
+            ),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_top_recruiters"),
+                    self._cog._format_recruiter_rankings(
+                        self._stats, guild=self._guild, is_global=self._is_global
+                    ),
+                )
+            ),
+        ]
+
+    def _build_activity_items(self) -> list[discord.ui.Item]:
+        section_lines = [
+            f"✅ {tr('stats_metric_finished_games')}: **{self._cog._stat_int(self._stats, 'finished_games')}**",
+            f"🛑 {tr('stats_metric_cancelled_games')}: **{self._cog._stat_int(self._stats, 'cancelled_games')}**",
+            f"🧹 {tr('stats_metric_unwatched_games')}: **{self._cog._stat_int(self._stats, 'unwatched_games')}**",
+            f"🧑‍🤝‍🧑 {tr('stats_metric_unique_players')}: **{self._cog._stat_int(self._stats, 'unique_players')}**",
+            f"📡 {tr('stats_metric_live_channels')}: **{self._cog._stat_int(self._stats, 'live_channels')}**",
+            f"📣 {tr('stats_metric_recruiters')}: **{self._cog._stat_int(self._stats, 'recruiter_count')}**",
+        ]
+        if self._is_global:
+            section_lines.extend(
+                [
+                    f"🛖 {tr('stats_metric_guilds')}: **{self._cog._stat_int(self._stats, 'guild_count')}**",
+                    f"📍 {tr('stats_metric_forced_channels')}: **{self._cog._stat_int(self._stats, 'forced_channels')}**",
+                ]
+            )
+        return [
+            discord.ui.TextDisplay(self._cog._join_stat_lines(tr("stats_section_activity"), section_lines)),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_recent_pace"),
+                    self._cog._build_recent_pace_lines(self._stats),
+                )
+            ),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                self._cog._join_stat_lines(
+                    tr("stats_section_top_channels"),
+                    self._cog._format_channel_rankings(
+                        self._stats, guild=self._guild, is_global=self._is_global
+                    ),
+                )
+            ),
+        ]
+
+
 class BgaCommands(commands.Cog):
     bga = app_commands.Group(name="bga", description=tr("command_group_description"))
 
@@ -680,6 +866,309 @@ class BgaCommands(commands.Cog):
             return tr("recruiting_age_minutes", minutes=total_minutes)
         except (ValueError, OverflowError):
             return tr("recruiting_age_unknown")
+
+    @staticmethod
+    def _stat_int(stats: dict[str, object], key: str) -> int:
+        value = stats.get(key)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _format_decimal(value: object) -> str:
+        if value is None:
+            return "—"
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "—"
+        if numeric.is_integer():
+            return str(int(numeric))
+        return f"{numeric:.1f}"
+
+    @classmethod
+    def _format_minutes(cls, value: object) -> str:
+        if value is None:
+            return "—"
+        try:
+            minutes = max(0, int(round(float(value))))
+        except (TypeError, ValueError):
+            return "—"
+        if minutes < 60:
+            return tr("recruiting_age_minutes", minutes=minutes)
+        hours, remaining_minutes = divmod(minutes, 60)
+        if hours < 24:
+            return tr("recruiting_age_hours", hours=hours, minutes=remaining_minutes)
+        days, remaining_hours = divmod(hours, 24)
+        return tr("recruiting_age_days", days=days, hours=remaining_hours)
+
+    @classmethod
+    def _format_hours(cls, value: object) -> str:
+        if value is None:
+            return "—"
+        try:
+            total_minutes = max(0, int(round(float(value) * 60)))
+        except (TypeError, ValueError):
+            return "—"
+        return cls._format_minutes(total_minutes)
+
+    @staticmethod
+    def _join_stat_lines(title: str, lines: list[str]) -> str:
+        effective_lines = [line for line in lines if line]
+        if not effective_lines:
+            effective_lines = [tr("stats_none_available")]
+        return f"**{title}**\n" + "\n".join(effective_lines)
+
+    def _build_stats_scope_summary(self, stats: dict[str, object], *, is_global: bool) -> str:
+        return tr(
+            "stats_scope_summary_global" if is_global else "stats_scope_summary_guild",
+            tables=self._stat_int(stats, "currently_watching"),
+            channels=self._stat_int(stats, "live_channels"),
+            recruiting=self._stat_int(stats, "currently_recruiting"),
+        )
+
+    def _build_highlight_lines(
+        self,
+        stats: dict[str, object],
+        *,
+        guild: discord.Guild | None,
+        is_global: bool,
+    ) -> list[str]:
+        games = stats.get("games_by_name") or []
+        top_players = stats.get("top_players") or []
+        recruiters = stats.get("top_recruiters") or []
+        busiest_day = stats.get("busiest_day")
+        lines = [
+            f"🏅 {tr('stats_highlight_most_played')}: {self._format_top_game(games)}",
+            f"🔥 {tr('stats_highlight_most_active_player')}: {self._format_top_player(top_players)}",
+            f"📣 {tr('stats_highlight_top_recruiter')}: {self._format_top_recruiter(recruiters, guild=guild, is_global=is_global)}",
+        ]
+        if isinstance(busiest_day, dict) and busiest_day.get("day"):
+            lines.append(
+                tr(
+                    "stats_highlight_busiest_day",
+                    day=str(busiest_day["day"]),
+                    count=int(busiest_day["count"]),
+                )
+            )
+        else:
+            lines.append(f"📅 {tr('stats_metric_busiest_day')}: {tr('stats_none_available')}")
+        return lines
+
+    @staticmethod
+    def _format_top_game(games: object) -> str:
+        if not isinstance(games, list) or not games:
+            return tr("stats_none_available")
+        top_game = games[0]
+        return tr(
+            "stats_game_count_line",
+            name=format_game_name(str(top_game.get("name"))),
+            count=int(top_game.get("count", 0)),
+        )
+
+    @staticmethod
+    def _format_top_player(players: object) -> str:
+        if not isinstance(players, list) or not players:
+            return tr("stats_none_available")
+        top_player = players[0]
+        return tr(
+            "stats_player_record_line",
+            name=str(top_player.get("name", tr("value_unknown"))),
+            appearances=int(top_player.get("appearances", 0)),
+            wins=int(top_player.get("wins", 0)),
+        )
+
+    def _format_top_recruiter(
+        self,
+        recruiters: object,
+        *,
+        guild: discord.Guild | None,
+        is_global: bool,
+    ) -> str:
+        if not isinstance(recruiters, list) or not recruiters:
+            return tr("stats_none_available")
+        top_recruiter = recruiters[0]
+        return tr(
+            "stats_recruiter_record_line",
+            recruiter=self._format_user_ref(
+                str(top_recruiter.get("discord_user_id", "")),
+                guild=guild,
+                is_global=is_global,
+            ),
+            count=int(top_recruiter.get("count", 0)),
+        )
+
+    def _format_game_rankings(self, stats: dict[str, object]) -> list[str]:
+        rows = stats.get("games_by_name")
+        if not isinstance(rows, list) or not rows:
+            return []
+        return [
+            tr(
+                "stats_game_ranking_line",
+                rank=index,
+                name=format_game_name(str(row.get("name"))),
+                count=int(row.get("count", 0)),
+            )
+            for index, row in enumerate(rows[:5], start=1)
+        ]
+
+    def _format_player_rankings(self, stats: dict[str, object]) -> list[str]:
+        rows = stats.get("top_players")
+        if not isinstance(rows, list) or not rows:
+            return []
+        return [
+            tr(
+                "stats_player_ranking_line",
+                rank=index,
+                name=str(row.get("name", tr("value_unknown"))),
+                appearances=int(row.get("appearances", 0)),
+                wins=int(row.get("wins", 0)),
+            )
+            for index, row in enumerate(rows[:5], start=1)
+        ]
+
+    def _format_recruiter_rankings(
+        self,
+        stats: dict[str, object],
+        *,
+        guild: discord.Guild | None,
+        is_global: bool,
+    ) -> list[str]:
+        rows = stats.get("top_recruiters")
+        if not isinstance(rows, list) or not rows:
+            return []
+        return [
+            tr(
+                "stats_recruiter_ranking_line",
+                rank=index,
+                recruiter=self._format_user_ref(
+                    str(row.get("discord_user_id", "")),
+                    guild=guild,
+                    is_global=is_global,
+                ),
+                count=int(row.get("count", 0)),
+            )
+            for index, row in enumerate(rows[:5], start=1)
+        ]
+
+    def _format_channel_rankings(
+        self,
+        stats: dict[str, object],
+        *,
+        guild: discord.Guild | None,
+        is_global: bool,
+    ) -> list[str]:
+        rows = stats.get("top_channels")
+        if not isinstance(rows, list) or not rows:
+            return []
+        return [
+            tr(
+                "stats_channel_ranking_line",
+                rank=index,
+                channel=self._format_channel_ref(
+                    str(row.get("channel_id", "")),
+                    guild=guild,
+                    is_global=is_global,
+                ),
+                count=int(row.get("count", 0)),
+            )
+            for index, row in enumerate(rows[:5], start=1)
+        ]
+
+    def _build_recent_pace_lines(self, stats: dict[str, object]) -> list[str]:
+        rows = stats.get("games_over_time")
+        if not isinstance(rows, list) or not rows:
+            return []
+        total_recent = sum(int(row.get("count", 0)) for row in rows)
+        active_days = len(rows)
+        busiest_day = stats.get("busiest_day")
+        lines = [
+            tr("stats_recent_total_line", count=total_recent),
+            tr("stats_recent_active_days_line", count=active_days),
+        ]
+        if isinstance(busiest_day, dict) and busiest_day.get("day"):
+            lines.append(
+                tr(
+                    "stats_recent_busiest_line",
+                    day=str(busiest_day["day"]),
+                    count=int(busiest_day["count"]),
+                )
+            )
+        return lines
+
+    def _format_user_ref(
+        self,
+        discord_user_id: str,
+        *,
+        guild: discord.Guild | None,
+        is_global: bool,
+    ) -> str:
+        if not discord_user_id:
+            return tr("value_unknown")
+        if guild is not None and discord_user_id.isdigit():
+            member = guild.get_member(int(discord_user_id))
+            if member is not None:
+                return member.mention if not is_global else member.display_name
+        if is_global and discord_user_id.isdigit():
+            return tr("stats_masked_user", suffix=discord_user_id[-4:])
+        return f"<@{discord_user_id}>"
+
+    def _format_channel_ref(
+        self,
+        channel_id: str,
+        *,
+        guild: discord.Guild | None,
+        is_global: bool,
+    ) -> str:
+        if not channel_id:
+            return tr("value_unknown")
+        if guild is not None and channel_id.isdigit():
+            channel = guild.get_channel(int(channel_id))
+            if channel is not None:
+                return channel.mention if not is_global else f"#{channel.name}"
+        if is_global and channel_id.isdigit():
+            return tr("stats_masked_channel", suffix=channel_id[-4:])
+        return f"<#{channel_id}>"
+
+    @bga.command(name="stats", description=tr("command_stats_description"))
+    @app_commands.rename(global_scope="global")
+    @app_commands.describe(global_scope=tr("command_stats_global"))
+    async def stats_command(
+        self,
+        interaction: discord.Interaction,
+        global_scope: bool = False,
+    ) -> None:
+        if interaction.guild_id is None:
+            await self._interaction_send_with_retry(
+                interaction,
+                "stats_server_only",
+                lambda: interaction.response.send_message(
+                    tr("error_command_server_only"),
+                    ephemeral=True,
+                ),
+            )
+            return
+
+        stats = await asyncio.to_thread(
+            self.database.get_global_extended_stats
+            if global_scope
+            else self.database.get_guild_extended_stats,
+            *(() if global_scope else (str(interaction.guild_id),)),
+        )
+        await self._interaction_send_with_retry(
+            interaction,
+            "stats_display",
+            lambda: interaction.response.send_message(
+                view=StatsLayoutView(
+                    cog=self,
+                    guild=interaction.guild,
+                    stats=stats,
+                    is_global=global_scope,
+                ),
+                ephemeral=True,
+            ),
+        )
 
     @bga.command(name="recruiting", description=tr("command_recruiting_description"))
     async def recruiting(self, interaction: discord.Interaction) -> None:

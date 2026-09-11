@@ -303,6 +303,23 @@ Show the last known state of all watched tables on the current server (ephemeral
 
 Displays for each watch: the table ID, game name, channel, whose turn it is (BGA player IDs), and the interpreted state.
 
+### `/bga stats`
+
+Show a compact multi-page stats card for the current server, with a `global:true` option for bot-wide totals.
+
+```text
+/bga stats
+/bga stats global:True
+```
+
+The stats view uses Discord component cards and page buttons to surface highlights such as:
+
+- total tracked games, live tables, and recruiting tables
+- linked accounts and auto-follow usage
+- most played games and most active players
+- most active recruiters and busiest channels
+- recent activity and outcome breakdowns
+
 ### `/bga settings`
 
 View or change server-wide bot settings. Requires `Manage Server` or `Administrator`.
