@@ -246,7 +246,8 @@ Le bot ecoute les messages dans tous les salons qu'il peut voir. Tout lien de ta
 
 - les pages de jeu (`https://boardgamearena.com/1/azul?table=12345`), `/table?table=`, `/tableview?table=`, les pages de revue et de replay ;
 - les liens courts (`https://bga.li/t/12345`) et les sous-domaines de langue (`fr.boardgamearena.com`) ;
-- les liens sans `https://`, les liens entoures de mise en forme Discord (`||spoiler||`, `**gras**`, `` `code` ``, `<sans apercu>`) et les liens dans les messages transferes.
+- les liens sans `https://`, les liens entoures de mise en forme Discord (`||spoiler||`, `**gras**`, `` `code` ``, `<sans apercu>`) et les liens dans les messages transferes ;
+- les liens ajoutes en modifiant un message. Seuls les nouveaux liens comptent : corriger une faute ou l'ajout d'un apercu par Discord ne change rien, et une modification ne deplace jamais la carte d'une table deja suivie dans le salon.
 
 Des qu'un lien est detecte, le bot publie un message de statut **« Lien Board Game Arena detecte – enregistrement de la table… »**. Ensuite :
 

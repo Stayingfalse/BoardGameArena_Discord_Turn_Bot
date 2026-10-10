@@ -249,7 +249,8 @@ The bot listens for messages in all channels it can see. Any Board Game Arena ta
 
 - game pages (`https://boardgamearena.com/1/azul?table=12345`), `/table?table=`, `/tableview?table=`, review and replay pages;
 - short links (`https://bga.li/t/12345`) and language subdomains (`fr.boardgamearena.com`);
-- links without `https://`, links wrapped in Discord formatting (`||spoiler||`, `**bold**`, `` `code` ``, `<no embed>`), and links in forwarded messages.
+- links without `https://`, links wrapped in Discord formatting (`||spoiler||`, `**bold**`, `` `code` ``, `<no embed>`), and links in forwarded messages;
+- links added later by editing a message. Only links that are new in the edit count, so fixing a typo or Discord adding a link preview changes nothing, and an edit never moves the card of a table the channel already watches.
 
 As soon as a link is seen, the bot replies with a status message, **"Board Game Arena link detected – registering table…"**. Then:
 

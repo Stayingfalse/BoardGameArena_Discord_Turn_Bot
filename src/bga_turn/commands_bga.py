@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -229,6 +230,9 @@ class BgaCommands(commands.Cog):
     _CARD_WAIT_EXTRA_SECONDS = 120.0
     # A note pointing at a forced channel removes itself after this many seconds.
     _ELSEWHERE_NOTE_SECONDS = 120.0
+    # How many recent messages remember which tables they already linked, so an
+    # edit only acts on links that are new.
+    _SEEN_LINKS_LIMIT = 2000
 
     def __init__(
         self,
@@ -242,6 +246,8 @@ class BgaCommands(commands.Cog):
         self.bga_client = bga_client
         self.monitor = monitor
         self._default_delete_invite_message = default_delete_invite_message
+        # message id -> table ids already handled for that message.
+        self._seen_links: OrderedDict[int, set[str]] = OrderedDict()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Log every ``/bga`` command invocation. Never blocks the command."""
@@ -252,10 +258,60 @@ class BgaCommands(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
             return
+        links = self._claim_new_links(message.id, extract_table_links(self._message_text(message)))
+        if links:
+            await self._handle_shared_links(message, links)
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        """Pick up table links added to a message after it was posted.
+
+        Uses the raw event so edits to messages outside the cache are seen too.
+        Only links that were not in the message before count: fixing a typo, or
+        Discord adding a link preview (which is also an edit), changes nothing.
+        """
+        message = payload.message
+        if message.guild is None or message.author.bot:
+            return
         links = extract_table_links(self._message_text(message))
         if not links:
             return
+        previous_text = self._message_text(payload.cached_message) if payload.cached_message is not None else ""
+        previous_ids = {self._link_table_id(url) for url in extract_table_links(previous_text)}
+        new_links = [url for url in links if self._link_table_id(url) not in previous_ids]
+        # An edit should never move an existing card, so skip tables this
+        # channel already watches (this also covers edits after a restart, when
+        # neither the cache nor _seen_links knows the old content).
+        new_links = [
+            url
+            for url in new_links
+            if self.database.get_watch_subscription_by_scope(
+                table_id=self._link_table_id(url),
+                guild_id=str(message.guild.id),
+                channel_id=str(message.channel.id),
+            )
+            is None
+        ]
+        new_links = self._claim_new_links(message.id, new_links)
+        if new_links:
+            await self._handle_shared_links(message, new_links)
 
+    @staticmethod
+    def _link_table_id(url: str) -> str:
+        return parse_public_table_url(url)[0]
+
+    def _claim_new_links(self, message_id: int, links: list[str]) -> list[str]:
+        """Return the links not yet handled for *message_id*, and mark them handled."""
+        seen = self._seen_links.get(message_id)
+        if seen is None:
+            seen = self._seen_links[message_id] = set()
+            while len(self._seen_links) > self._SEEN_LINKS_LIMIT:
+                self._seen_links.popitem(last=False)
+        fresh = [url for url in links if self._link_table_id(url) not in seen]
+        seen.update(self._link_table_id(url) for url in fresh)
+        return fresh
+
+    async def _handle_shared_links(self, message: discord.Message, links: list[str]) -> None:
         # Acknowledge every link straight away; registration can take a while.
         notes: list[discord.Message | None] = []
         for url in links:

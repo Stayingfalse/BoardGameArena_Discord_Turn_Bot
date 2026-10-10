@@ -284,3 +284,99 @@ async def test_adopt_refuses_when_table_posts_elsewhere(database, bot, guilds, c
     monitor = BgaMonitor(bot, database, bga_client=None, poll_seconds=15)
     subscription = _subscription(database)
     assert await monitor.adopt_link_status_message(subscription, FakeMessage(channel)) == "other_channel"
+
+
+# ---------------------------------------------------------------------------
+# Edits
+# ---------------------------------------------------------------------------
+
+
+def _edit(message, *, before: str | None):
+    cached = None
+    if before is not None:
+        cached = FakeMessage(message.channel, content=before)
+        cached.id = message.id
+    return SimpleNamespace(message=message, cached_message=cached)
+
+
+def _counting_register(calls):
+    async def register(**kwargs):
+        calls.append(kwargs["table_or_url"])
+        return _registration()
+
+    return register
+
+
+async def test_link_added_by_edit_is_registered(database, channel):
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    message = FakeMessage(channel, content="who's up for a game?")
+    await cog.on_message(message)
+    assert calls == []
+
+    message.content = f"who's up for a game? https://boardgamearena.com/table?table={TABLE_ID}"
+    await cog.on_raw_message_edit(_edit(message, before="who's up for a game?"))
+    assert calls == [f"https://boardgamearena.com/table?table={TABLE_ID}"]
+    assert monitor.sent == [tr("link_status_detecting", table_id=TABLE_ID)]
+
+
+async def test_edit_without_new_links_does_nothing(database, channel):
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    url = f"https://boardgamearena.com/table?table={TABLE_ID}"
+    message = FakeMessage(channel, content=url)
+    await cog.on_message(message)
+    assert len(calls) == 1
+
+    # Typo fix, and Discord unfurling the link preview (also an edit event).
+    message.content = f"{url} tonight!"
+    await cog.on_raw_message_edit(_edit(message, before=url))
+    await cog.on_raw_message_edit(_edit(message, before=None))
+    assert len(calls) == 1
+    assert len(monitor.sent) == 1
+
+
+async def test_failed_link_is_not_retried_on_every_edit(database, channel):
+    monitor, attempts = FakeMonitor(), []
+
+    async def register(**kwargs):
+        attempts.append(1)
+        raise BgaTableFinishedError("x")
+
+    cog = _cog(database, monitor, register=register)
+    message = FakeMessage(channel, content=f"https://boardgamearena.com/table?table={TABLE_ID}")
+    await cog.on_message(message)
+    await cog.on_raw_message_edit(_edit(message, before=None))
+    assert len(attempts) == 1
+    assert len(monitor.edits) == 1
+
+
+async def test_edit_after_restart_skips_tables_already_watched_here(database, channel):
+    _subscription(database)  # this channel already watches the table
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    message = FakeMessage(channel, content=f"https://boardgamearena.com/table?table={TABLE_ID}")
+    # Nothing cached, no on_message seen (e.g. the bot restarted since posting).
+    await cog.on_raw_message_edit(_edit(message, before=None))
+    assert calls == []
+
+
+async def test_edit_only_registers_the_new_link(database, channel):
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    first = "https://boardgamearena.com/table?table=1111111"
+    message = FakeMessage(channel, content=first)
+    await cog.on_message(message)
+
+    message.content = f"{first} and https://boardgamearena.com/2/azul?table=2222222"
+    await cog.on_raw_message_edit(_edit(message, before=first))
+    assert calls == [first, "https://boardgamearena.com/2/azul?table=2222222"]
+
+
+async def test_edits_by_bots_are_ignored(database, channel):
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    message = FakeMessage(channel, content=f"https://boardgamearena.com/table?table={TABLE_ID}")
+    message.author.bot = True
+    await cog.on_raw_message_edit(_edit(message, before=""))
+    assert calls == []
