@@ -19,7 +19,7 @@ from .bga_client import (
     BgaTableFinishedError,
     BgaTableUnavailableError,
 )
-from .database import Database
+from .database import AsyncDatabase, Database
 from .i18n import tr
 from .monitor import BgaMonitor
 from .models import WatchSubscription
@@ -243,6 +243,7 @@ class BgaCommands(commands.Cog):
         default_delete_invite_message: bool = False,
     ) -> None:
         self.database = database
+        self.db = AsyncDatabase(database)
         self.bga_client = bga_client
         self.monitor = monitor
         self._default_delete_invite_message = default_delete_invite_message
@@ -285,7 +286,7 @@ class BgaCommands(commands.Cog):
         new_links = [
             url
             for url in new_links
-            if self.database.get_watch_subscription_by_scope(
+            if await self.db.get_watch_subscription_by_scope(
                 table_id=self._link_table_id(url),
                 guild_id=str(message.guild.id),
                 channel_id=str(message.channel.id),
@@ -355,7 +356,7 @@ class BgaCommands(commands.Cog):
                 timeout_seconds=self._CARD_WAIT_EXTRA_SECONDS,
             )
 
-        guild_settings = self.database.get_guild_settings(
+        guild_settings = await self.db.get_guild_settings(
             str(message.guild.id),
             default_delete_invite_message=self._default_delete_invite_message,
         )
@@ -436,7 +437,7 @@ class BgaCommands(commands.Cog):
         if registration.replaced_existing_watch:
             await self.monitor.reset_tracked_message(subscription)
         if note is not None and outcome == "other_channel":
-            guild_settings = self.database.get_guild_settings(
+            guild_settings = await self.db.get_guild_settings(
                 subscription.guild_id,
                 default_forced_channel_id=self.monitor._default_forced_channel_id,
             )
@@ -631,12 +632,12 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        self.database.upsert_linked_user(
+        await self.db.upsert_linked_user(
             discord_user_id=str(member.id),
             bga_player_id=candidate_id,
             bga_player_name=candidate_name,
         )
-        linked_user = self.database.get_linked_user(str(member.id))
+        linked_user = await self.db.get_linked_user(str(member.id))
         if linked_user is None:
             raise RuntimeError("Failed to load the linked BGA user after saving it.")
         name_display = linked_user.bga_player_name or tr("link_missing_value_placeholder")
@@ -683,7 +684,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        removed = self.database.remove_linked_user(str(member.id))
+        removed = await self.db.remove_linked_user(str(member.id))
         if not removed:
             await self._interaction_send_with_retry(
                 interaction,
@@ -713,7 +714,7 @@ class BgaCommands(commands.Cog):
         table_or_url: str,
     ) -> WatchRegistrationResult:
         table_id, table_url, base_url, gameserver, game_name = parse_public_table_url(table_or_url)
-        existing_subscription = self.database.get_watch_subscription_by_scope(
+        existing_subscription = await self.db.get_watch_subscription_by_scope(
             table_id=table_id,
             guild_id=guild_id,
             channel_id=channel_id,
@@ -761,7 +762,7 @@ class BgaCommands(commands.Cog):
             detected_player_names = dict(state.player_names)
             source = state.source
 
-        subscription = self.database.upsert_watch_subscription(
+        subscription = await self.db.upsert_watch_subscription(
             table_id=table_id,
             table_url=resolved_table_url or build_table_url(table_id),
             base_url=base_url,
@@ -773,7 +774,7 @@ class BgaCommands(commands.Cog):
         )
         persisted_player_names = dict(subscription.player_names)
         persisted_player_names.update(detected_player_names)
-        self.database.update_watch_state(
+        await self.db.update_watch_state(
             subscription_id=subscription.subscription_id,
             last_packet_id=subscription.last_packet_id,
             waiting_ids=[] if state is None else subscription.last_waiting_ids,
@@ -789,11 +790,10 @@ class BgaCommands(commands.Cog):
             game_name=resolved_game_name or subscription.game_name,
             player_count=len(persisted_player_names),
         )
-        await asyncio.to_thread(
-            self.database.enrich_linked_users_from_players, persisted_player_names
+        await self.db.enrich_linked_users_from_players(persisted_player_names
         )
         if state is None:
-            subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+            subscription = await self.db.get_watch_subscription(subscription.subscription_id) or subscription
             return WatchRegistrationResult(
                 subscription=subscription,
                 source=source,
@@ -802,7 +802,7 @@ class BgaCommands(commands.Cog):
                 replaced_existing_watch=existing_subscription is not None,
             )
 
-        subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+        subscription = await self.db.get_watch_subscription(subscription.subscription_id) or subscription
         return WatchRegistrationResult(
             subscription=subscription,
             source=source,
@@ -828,7 +828,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        subscriptions = self.database.list_watch_subscriptions_for_guild(str(interaction.guild_id))
+        subscriptions = await self.db.list_watch_subscriptions_for_guild(str(interaction.guild_id))
         if not subscriptions:
             await self._interaction_send_with_retry(
                 interaction,
@@ -853,7 +853,7 @@ class BgaCommands(commands.Cog):
             elif not subscription.is_initialized:
                 state = tr("status_unknown")
             elif subscription.last_waiting_ids:
-                linked_users = self.database.get_linked_users_by_bga_ids(
+                linked_users = await self.db.get_linked_users_by_bga_ids(
                     subscription.last_waiting_ids
                 )
                 if linked_users:
@@ -929,7 +929,7 @@ class BgaCommands(commands.Cog):
             return
 
         guild_id = str(interaction.guild_id)
-        current = self.database.get_guild_settings(
+        current = await self.db.get_guild_settings(
             guild_id,
             default_recruiting_only=self.monitor._default_recruiting_only,
             default_delete_invite_message=self._default_delete_invite_message,
@@ -963,7 +963,7 @@ class BgaCommands(commands.Cog):
         else:
             new_forced_channel_id = current.forced_channel_id
 
-        self.database.upsert_guild_settings(
+        await self.db.upsert_guild_settings(
             guild_id=guild_id,
             recruiting_only=new_recruiting_only,
             delete_invite_message=new_delete_invite_message,
@@ -1290,11 +1290,10 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        stats = await asyncio.to_thread(
-            self.database.get_global_extended_stats
+        stats = (
+            await self.db.get_global_extended_stats()
             if global_scope
-            else self.database.get_guild_extended_stats,
-            *(() if global_scope else (str(interaction.guild_id),)),
+            else await self.db.get_guild_extended_stats(str(interaction.guild_id))
         )
         await self._interaction_send_with_retry(
             interaction,
@@ -1323,7 +1322,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        all_subscriptions = self.database.list_watch_subscriptions_for_guild(str(interaction.guild_id))
+        all_subscriptions = await self.db.list_watch_subscriptions_for_guild(str(interaction.guild_id))
         subscriptions = [s for s in all_subscriptions if s.lifecycle_state == "recruiting"]
 
         if not subscriptions:

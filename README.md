@@ -1,4 +1,4 @@
-﻿# BGA Discord self-host bot
+# BGA Discord self-host bot
 
 Self-hosted Discord bot for Board Game Arena.
 
@@ -451,12 +451,16 @@ The bot does not use cookies, browser sessions, or a BGA account.
 | `src/bga_turn/app.py` | Application entry point, environment loading, bot startup |
 | `src/bga_turn/commands_bga.py` | `/bga` slash commands and the `on_message` link detector |
 | `src/bga_turn/bga_client.py` | Public BGA networking, HTML parsing, websocket handling |
-| `src/bga_turn/monitor.py` | Watch loop and Discord message lifecycle |
-| `src/bga_turn/database.py` | SQLite persistence |
+| `src/bga_turn/monitor.py` | Watch loop, table workers and Discord message lifecycle |
+| `src/bga_turn/cards.py` | Renders the table cards and link status notes (no I/O) |
+| `src/bga_turn/discord_io.py` | Rate-limit-aware Discord calls (per-channel queues, 429 retries) |
+| `src/bga_turn/views.py` | Persistent "Link your BGA & Discord" button and modal |
+| `src/bga_turn/database.py` | SQLite persistence; `AsyncDatabase` runs it off the event loop |
 | `src/bga_turn/dashboard.py` | Optional aiohttp web dashboard |
 | `src/bga_turn/models.py` | Domain dataclasses |
 | `src/bga_turn/utils.py` | URL parsing, JSON helpers, small utilities |
 | `src/bga_turn/schema.sql` | Packaged SQLite schema |
+| `src/bga_turn/locales/en.json` | Bot messages (see Translations) |
 | `pyproject.toml` | Package metadata and console entry point |
 | `.env.example` | Local configuration example |
 

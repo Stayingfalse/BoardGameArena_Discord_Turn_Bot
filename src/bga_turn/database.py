@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 import sqlite3
@@ -1570,3 +1572,27 @@ class Database:
             tracked_message_kind=row["tracked_message_kind"],
             recruiting_started_at=row["recruiting_started_at"],
         )
+
+
+class AsyncDatabase:
+    """Awaitable view of a :class:`Database` for code running on the event loop.
+
+    SQLite calls block, and every query shares one connection behind a lock, so a
+    slow query (stats, for example) run directly on the event loop would stall
+    the Discord gateway and every table worker. Each method here runs the
+    matching ``Database`` method in a worker thread: ``await db.get_x(...)``.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def __getattr__(self, name: str):
+        method = getattr(self._database, name)
+        if not callable(method) or name.startswith("_"):
+            raise AttributeError(name)
+
+        @functools.wraps(method)
+        async def run_in_thread(*args, **kwargs):
+            return await asyncio.to_thread(method, *args, **kwargs)
+
+        return run_in_thread

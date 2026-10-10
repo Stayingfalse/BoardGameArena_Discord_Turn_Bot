@@ -11,7 +11,7 @@ from discord.ext import tasks
 
 from . import cards
 from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaServerError, BgaTableUnavailableError
-from .database import Database
+from .database import AsyncDatabase, Database
 from .discord_io import DiscordRateLimiter
 from .i18n import tr
 from .models import BgaTableSnapshot, LinkedUser, WatchSubscription
@@ -67,6 +67,7 @@ class BgaMonitor:
     ) -> None:
         self.bot = bot
         self.database = database
+        self.db = AsyncDatabase(database)
         self.bga_client = bga_client
         self._poll_seconds = max(5, poll_seconds)
         self._default_recruiting_only = default_recruiting_only
@@ -132,20 +133,13 @@ class BgaMonitor:
         """Clear per-table server error counters on a successful BGA response.
 
         If a Discord error note was previously shown for this table, the note is
-        removed here; the change will propagate to Discord on the next lifecycle
-        message update (the payload signature will differ, triggering a re-render).
+        removed here. The card signature includes the note, so the next lifecycle
+        update sees a changed signature and re-renders without the banner.
         """
         self._table_server_error_at.pop(table_id, None)
         self._table_consecutive_server_errors.pop(table_id, None)
         if self._table_error_note.pop(table_id, None) is not None:
             LOGGER.info(tr("bga_server_error_cleared", table_id=table_id))
-            # Invalidate any cached payload signatures so the next lifecycle
-            # message update will re-render without the error banner.
-            subscriptions = self._subscriptions_for_table(table_id)
-            for sub in subscriptions:
-                active = self._active_messages.get(sub.subscription_id)
-                if active is not None:
-                    active.payload_signature = None
 
     async def _push_error_note_to_discord(self, table_id: str) -> None:
         """Force an immediate update of the tracked Discord message for *table_id*.
@@ -153,7 +147,7 @@ class BgaMonitor:
         Called once the error-note threshold is reached so that the error banner
         appears in Discord without waiting for the next natural state change.
         """
-        subscriptions = self._subscriptions_for_table(table_id)
+        subscriptions = await self._subscriptions_for_table(table_id)
         for subscription in subscriptions:
             lifecycle_state = subscription.lifecycle_state or self.LIFECYCLE_IN_PROGRESS
             waiting_ids = list(subscription.last_waiting_ids)
@@ -175,7 +169,7 @@ class BgaMonitor:
         await self._sync_tables_once()
 
     async def _sync_tables_once(self) -> None:
-        subscriptions = self.database.list_watch_subscriptions()
+        subscriptions = await self.db.list_watch_subscriptions()
         active_table_ids = {subscription.table_id for subscription in subscriptions}
         active_subscription_ids = {subscription.subscription_id for subscription in subscriptions}
         active_channel_ids = {subscription.channel_id for subscription in subscriptions}
@@ -243,7 +237,7 @@ class BgaMonitor:
         backoff_seconds = 5.0
         while True:
             try:
-                subscriptions = self._subscriptions_for_table(table_id)
+                subscriptions = await self._subscriptions_for_table(table_id)
                 if not subscriptions:
                     return
 
@@ -297,7 +291,7 @@ class BgaMonitor:
                 raise
             except BgaTableUnavailableError as exc:
                 LOGGER.warning(tr("table_unavailable_autounwatch", table_id=table_id, error=exc))
-                subscriptions = self._subscriptions_for_table(table_id)
+                subscriptions = await self._subscriptions_for_table(table_id)
                 if subscriptions:
                     await self._finalize_finished_table(subscriptions, table_id)
                 else:
@@ -374,7 +368,7 @@ class BgaMonitor:
                 backoff_seconds = min(backoff_seconds * 2, 60)
 
     async def _apply_table_state(self, table_id: str, fallback_game_name: str, state) -> None:
-        subscriptions = self._subscriptions_for_table(table_id)
+        subscriptions = await self._subscriptions_for_table(table_id)
         if not subscriptions:
             return
 
@@ -389,7 +383,7 @@ class BgaMonitor:
             player_names=merged_player_names,
         )
         # Links are global, so one pass covers every server watching this table.
-        await asyncio.to_thread(self.database.enrich_linked_users_from_players, merged_player_names)
+        await self.db.enrich_linked_users_from_players(merged_player_names)
 
         if state.is_game_finished:
             LOGGER.info(tr("table_finished_public", table_id=table_id))
@@ -421,7 +415,7 @@ class BgaMonitor:
 
             # In recruiting-only mode: the game has started — delete the recruiting
             # message and remove the watch subscription without posting in-progress messages.
-            guild_settings = self.database.get_guild_settings(
+            guild_settings = await self.db.get_guild_settings(
                 subscription.guild_id,
                 default_recruiting_only=self._default_recruiting_only,
             )
@@ -434,7 +428,7 @@ class BgaMonitor:
                         table_id=table_id,
                     )
                     self._active_messages.pop(subscription.subscription_id, None)
-                self.database.update_watch_state(
+                await self.db.update_watch_state(
                     subscription_id=subscription.subscription_id,
                     last_packet_id=table_packet_id,
                     waiting_ids=waiting_ids,
@@ -447,7 +441,7 @@ class BgaMonitor:
                     lifecycle_state=self.LIFECYCLE_IN_PROGRESS,
                     player_count=len(current_player_names),
                 )
-                self.database.remove_watch_subscription(
+                await self.db.remove_watch_subscription(
                     table_id=subscription.table_id,
                     guild_id=subscription.guild_id,
                     channel_id=subscription.channel_id,
@@ -471,7 +465,7 @@ class BgaMonitor:
                 snapshot=None,
             )
 
-            self.database.update_watch_state(
+            await self.db.update_watch_state(
                 subscription_id=subscription.subscription_id,
                 last_packet_id=table_packet_id,
                 waiting_ids=waiting_ids,
@@ -516,7 +510,7 @@ class BgaMonitor:
                 player_names=dict(subscription.player_names),
                 snapshot=snapshot,
             )
-            self.database.update_watch_state(
+            await self.db.update_watch_state(
                 subscription_id=subscription.subscription_id,
                 last_packet_id=subscription.last_packet_id,
                 waiting_ids=[],
@@ -548,7 +542,7 @@ class BgaMonitor:
                 ),
             )
 
-            self.database.remove_watch_subscription(
+            await self.db.remove_watch_subscription(
                 table_id=subscription.table_id,
                 guild_id=subscription.guild_id,
                 channel_id=subscription.channel_id,
@@ -633,7 +627,7 @@ class BgaMonitor:
                 continue
             player_names = dict(subscription.player_names)
             player_names.update(snapshot.player_names)
-            self.database.update_watch_state(
+            await self.db.update_watch_state(
                 subscription_id=subscription.subscription_id,
                 last_packet_id=subscription.last_packet_id,
                 waiting_ids=[],
@@ -750,7 +744,7 @@ class BgaMonitor:
                 if edited is None:
                     return
             except discord.NotFound:
-                self.database.update_watch_message_tracking(
+                await self.db.update_watch_message_tracking(
                     subscription_id=subscription.subscription_id,
                     lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
                     tracked_message_id=None,
@@ -781,7 +775,7 @@ class BgaMonitor:
                     )
                 except discord.DiscordException:
                     pass
-                self.database.update_watch_message_tracking(
+                await self.db.update_watch_message_tracking(
                     subscription_id=subscription.subscription_id,
                     lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
                     tracked_message_id=None,
@@ -806,7 +800,7 @@ class BgaMonitor:
             waiting_ids=list(waiting_ids),
             payload_signature=payload_signature,
         )
-        self.database.update_watch_message_tracking(
+        await self.db.update_watch_message_tracking(
             subscription_id=subscription.subscription_id,
             lifecycle_state=lifecycle_state,
             tracked_message_id=message.id,
@@ -836,7 +830,7 @@ class BgaMonitor:
 
     async def _linked_users_for_card(self, card: cards.CardData) -> list[LinkedUser]:
         try:
-            return await asyncio.to_thread(self.database.get_linked_users_for_players, card.players_to_link())
+            return await self.db.get_linked_users_for_players(card.players_to_link())
         except sqlite3.Error as exc:
             LOGGER.warning("Linked-user lookup failed while building table message: %s", exc)
             return []
@@ -858,7 +852,7 @@ class BgaMonitor:
                 lambda mid=subscription.tracked_message_id: channel.fetch_message(mid),
             )
         except discord.NotFound:
-            self.database.update_watch_message_tracking(
+            await self.db.update_watch_message_tracking(
                 subscription_id=subscription.subscription_id,
                 lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
                 tracked_message_id=None,
@@ -935,7 +929,7 @@ class BgaMonitor:
         return merged_names
 
     async def _resolve_channel(self, subscription: WatchSubscription, table_id: str) -> discord.abc.Messageable | None:
-        guild_settings = self.database.get_guild_settings(
+        guild_settings = await self.db.get_guild_settings(
             subscription.guild_id,
             default_forced_channel_id=self._default_forced_channel_id,
         )
@@ -1100,7 +1094,7 @@ class BgaMonitor:
                 kind=self.LINK_STATUS_KIND,
                 waiting_ids=[],
             )
-            self.database.update_watch_message_tracking(
+            await self.db.update_watch_message_tracking(
                 subscription_id=subscription.subscription_id,
                 lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
                 tracked_message_id=message.id,
@@ -1130,7 +1124,7 @@ class BgaMonitor:
         Used when a link for an already-watched table is posted again: the stored
         state is current, so the adopted note can become the card immediately.
         """
-        subscription = self.database.get_watch_subscription(subscription_id)
+        subscription = await self.db.get_watch_subscription(subscription_id)
         if subscription is None:
             return
         lifecycle_state = self._normalize_lifecycle_state(subscription.lifecycle_state)
@@ -1170,7 +1164,7 @@ class BgaMonitor:
             if not self._is_supported_message_channel(channel):
                 return False
             message = await self._resolve_tracked_message(subscription, channel)
-            refreshed_subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+            refreshed_subscription = await self.db.get_watch_subscription(subscription.subscription_id) or subscription
             if message is None:
                 if refreshed_subscription.tracked_message_id is not None:
                     return False
@@ -1187,7 +1181,7 @@ class BgaMonitor:
                 return False
 
         self._active_messages.pop(subscription.subscription_id, None)
-        self.database.update_watch_message_tracking(
+        await self.db.update_watch_message_tracking(
             subscription_id=subscription.subscription_id,
             lifecycle_state=self._normalize_lifecycle_state(refreshed_subscription.lifecycle_state),
             tracked_message_id=None,
@@ -1245,7 +1239,7 @@ class BgaMonitor:
                 and (subscription.base_url or "") == desired_base_url
             ):
                 continue
-            self.database.upsert_watch_subscription(
+            await self.db.upsert_watch_subscription(
                 table_id=subscription.table_id,
                 table_url=desired_url,
                 base_url=desired_base_url,
@@ -1257,11 +1251,11 @@ class BgaMonitor:
             )
             updated = True
         if updated:
-            return self._subscriptions_for_table(snapshot.table_id)
+            return await self._subscriptions_for_table(snapshot.table_id)
         return subscriptions
 
-    def _subscriptions_for_table(self, table_id: str) -> list[WatchSubscription]:
-        return [item for item in self.database.list_watch_subscriptions() if item.table_id == table_id]
+    async def _subscriptions_for_table(self, table_id: str) -> list[WatchSubscription]:
+        return [item for item in await self.db.list_watch_subscriptions() if item.table_id == table_id]
 
     @classmethod
     def _normalize_lifecycle_state(cls, lifecycle_state: str | None) -> str:

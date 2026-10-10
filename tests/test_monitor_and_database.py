@@ -47,3 +47,35 @@ async def test_forced_channel_in_same_guild_is_used(database, bot, guilds):
     monitor = BgaMonitor(bot, database, bga_client=None, poll_seconds=15)
     channel = await monitor._resolve_channel(_subscription(GUILD_A_ID, 1001), "123")
     assert channel.id == 1002
+
+
+async def test_async_database_runs_methods_off_the_event_loop(database):
+    import threading
+
+    from bga_turn.database import AsyncDatabase
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    original = database.get_global_stats
+
+    def recording():
+        seen.append(threading.get_ident())
+        return original()
+
+    database.get_global_stats = recording
+    assert await AsyncDatabase(database).get_global_stats() == {"total": 0, "recruiting": 0}
+    assert seen and seen[0] != loop_thread
+
+
+def test_bot_code_never_calls_the_database_on_the_event_loop():
+    """The bot's async code must use ``self.db`` (AsyncDatabase), not ``self.database``."""
+    import re
+    from pathlib import Path
+
+    import bga_turn
+
+    package = Path(bga_turn.__file__).parent
+    for name in ("monitor.py", "commands_bga.py"):
+        source = (package / name).read_text(encoding="utf-8")
+        direct = [line.strip() for line in source.splitlines() if re.search(r"self\.database\.\w+", line)]
+        assert direct == [], f"{name}: use 'await self.db.<method>(...)' instead: {direct}"
