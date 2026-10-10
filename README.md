@@ -1,7 +1,5 @@
 ﻿# BGA Discord self-host bot
 
-[Version francaise](README.fr.md)
-
 Self-hosted Discord bot for Board Game Arena.
 
 The bot's primary job is **automatic link detection**: whenever someone posts a BGA game URL in a Discord channel, the bot immediately starts watching that table and posts a live status message that it keeps up to date throughout the game.
@@ -144,7 +142,7 @@ BGA_POLL_SECONDS=15             # How often the monitor checks watched tables (s
 BGA_DB_PATH=bga_bot.db          # SQLite database file path
 BGA_WS_URL=wss://ws-x1.boardgamearena.com/connection/websocket
 LOG_LEVEL=INFO                  # DEBUG, INFO, WARNING, ERROR
-BOT_LANG=EN                     # EN or FR
+BOT_LANG=en                     # language file in src/bga_turn/locales/
 
 # --- Optional features ---
 # Set to 1 to only post the recruiting embed and auto-unwatch when the game starts.
@@ -189,7 +187,7 @@ DASHBOARD_SECRET_KEY=
 | `BGA_DELETE_INVITE_MESSAGE` | — | blank | Delete the original link message once the table card is showing. Blank: on for servers joined from now on, off for others; `1`/`0`: the default everywhere |
 | `BGA_FORCED_CHANNEL_ID` | — | — | Force all bot notifications into one specific channel |
 | `LOG_LEVEL` | — | `INFO` | Console log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `BOT_LANG` | — | `EN` | Bot message language (`EN` or `FR`) |
+| `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
 | `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
 | `DASHBOARD_HOST` | — | `0.0.0.0` | Interface the web dashboard listens on (use `127.0.0.1` behind a local reverse proxy) |
 | `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
@@ -469,6 +467,10 @@ The bot does not use cookies, browser sessions, or a BGA account.
 - The **Message Content Intent** must be enabled in the Discord Developer Portal for automatic link detection to work.
 - Without that intent, no links are detected and no tables are auto-watched (the bot starts but does nothing until a table is manually registered through the database).
 - Displayed game names come from the BGA slug or public bootstrap and are not always perfectly formatted.
+
+### Translations
+
+Everything the bot says in Discord and in its logs lives in `src/bga_turn/locales/en.json`, looked up with `tr("key", ...)`. English is the only language shipped, and the web dashboard is English-only. To add one, copy `en.json` to e.g. `de.json`, translate the values (keep each `{placeholder}`), and set `BOT_LANG=de`. Any missing key falls back to English, and `pytest` reports missing keys or mismatched placeholders.
 
 ### Running the tests
 
