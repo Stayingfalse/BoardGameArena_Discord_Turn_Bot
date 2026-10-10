@@ -110,7 +110,7 @@ async def test_link_and_unlink_guild_member(client, database):
 
 
 async def test_cannot_unlink_someone_outside_the_guild(client, database):
-    database.upsert_linked_user(str(ADMIN_B.id), "42", "CarolPlays")
+    database.link_user(str(ADMIN_B.id), "42", "CarolPlays")
     csrf = login(client, database, ADMIN_A.id)
     response = await client.post(
         f"{GUILD_A}/members/{ADMIN_B.id}/unlink", data={"csrf_token": csrf}, allow_redirects=False
@@ -155,3 +155,74 @@ async def test_public_pages_render(client):
     missing = await client.get("/nope")
     assert missing.status == 404
     assert "text/html" in missing.headers["Content-Type"]
+
+
+async def test_cannot_link_an_account_someone_else_holds(client, database):
+    database.link_user(str(ADMIN_B.id), "42", "CarolPlays")
+    csrf = login(client, database, ADMIN_A.id)
+    response = await client.post(
+        f"{GUILD_A}/members/link",
+        data={"csrf_token": csrf, "discord_user_id": str(MEMBER_A.id), "bga_player_name": "carolplays"},
+        allow_redirects=False,
+    )
+    assert response.headers["Location"].endswith("?error=claimed")
+    assert database.get_linked_user(str(MEMBER_A.id)) is None
+    assert database.get_linked_user(str(ADMIN_B.id)) is not None
+
+
+async def test_global_admin_can_reassign_a_held_account(client, database):
+    database.link_user(str(ADMIN_B.id), "42", "CarolPlays")
+    csrf = login(client, database, 999)
+    response = await client.post(
+        f"{GUILD_A}/members/link",
+        data={"csrf_token": csrf, "discord_user_id": str(MEMBER_A.id), "bga_player_id": "42"},
+        allow_redirects=False,
+    )
+    assert response.headers["Location"].endswith("?linked=1")
+    assert database.get_linked_user(str(MEMBER_A.id)).bga_player_id == "42"
+    assert database.get_linked_user(str(ADMIN_B.id)) is None
+
+
+def _record_finished_game(database, player: str) -> None:
+    sub = database.upsert_watch_subscription(
+        table_id="900", table_url="", base_url="", gameserver="", guild_id=str(GUILD_A_ID),
+        channel_id="1001", created_by_discord_user_id=str(ADMIN_A.id), game_name="azul",
+    )
+    database.update_watch_state(
+        subscription_id=sub.subscription_id, last_packet_id=1, waiting_ids=[], player_names={},
+        seated_player_names={}, is_initialized=True, game_name="azul",
+        winner_names=[player], final_standings=[f"#1 {player} (5) • score 10"],
+    )
+    database.remove_watch_subscription(
+        table_id="900", guild_id=str(GUILD_A_ID), channel_id="1001", outcome="finished"
+    )
+
+
+async def test_public_global_stats_hide_player_names(client, database):
+    _record_finished_game(database, "SecretPlayer")
+    assert "SecretPlayer" not in await (await client.get("/global/stats")).text()
+    assert "SecretPlayer" not in await (await client.get("/")).text()
+    # The server's own admins still see their players.
+    login(client, database, ADMIN_A.id)
+    assert "SecretPlayer" in await (await client.get(f"{GUILD_A}/stats")).text()
+
+
+async def test_global_admin_sees_global_player_rankings(client, database):
+    _record_finished_game(database, "SecretPlayer")
+    login(client, database, 999)
+    assert "SecretPlayer" in await (await client.get("/global/stats")).text()
+
+
+async def test_public_stats_are_cached(client, database, monkeypatch):
+    calls = []
+    original = database.get_global_extended_stats
+
+    def counting():
+        calls.append(1)
+        return original()
+
+    monkeypatch.setattr(database, "get_global_extended_stats", counting)
+    for _ in range(3):
+        assert (await client.get("/")).status == 200
+        assert (await client.get("/global/stats")).status == 200
+    assert len(calls) == 1

@@ -12,6 +12,26 @@ from pathlib import Path
 from .models import GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
 
+# Stats keys that name players, recruiters or channels. Global stats mix every
+# server's data, so these stay out of anything shown outside a single server.
+_IDENTIFYING_STATS_KEYS = ("top_players", "top_winners", "top_recruiters", "top_channels")
+
+
+def redact_global_stats(stats: dict[str, object]) -> dict[str, object]:
+    """Return a copy of cross-server *stats* without names, users or channels."""
+    redacted = dict(stats)
+    for key in _IDENTIFYING_STATS_KEYS:
+        redacted[key] = []
+    return redacted
+
+
+class LinkConflictError(Exception):
+    """The BGA account is already linked to another Discord user."""
+
+    def __init__(self, holder: LinkedUser) -> None:
+        super().__init__(f"BGA account already linked to Discord user {holder.discord_user_id}")
+        self.holder = holder
+
 
 class Database:
     def __init__(self, db_path: Path, schema_sql: str) -> None:
@@ -46,39 +66,66 @@ class Database:
     # Users (global — one link per Discord user across all guilds)
     # ------------------------------------------------------------------
 
-    def upsert_linked_user(
+    def link_user(
         self,
         discord_user_id: str,
         bga_player_id: str | None,
         bga_player_name: str | None,
-    ) -> None:
-        normalized_player_id = (bga_player_id or "").strip()
-        normalized_player_name = (bga_player_name or "").strip()
-        now = utc_now_iso()
+        *,
+        override: bool = False,
+    ) -> LinkedUser:
+        """Link *discord_user_id* to a BGA account, replacing any previous link.
+
+        A BGA ID or name belongs to at most one Discord user: claiming one that
+        someone else holds raises :class:`LinkConflictError`, unless *override*
+        is set, which removes the other user's link. (Two holders would make the
+        bot unable to tell who to mention, silencing the real player.)
+
+        Giving only a name keeps the stored ID when the name is unchanged and
+        clears it otherwise, and the same for an ID, so a re-link never mixes
+        two players.
+        """
+        new_id = (bga_player_id or "").strip()
+        new_name = (bga_player_name or "").strip()
+        if not new_id and not new_name:
+            raise ValueError("A BGA player ID or name is required.")
         with self._lock:
+            existing = self.get_linked_user(discord_user_id)
+            if existing is not None:
+                if not new_id and self._normalize_player_name(existing.bga_player_name) == self._normalize_player_name(new_name):
+                    new_id = existing.bga_player_id
+                if not new_name and existing.bga_player_id == new_id:
+                    new_name = existing.bga_player_name
+
+            normalized_name = self._normalize_player_name(new_name)
+            holders = [
+                item
+                for item in self.list_linked_users()
+                if item.discord_user_id != discord_user_id
+                and (
+                    (new_id and item.bga_player_id == new_id)
+                    or (normalized_name and self._normalize_player_name(item.bga_player_name) == normalized_name)
+                )
+            ]
+            if holders and not override:
+                raise LinkConflictError(holders[0])
+
+            now = utc_now_iso()
+            for holder in holders:
+                self._connection.execute("DELETE FROM users WHERE discord_user_id = ?", (holder.discord_user_id,))
             self._connection.execute(
                 """
-                INSERT INTO users (
-                    discord_user_id,
-                    bga_player_id,
-                    bga_player_name,
-                    created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (discord_user_id, bga_player_id, bga_player_name, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(discord_user_id) DO UPDATE SET
-                    bga_player_id = CASE
-                        WHEN excluded.bga_player_id <> '' THEN excluded.bga_player_id
-                        ELSE users.bga_player_id
-                    END,
-                    bga_player_name = CASE
-                        WHEN excluded.bga_player_name <> '' THEN excluded.bga_player_name
-                        ELSE users.bga_player_name
-                    END,
+                    bga_player_id = excluded.bga_player_id,
+                    bga_player_name = excluded.bga_player_name,
                     updated_at = excluded.updated_at
                 """,
-                (discord_user_id, normalized_player_id, normalized_player_name, now, now),
+                (discord_user_id, new_id, new_name, now, now),
             )
             self._connection.commit()
+        return LinkedUser(discord_user_id=discord_user_id, bga_player_id=new_id, bga_player_name=new_name)
 
     def get_linked_user(self, discord_user_id: str) -> LinkedUser | None:
         with self._lock:

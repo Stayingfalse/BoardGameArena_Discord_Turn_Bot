@@ -57,7 +57,7 @@ class FakeMonitor:
         self.waiting_marked = 0
         self.redrawn: list[int] = []
 
-    async def send_link_status(self, channel, *, table_id, text):
+    async def send_link_status(self, channel, *, table_id, text, delete_after=None):
         self.sent.append(text)
         note = FakeMessage(channel)
         self.notes.append(note)
@@ -380,3 +380,33 @@ async def test_edits_by_bots_are_ignored(database, channel):
     message.author.bot = True
     await cog.on_raw_message_edit(_edit(message, before=""))
     assert calls == []
+
+
+def _limit_note() -> str:
+    return tr(
+        "link_limit_note",
+        per_message=BgaCommands._MAX_LINKS_PER_MESSAGE,
+        per_user=BgaCommands._MAX_LINKS_PER_USER,
+        minutes=int(BgaCommands._USER_LINK_WINDOW_SECONDS // 60),
+    )
+
+
+async def test_links_per_message_are_capped(database, channel):
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    content = " ".join(f"https://boardgamearena.com/table?table={1000 + n}" for n in range(7))
+    await cog.on_message(FakeMessage(channel, content=content))
+    assert len(calls) == BgaCommands._MAX_LINKS_PER_MESSAGE
+    assert monitor.sent.count(_limit_note()) == 1
+
+
+async def test_links_per_person_are_capped_and_noted_once(database, channel):
+    monitor, calls = FakeMonitor(), []
+    cog = _cog(database, monitor, register=_counting_register(calls))
+    for n in range(15):
+        await cog.on_message(FakeMessage(channel, content=f"https://boardgamearena.com/table?table={2000 + n}"))
+    assert len(calls) == BgaCommands._MAX_LINKS_PER_USER
+    assert monitor.sent.count(_limit_note()) == 1
+    # Someone else still has their own allowance.
+    await cog.on_message(FakeMessage(channel, content="https://boardgamearena.com/table?table=3000", author_id=201))
+    assert len(calls) == BgaCommands._MAX_LINKS_PER_USER + 1

@@ -6,7 +6,7 @@ import asyncio
 
 import discord
 
-from .database import Database
+from .database import Database, LinkConflictError
 from .i18n import tr
 
 
@@ -48,22 +48,40 @@ class LinkBgaModal(discord.ui.Modal):
             bga_player_name = raw
 
         database: Database = interaction.client.database  # type: ignore[attr-defined]
-        discord_user_id = str(interaction.user.id)
+        try:
+            linked = await asyncio.to_thread(
+                database.link_user,
+                str(interaction.user.id),
+                bga_player_id,
+                bga_player_name,
+            )
+        except LinkConflictError:
+            await interaction.response.send_message(tr("link_self_conflict", bga_account=raw), ephemeral=True)
+            return
 
-        await asyncio.to_thread(
-            database.upsert_linked_user,
-            discord_user_id,
-            bga_player_id,
-            bga_player_name,
-        )
-        linked = await asyncio.to_thread(database.get_linked_user, discord_user_id)
-        name_display = (linked.bga_player_name if linked else None) or tr("link_missing_value_placeholder")
-        id_display = (linked.bga_player_id if linked else None) or tr("link_missing_value_placeholder")
-
+        name_display = linked.bga_player_name or tr("link_missing_value_placeholder")
+        id_display = linked.bga_player_id or tr("link_missing_value_placeholder")
         await interaction.response.send_message(
             tr("link_self_saved", bga_name=name_display, bga_id=id_display),
             ephemeral=True,
         )
+
+
+class ManageOwnLinkView(discord.ui.View):
+    """Ephemeral "Change" / "Unlink" choices for someone who is already linked."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label=tr("button_link_change"), style=discord.ButtonStyle.primary)
+    async def change(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(LinkBgaModal())
+
+    @discord.ui.button(label=tr("button_link_remove"), style=discord.ButtonStyle.danger)
+    async def remove(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        database: Database = interaction.client.database  # type: ignore[attr-defined]
+        await asyncio.to_thread(database.remove_linked_user, str(interaction.user.id))
+        await interaction.response.edit_message(content=tr("link_self_removed"), view=None)
 
 
 class LinkSelfButton(discord.ui.Button["LinkSelfPersistentView"]):
@@ -94,6 +112,7 @@ class LinkSelfButton(discord.ui.Button["LinkSelfPersistentView"]):
             id_display = existing.bga_player_id or tr("link_missing_value_placeholder")
             await interaction.response.send_message(
                 tr("link_self_already_linked", bga_name=name_display, bga_id=id_display),
+                view=ManageOwnLinkView(),
                 ephemeral=True,
             )
             return

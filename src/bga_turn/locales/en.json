@@ -143,7 +143,7 @@
   "modal_link_bga_title": "Link BGA & Discord Account",
   "modal_link_bga_input_label": "BGA Username or Player ID",
   "modal_link_bga_input_placeholder": "e.g. Haurrus  or  91713763",
-  "link_self_already_linked": "You are already linked to BGA as `{bga_name}` (ID: `{bga_id}`).\nTo update the link use `/bga link-member` (requires Manage Server).",
+  "link_self_already_linked": "You are linked to BGA as `{bga_name}` (ID: `{bga_id}`).\nWrong account? Change or remove the link below.",
   "link_self_saved": "✅ Linked! Your Discord account is now linked to BGA as `{bga_name}` (ID: `{bga_id}`).",
   "link_self_invalid_id": "BGA Player ID must be a number. Enter your BGA username instead, or find your numeric ID in your BGA profile URL.",
   "link_self_no_guild": "This button can only be used inside a server.",
@@ -209,5 +209,12 @@
   "recruiting_age_days": "{days}d {hours}h",
   "recruiting_age_unknown": "unknown",
   "recruiting_seats_unknown": "unknown",
-  "recruiting_players_none": "none yet"
+  "recruiting_players_none": "none yet",
+  "button_link_change": "Change",
+  "button_link_remove": "Unlink",
+  "link_self_removed": "Your BGA link has been removed. You will no longer be mentioned on your turn.",
+  "link_self_conflict": "The BGA account `{bga_account}` is already linked to another Discord user. If it is yours, ask a server admin or the bot owner to sort it out.",
+  "link_member_conflict": "The BGA account `{bga_account}` is already linked to another Discord user. Unlink them first with `/bga unlink-member` if they are in this server; otherwise ask the bot owner.",
+  "stats_global_rankings_hidden": "Player, recruiter and channel rankings are only shown per server.",
+  "link_limit_note": "⚠️ Some Board Game Arena links were ignored. The bot tracks up to {per_message} tables per message, and {per_user} per person every {minutes} minutes."
 }

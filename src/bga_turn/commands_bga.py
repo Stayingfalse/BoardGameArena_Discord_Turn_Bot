@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import OrderedDict
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -19,7 +20,7 @@ from .bga_client import (
     BgaTableFinishedError,
     BgaTableUnavailableError,
 )
-from .database import AsyncDatabase, Database
+from .database import AsyncDatabase, Database, LinkConflictError, redact_global_stats
 from .i18n import tr
 from .monitor import BgaMonitor
 from .models import WatchSubscription
@@ -160,13 +161,17 @@ class StatsLayoutView(discord.ui.LayoutView):
         ]
 
     def _build_leaders_items(self) -> list[discord.ui.Item]:
+        top_games = discord.ui.TextDisplay(
+            self._cog._join_stat_lines(
+                tr("stats_section_top_games"),
+                self._cog._format_game_rankings(self._stats),
+            )
+        )
+        if self._is_global:
+            # Global stats mix every server: no players, recruiters or channels.
+            return [top_games, discord.ui.Separator(), discord.ui.TextDisplay(f"_{tr('stats_global_rankings_hidden')}_")]
         return [
-            discord.ui.TextDisplay(
-                self._cog._join_stat_lines(
-                    tr("stats_section_top_games"),
-                    self._cog._format_game_rankings(self._stats),
-                )
-            ),
+            top_games,
             discord.ui.Separator(),
             discord.ui.TextDisplay(
                 self._cog._join_stat_lines(
@@ -201,7 +206,7 @@ class StatsLayoutView(discord.ui.LayoutView):
                     f"📍 {tr('stats_metric_forced_channels')}: **{self._cog._stat_int(self._stats, 'forced_channels')}**",
                 ]
             )
-        return [
+        items: list[discord.ui.Item] = [
             discord.ui.TextDisplay(self._cog._join_stat_lines(tr("stats_section_activity"), section_lines)),
             discord.ui.Separator(),
             discord.ui.TextDisplay(
@@ -210,6 +215,11 @@ class StatsLayoutView(discord.ui.LayoutView):
                     self._cog._build_recent_pace_lines(self._stats),
                 )
             ),
+        ]
+        if self._is_global:
+            return items
+        return [
+            *items,
             discord.ui.Separator(),
             discord.ui.TextDisplay(
                 self._cog._join_stat_lines(
@@ -233,6 +243,13 @@ class BgaCommands(commands.Cog):
     # How many recent messages remember which tables they already linked, so an
     # edit only acts on links that are new.
     _SEEN_LINKS_LIMIT = 2000
+    # Every link costs a status note and several BGA requests, so one message
+    # (or one person) cannot make the bot post and fetch without limit.
+    _MAX_LINKS_PER_MESSAGE = 5
+    _MAX_LINKS_PER_USER = 10
+    _USER_LINK_WINDOW_SECONDS = 600.0
+    # How long the "some links were ignored" note stays up.
+    _LIMIT_NOTE_SECONDS = 60.0
 
     def __init__(
         self,
@@ -249,6 +266,10 @@ class BgaCommands(commands.Cog):
         self._default_delete_invite_message = default_delete_invite_message
         # message id -> table ids already handled for that message.
         self._seen_links: OrderedDict[int, set[str]] = OrderedDict()
+        # (guild id, user id) -> monotonic times of that person's recent links.
+        self._recent_links: dict[tuple[int, int], deque[float]] = {}
+        # (guild id, user id) -> when that person was last told links were ignored.
+        self._limit_noted_at: dict[tuple[int, int], float] = {}
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Log every ``/bga`` command invocation. Never blocks the command."""
@@ -312,7 +333,56 @@ class BgaCommands(commands.Cog):
         seen.update(self._link_table_id(url) for url in fresh)
         return fresh
 
+    def _limit_links(self, message: discord.Message, links: list[str]) -> list[str]:
+        """Return the links of *message* within the per-message and per-user limits."""
+        now = time.monotonic()
+        key = (message.guild.id, message.author.id)
+        recent = self._recent_links.setdefault(key, deque())
+        while recent and now - recent[0] > self._USER_LINK_WINDOW_SECONDS:
+            recent.popleft()
+        allowed = max(0, min(self._MAX_LINKS_PER_MESSAGE, self._MAX_LINKS_PER_USER - len(recent)))
+        kept = links[:allowed]
+        recent.extend(now for _ in kept)
+        if not recent:
+            del self._recent_links[key]
+        if len(self._recent_links) > 1000:
+            for stale_key in [k for k, times in self._recent_links.items() if now - times[-1] > self._USER_LINK_WINDOW_SECONDS]:
+                del self._recent_links[stale_key]
+                self._limit_noted_at.pop(stale_key, None)
+        return kept
+
+    async def _note_ignored_links(self, message: discord.Message, ignored: int) -> None:
+        """Say once per window per person that some links were ignored."""
+        LOGGER.warning(
+            "Ignored %d BGA link(s) from user %s in guild %s: link limit reached.",
+            ignored,
+            message.author.id,
+            message.guild.id,
+        )
+        key = (message.guild.id, message.author.id)
+        now = time.monotonic()
+        if now - self._limit_noted_at.get(key, -self._USER_LINK_WINDOW_SECONDS) < self._USER_LINK_WINDOW_SECONDS:
+            return
+        self._limit_noted_at[key] = now
+        await self.monitor.send_link_status(
+            message.channel,
+            table_id="limit",
+            text=tr(
+                "link_limit_note",
+                per_message=self._MAX_LINKS_PER_MESSAGE,
+                per_user=self._MAX_LINKS_PER_USER,
+                minutes=int(self._USER_LINK_WINDOW_SECONDS // 60),
+            ),
+            delete_after=self._LIMIT_NOTE_SECONDS,
+        )
+
     async def _handle_shared_links(self, message: discord.Message, links: list[str]) -> None:
+        kept = self._limit_links(message, links)
+        if len(kept) < len(links):
+            await self._note_ignored_links(message, len(links) - len(kept))
+        links = kept
+        if not links:
+            return
         # Acknowledge every link straight away; registration can take a while.
         notes: list[discord.Message | None] = []
         for url in links:
@@ -632,14 +702,22 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        await self.db.upsert_linked_user(
-            discord_user_id=str(member.id),
-            bga_player_id=candidate_id,
-            bga_player_name=candidate_name,
-        )
-        linked_user = await self.db.get_linked_user(str(member.id))
-        if linked_user is None:
-            raise RuntimeError("Failed to load the linked BGA user after saving it.")
+        try:
+            linked_user = await self.db.link_user(
+                str(member.id),
+                bga_player_id=candidate_id,
+                bga_player_name=candidate_name,
+            )
+        except LinkConflictError:
+            await self._interaction_send_with_retry(
+                interaction,
+                "link_member_conflict",
+                lambda: interaction.response.send_message(
+                    tr("link_member_conflict", bga_account=candidate_name or candidate_id),
+                    ephemeral=True,
+                ),
+            )
+            return
         name_display = linked_user.bga_player_name or tr("link_missing_value_placeholder")
         id_display = linked_user.bga_player_id or tr("link_missing_value_placeholder")
         await self._interaction_send_with_retry(
@@ -1079,11 +1157,12 @@ class BgaCommands(commands.Cog):
         top_players = stats.get("top_players") or []
         recruiters = stats.get("top_recruiters") or []
         busiest_day = stats.get("busiest_day")
-        lines = [
-            f"🏅 {tr('stats_highlight_most_played')}: {self._format_top_game(games)}",
-            f"🔥 {tr('stats_highlight_most_active_player')}: {self._format_top_player(top_players)}",
-            f"📣 {tr('stats_highlight_top_recruiter')}: {self._format_top_recruiter(recruiters, guild=guild, is_global=is_global)}",
-        ]
+        lines = [f"🏅 {tr('stats_highlight_most_played')}: {self._format_top_game(games)}"]
+        if not is_global:
+            lines += [
+                f"🔥 {tr('stats_highlight_most_active_player')}: {self._format_top_player(top_players)}",
+                f"📣 {tr('stats_highlight_top_recruiter')}: {self._format_top_recruiter(recruiters, guild=guild, is_global=is_global)}",
+            ]
         if isinstance(busiest_day, dict) and busiest_day.get("day"):
             lines.append(
                 tr(
@@ -1291,7 +1370,7 @@ class BgaCommands(commands.Cog):
             return
 
         stats = (
-            await self.db.get_global_extended_stats()
+            redact_global_stats(await self.db.get_global_extended_stats())
             if global_scope
             else await self.db.get_guild_extended_stats(str(interaction.guild_id))
         )
