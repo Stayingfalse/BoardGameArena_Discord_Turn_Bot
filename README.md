@@ -1,6 +1,4 @@
-﻿# BGA Discord self-host bot
-
-[Version francaise](README.fr.md)
+# BGA Discord self-host bot
 
 Self-hosted Discord bot for Board Game Arena.
 
@@ -102,7 +100,7 @@ Open that URL in your browser, choose your server, and approve. The bot will hav
    - `Send Messages`
    - `Embed Links`
    - `Read Message History`
-   - `Manage Messages` *(needed only if `BGA_DELETE_INVITE_MESSAGE=1`)*
+   - `Manage Messages` *(needed to tidy up shared links)*
 5. Copy the generated URL, open it in a browser, and add the bot to your server.
 
 ---
@@ -144,7 +142,7 @@ BGA_POLL_SECONDS=15             # How often the monitor checks watched tables (s
 BGA_DB_PATH=bga_bot.db          # SQLite database file path
 BGA_WS_URL=wss://ws-x1.boardgamearena.com/connection/websocket
 LOG_LEVEL=INFO                  # DEBUG, INFO, WARNING, ERROR
-BOT_LANG=EN                     # EN or FR
+BOT_LANG=en                     # language file in src/bga_turn/locales/
 
 # --- Optional features ---
 # Set to 1 to only post the recruiting embed and auto-unwatch when the game starts.
@@ -152,7 +150,7 @@ BGA_RECRUITING_ONLY=0
 
 # Set to 1 to delete the original message that contained the BGA invite link
 # after the watch is registered. Requires the Manage Messages permission.
-BGA_DELETE_INVITE_MESSAGE=0
+BGA_DELETE_INVITE_MESSAGE=
 
 # Channel ID to route all bot notifications to a single fixed channel,
 # regardless of which channel the original link was posted in.
@@ -186,16 +184,17 @@ DASHBOARD_SECRET_KEY=
 | `BGA_WS_URL` | — | `wss://ws-x1.boardgamearena.com/connection/websocket` | Public BGA websocket URL |
 | `BGA_ENABLE_TABLEINFOS_FALLBACK` | — | `0` | Re-enables the legacy HTTP fallback for end-of-game detection |
 | `BGA_RECRUITING_ONLY` | — | `0` | Only post the recruiting embed; auto-unwatch when the game starts |
-| `BGA_DELETE_INVITE_MESSAGE` | — | `0` | Delete the original link message after registering the watch |
+| `BGA_DELETE_INVITE_MESSAGE` | — | blank | Delete the original link message once the table card is showing. Blank: on for servers joined from now on, off for others; `1`/`0`: the default everywhere |
 | `BGA_FORCED_CHANNEL_ID` | — | — | Force all bot notifications into one specific channel |
 | `LOG_LEVEL` | — | `INFO` | Console log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `BOT_LANG` | — | `EN` | Bot message language (`EN` or `FR`) |
+| `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
 | `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
+| `DASHBOARD_HOST` | — | `0.0.0.0` | Interface the web dashboard listens on (use `127.0.0.1` behind a local reverse proxy) |
 | `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
 | `DASHBOARD_BASE_URL` | — | `http://localhost:8080` | Public base URL for dashboard OAuth2 redirect (must be HTTPS in production) |
 | `DISCORD_CLIENT_ID` | — | — | Discord OAuth2 client ID (required when dashboard is enabled) |
 | `DISCORD_CLIENT_SECRET` | — | — | Discord OAuth2 client secret (required when dashboard is enabled) |
-| `DASHBOARD_SECRET_KEY` | — | — | Random secret for dashboard auth state validation (required when dashboard is enabled) |
+| `DASHBOARD_SECRET_KEY` | — | — | Random secret used to sign dashboard form tokens (required when dashboard is enabled) |
 | `GLOBAL_ADMIN_DISCORD_IDS` | — | — | Comma-separated Discord user IDs that can view/manage all bot servers in the dashboard |
 
 ---
@@ -244,12 +243,21 @@ This repository is distributed under the MIT license. See `LICENSE`.
 
 ### Automatic link detection (primary feature)
 
-The bot listens for messages in all channels it can see. When a message contains a BGA table URL (e.g. `https://boardgamearena.com/...?table=12345`), the bot:
+The bot listens for messages in all channels it can see. Any Board Game Arena table link is recognised, including:
 
-1. Extracts the table ID from the URL.
-2. Anonymously fetches the public table page to identify the game.
-3. Opens a public websocket connection to the BGA table.
-4. Posts a status message in the same channel and keeps it updated.
+- game pages (`https://boardgamearena.com/1/azul?table=12345`), `/table?table=`, `/tableview?table=`, review and replay pages;
+- short links (`https://bga.li/t/12345`) and language subdomains (`fr.boardgamearena.com`);
+- links without `https://`, links wrapped in Discord formatting (`||spoiler||`, `**bold**`, `` `code` ``, `<no embed>`), and links in forwarded messages;
+- links added later by editing a message. Only links that are new in the edit count, so fixing a typo or Discord adding a link preview changes nothing, and an edit never moves the card of a table the channel already watches.
+
+As soon as a link is seen, the bot replies with a status message, **"Board Game Arena link detected – registering table…"**. Then:
+
+1. It anonymously fetches the public table page to identify the game and opens a public websocket to follow it.
+2. **If that works**, the status message turns into the table card (see below), so each table only ever has one message. If the server's *Tidy up shared links* setting is on, the original message with the link is deleted once the card is showing. Re-posting a link for a table that's already watched moves its card down to the new message.
+3. **If something goes wrong**, the status message says why: the game has already finished, the table is private or no longer exists, Board Game Arena is down or rate-limiting, etc. The original message is kept.
+4. If Board Game Arena takes more than ~20 seconds to respond, the status message says it is still waiting; it updates by itself when the details arrive.
+
+When the server uses a forced notification channel, the status message stays in the channel where the link was posted and points to the channel the card is in, then removes itself after two minutes.
 
 This requires the **Message Content Intent** to be enabled in the Discord Developer Portal (see Step 1).
 
@@ -315,7 +323,7 @@ Show a compact multi-page stats card for the current server, with a `global:true
 The stats view uses Discord component cards and page buttons to surface highlights such as:
 
 - total tracked games, live tables, and recruiting tables
-- linked accounts and auto-follow usage
+- linked accounts
 - most played games and most active players
 - most active recruiters and busiest channels
 - recent activity and outcome breakdowns
@@ -398,6 +406,22 @@ To get `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`:
 
 The dashboard is then accessible at `http://localhost:8080` (or your configured base URL).
 
+### What the dashboard offers
+
+- **My servers**: every server where you have **Manage Server**, plus one-click "Add bot" links for the ones without it.
+- **Overview & settings**: recruiting-only mode, link clean-up, and a picker for the channel that receives all updates.
+- **Tables**: recruiting, in-progress and recently finished tables, whose turn it is, and a "Stop watching" button.
+- **Member links**: link Discord members to BGA players (including players the bot has seen at your tables but can't match yet), or remove links.
+- **Stats**: per-server and global charts and leaderboards.
+
+### Security model
+
+- Access to a server's pages is checked live with Discord (cached for one minute), so removing someone's **Manage Server** permission takes effect almost immediately.
+- Links are global (one per Discord user), so the dashboard only lets an admin link or unlink people who are members of the server they're managing.
+- The forced notification channel must be a text channel in the same server; the bot ignores any other value.
+- Every form carries a CSRF token signed with `DASHBOARD_SECRET_KEY`, and pages are served with a strict Content-Security-Policy.
+- The dashboard does **not** need the privileged Server Members Intent: member search and lookups use on-demand Discord queries.
+
 ## 6. Technical overview
 
 ### High-level architecture
@@ -427,12 +451,16 @@ The bot does not use cookies, browser sessions, or a BGA account.
 | `src/bga_turn/app.py` | Application entry point, environment loading, bot startup |
 | `src/bga_turn/commands_bga.py` | `/bga` slash commands and the `on_message` link detector |
 | `src/bga_turn/bga_client.py` | Public BGA networking, HTML parsing, websocket handling |
-| `src/bga_turn/monitor.py` | Watch loop, Discord message lifecycle, followed-player sync |
-| `src/bga_turn/database.py` | SQLite persistence |
+| `src/bga_turn/monitor.py` | Watch loop, table workers and Discord message lifecycle |
+| `src/bga_turn/cards.py` | Renders the table cards and link status notes (no I/O) |
+| `src/bga_turn/discord_io.py` | Rate-limit-aware Discord calls (per-channel queues, 429 retries) |
+| `src/bga_turn/views.py` | Persistent "Link your BGA & Discord" button and modal |
+| `src/bga_turn/database.py` | SQLite persistence; `AsyncDatabase` runs it off the event loop |
 | `src/bga_turn/dashboard.py` | Optional aiohttp web dashboard |
 | `src/bga_turn/models.py` | Domain dataclasses |
 | `src/bga_turn/utils.py` | URL parsing, JSON helpers, small utilities |
 | `src/bga_turn/schema.sql` | Packaged SQLite schema |
+| `src/bga_turn/locales/en.json` | Bot messages (see Translations) |
 | `pyproject.toml` | Package metadata and console entry point |
 | `.env.example` | Local configuration example |
 
@@ -443,4 +471,16 @@ The bot does not use cookies, browser sessions, or a BGA account.
 - The **Message Content Intent** must be enabled in the Discord Developer Portal for automatic link detection to work.
 - Without that intent, no links are detected and no tables are auto-watched (the bot starts but does nothing until a table is manually registered through the database).
 - Displayed game names come from the BGA slug or public bootstrap and are not always perfectly formatted.
-- The project ships without a unit test suite; validation is kept lightweight through packaging and compilation checks.
+
+### Translations
+
+Everything the bot says in Discord and in its logs lives in `src/bga_turn/locales/en.json`, looked up with `tr("key", ...)`. English is the only language shipped, and the web dashboard is English-only. To add one, copy `en.json` to e.g. `de.json`, translate the values (keep each `{placeholder}`), and set `BOT_LANG=de`. Any missing key falls back to English, and `pytest` reports missing keys or mismatched placeholders.
+
+### Running the tests
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
+
+The suite covers the dashboard's access controls (permission checks, CSRF, member scoping, channel validation) using fake Discord objects, so it needs no bot token or network access.

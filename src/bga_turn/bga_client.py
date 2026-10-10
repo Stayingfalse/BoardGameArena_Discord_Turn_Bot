@@ -36,8 +36,8 @@ class BgaTableUnavailableError(BgaNotPublicError):
     pass
 
 
-class BgaPlayerNotFoundError(BgaClientError):
-    pass
+class BgaTableFinishedError(BgaNotPublicError):
+    """The table exists but its game is already over (or was abandoned)."""
 
 
 class BgaRateLimitError(BgaClientError):
@@ -69,13 +69,6 @@ class SpectatorBootstrap:
     username: str
     credentials: str
     websocket_url: str | None = None
-
-
-@dataclass(frozen=True)
-class PlayerTables:
-    player_id: str
-    player_name: str
-    tables: list[BgaTableInfo]
 
 
 class BgaClient:
@@ -181,12 +174,10 @@ class BgaClient:
     # re-fetching `tableinfos` on every websocket reconnect / bootstrap.
     _ROSTER_CACHE_TTL_SECONDS = 300.0
 
-    # Table states worth watching from a player's public table list. Anything else
-    # (`finished`, `open`, ...) has no turn to notify about.
-    _FOLLOWABLE_TABLE_STATUSES = {"asyncplay", "play"}
+    # Table states with turns to notify about. Anything else (`finished`, `open`,
+    # ...) has no turn to watch.
+    _PLAYING_TABLE_STATUSES = {"asyncplay", "play"}
     _WAITING_TABLE_STATUSES = {"new", "open", "pending", "setup"}
-    # `tablemanager` reports an unknown/invalid player id with this payload code.
-    _UNKNOWN_PLAYER_CODE = 100
     _SEAT_TOTAL_KEYS = (
         "maxplayers",
         "maxplayer",
@@ -236,179 +227,6 @@ class BgaClient:
             gameserver=gameserver,
             game_name=game_name,
         )
-
-    def resolve_public_table_info(self, table_id: str, base_url: str | None = None) -> BgaTableInfo:
-        """Resolve a bare table id (or `tableview`/`table` link) into a spectable game URL.
-
-        ``tableview?table=`` links do not embed the game server / game name; that
-        mapping is only exposed via the login-gated ``tableinfos.html`` AJAX call,
-        which additionally requires the per-session anti-CSRF ``requestToken``.
-        We reproduce the anonymous browser flow: load the tableview page to obtain
-        both an anonymous ``PHPSESSID`` cookie (kept by ``self._http``) and the
-        ``requestToken``, then call ``tableinfos.html`` with that token.
-        """
-        base = (base_url or BASE_URL).rstrip("/")
-        tableview_url = f"{base}/tableview?table={table_id}"
-        try:
-            response = self._http_get(tableview_url, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise BgaClientError(
-                tr("error_load_public_page", table_url=tableview_url, error=exc)
-            ) from exc
-
-        self._raise_for_bga_status(response)
-        if response.status_code >= 400:
-            raise BgaNotPublicError(tr("error_public_page_http", status_code=response.status_code))
-
-        data = self._fetch_tableinfos_with_token(
-            table_id=table_id, base_url=base, html=response.text
-        )
-        gameserver = str(data.get("gameserver") or "").strip()
-        game_name = str(data.get("game_name") or "").strip()
-        if not gameserver.isdigit() or not game_name:
-            raise BgaTableUnavailableError(
-                tr("error_resolve_missing_game_server", table_id=table_id)
-            )
-
-        # Reuse the roster we just paid for so the subsequent bootstrap does not
-        # re-fetch tableinfos.
-        self._cache_roster(table_id, self._extract_roster_from_tableinfos(data))
-
-        table_url = f"{base}/{gameserver}/{game_name}?table={table_id}"
-        LOGGER.info(
-            tr(
-                "resolved_public_table",
-                table_id=table_id,
-                gameserver=gameserver,
-                game_name=game_name,
-            )
-        )
-        return BgaTableInfo(
-            table_id=table_id,
-            table_url=table_url,
-            base_url=base,
-            gameserver=gameserver,
-            game_name=game_name,
-        )
-
-    def fetch_player_tables(self, player_id: str, base_url: str | None = None) -> PlayerTables:
-        """List the tables a player is currently sitting at, anonymously.
-
-        Mirrors the browser flow behind ``/playertables?player=<id>``: load the page
-        to obtain an anonymous ``PHPSESSID`` plus the ``requestToken``, then POST the
-        ``playerfilter`` to ``tablemanager``. Unlike ``tableview``, that response
-        already carries ``gameserver`` / ``game_name`` / the roster for every table,
-        so no per-table resolution is needed.
-        """
-        base = (base_url or BASE_URL).rstrip("/")
-        page_url = f"{base}/playertables?player={player_id}"
-        try:
-            response = self._http_get(page_url, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise BgaClientError(tr("error_load_public_page", table_url=page_url, error=exc)) from exc
-
-        self._raise_for_bga_status(response)
-        if response.status_code >= 400:
-            raise BgaClientError(tr("error_public_page_http", status_code=response.status_code))
-
-        token_match = self._REQUEST_TOKEN_PATTERN.search(response.text)
-        request_token: str | None = token_match.group("token") if token_match is not None else None
-        if not request_token:
-            raise BgaClientError(tr("error_player_tables_missing_request_token", player_id=player_id))
-
-        data = self._fetch_player_tables_data(player_id=player_id, base_url=base, request_token=request_token)
-
-        tables: list[BgaTableInfo] = []
-        raw_tables = data.get("tables")
-        if isinstance(raw_tables, dict):
-            for raw_table_id, entry in raw_tables.items():
-                if not isinstance(entry, dict):
-                    continue
-                table_id = str(raw_table_id).strip()
-                status_value = str(entry.get("status") or "").strip().lower()
-                if not table_id.isdigit() or status_value not in self._FOLLOWABLE_TABLE_STATUSES:
-                    continue
-                if str(entry.get("cancelled") or "").strip() == "1":
-                    continue
-                gameserver = str(entry.get("gameserver") or "").strip()
-                game_name = str(entry.get("game_name") or "").strip()
-                if not gameserver.isdigit() or not game_name:
-                    continue
-                # The payload already embeds each table's roster; caching it here
-                # spares the websocket worker a `tableinfos` round-trip at startup.
-                self._cache_roster(table_id, self._extract_roster_from_tableinfos(entry))
-                tables.append(
-                    BgaTableInfo(
-                        table_id=table_id,
-                        table_url=f"{base}/{gameserver}/{game_name}?table={table_id}",
-                        base_url=base,
-                        gameserver=gameserver,
-                        game_name=game_name,
-                    )
-                )
-        tables.sort(key=lambda item: item.table_id)
-
-        player_block = data.get("player")
-        player_name = ""
-        if isinstance(player_block, dict):
-            player_name = self._clean_player_name(player_block.get("player_fullname"))
-
-        LOGGER.info(tr("player_tables_resolved", player_id=player_id, count=len(tables)))
-        return PlayerTables(player_id=str(player_id), player_name=player_name, tables=tables)
-
-    def _fetch_player_tables_data(self, *, player_id: str, base_url: str, request_token: str | None = None) -> dict[str, Any]:
-        endpoint = f"{base_url}/tablemanager/tablemanager/tableinfos.html"
-        headers = {
-            "X-Requested-With": "XMLHttpRequest",
-            "Origin": base_url,
-            "Referer": f"{base_url}/playertables?player={player_id}",
-        }
-        if request_token:
-            headers["X-Request-Token"] = request_token
-        try:
-            response = self._http_post(
-                endpoint,
-                data={"playerfilter": player_id},
-                headers=headers,
-                timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise BgaClientError(
-                tr("error_load_player_tables", player_id=player_id, error=exc)
-            ) from exc
-
-        self._raise_for_bga_status(response)
-        if response.status_code >= 400:
-            raise BgaClientError(
-                tr("error_player_tables_http", status_code=response.status_code, player_id=player_id)
-            )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise BgaClientError(tr("error_player_tables_invalid_json", player_id=player_id)) from exc
-
-        if not isinstance(payload, dict):
-            raise BgaClientError(tr("error_player_tables_invalid_json", player_id=player_id))
-
-        if str(payload.get("status")) != "1":
-            if self._coerce_int(payload.get("code")) == self._UNKNOWN_PLAYER_CODE:
-                raise BgaPlayerNotFoundError(
-                    tr("error_player_tables_unknown_player", player_id=player_id)
-                )
-            raise BgaClientError(
-                tr(
-                    "error_player_tables_unexpected_payload",
-                    player_id=player_id,
-                    status=str(payload.get("status") or "n/a"),
-                    error=html_lib.unescape(str(payload.get("error") or "n/a")),
-                )
-            )
-
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise BgaClientError(tr("error_player_tables_missing_data", player_id=player_id))
-        return data
 
     def fetch_public_table_finished_status(self, table_info: BgaTableInfo) -> bool | None:
         tableview_url = f"{table_info.base_url}/tableview?table={table_info.table_id}"
@@ -527,9 +345,6 @@ class BgaClient:
 
     def _http_get(self, url: str, **kwargs: Any) -> requests.Response:
         return self._get_session().get(url, **kwargs)
-
-    def _http_post(self, url: str, **kwargs: Any) -> requests.Response:
-        return self._get_session().post(url, **kwargs)
 
     @staticmethod
     def _raise_for_bga_status(response: requests.Response) -> None:
@@ -666,7 +481,7 @@ class BgaClient:
         )
         can_watch_turns = (
             not is_finished
-            and status_value in self._FOLLOWABLE_TABLE_STATUSES
+            and status_value in self._PLAYING_TABLE_STATUSES
             and gameserver.isdigit()
             and bool(game_name)
         )

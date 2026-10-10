@@ -1,27 +1,54 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="section-title">Your Servers</div>
-{% if not managed_guilds %}
-  <p style="color:#b0b0c0">No servers found where you have <strong>Manage Server</strong> permission
-  and the bot is installed.<br><br>
-  <a class="btn btn-primary" href="{{ add_bot_url }}">➕ Add to Server</a></p>
-{% else %}
-  {% for guild in managed_guilds %}
-  <div class="card">
-    <div class="card-row">
-      {% if guild.icon_url %}<img src="{{ guild.icon_url }}" alt="">{% endif %}
+<div class="page-header">
+  <div>
+    <h1>My servers</h1>
+    <p>Servers where you have the <strong>Manage Server</strong> permission.</p>
+  </div>
+</div>
+
+<section class="section">
+  <div class="section-head"><h2>With the bot</h2><span class="count">{{ managed_guilds | length }}</span></div>
+  {% if managed_guilds %}
+  <div class="card-grid">
+    {% for guild in managed_guilds %}
+    <a class="card card-link" href="/dashboard/{{ guild.id }}">
+      {% if guild.icon_url %}<img class="avatar avatar-lg" src="{{ guild.icon_url }}" alt="">{% else %}<span class="avatar avatar-lg" aria-hidden="true">{{ guild.initial }}</span>{% endif %}
       <div>
-        <h3><a href="/dashboard/{{ guild.id }}">{{ guild.name }}</a></h3>
-        <div class="card-stats">
-          {{ guild.stats.recruiting }} recruiting &nbsp;·&nbsp;
-          {{ guild.stats.total }} total watched
+        <h3>{{ guild.name }}</h3>
+        <div class="meta">
+          {% if guild.stats.total %}
+            {{ guild.stats.total }} table{{ 's' if guild.stats.total != 1 }} watched{% if guild.stats.recruiting %} · {{ guild.stats.recruiting }} recruiting{% endif %}
+          {% else %}
+            No tables watched right now
+          {% endif %}
         </div>
       </div>
-    </div>
+    </a>
+    {% endfor %}
   </div>
-  {% endfor %}
-  {% if show_add_another %}
-  <div style="margin-top:16px"><a class="btn btn-primary" href="{{ add_bot_url }}">➕ Add another Server</a></div>
+  {% else %}
+  <div class="empty">
+    <span class="icon" aria-hidden="true">🎲</span>
+    <p>The bot isn't in any server you manage yet.{% if installable_guilds %} Pick one below to add it.{% endif %}</p>
+    {% if add_bot_url and not installable_guilds %}<a class="btn btn-primary" href="{{ add_bot_url }}">Add to a server</a>{% endif %}
+  </div>
   {% endif %}
+</section>
+
+{% if installable_guilds %}
+<section class="section">
+  <div class="section-head"><h2>Add the bot</h2><span class="count">{{ installable_guilds | length }}</span></div>
+  <div class="list">
+    {% for guild in installable_guilds %}
+    <div class="list-item">
+      {% if guild.icon_url %}<img class="avatar" src="{{ guild.icon_url }}" alt="">{% else %}<span class="avatar" aria-hidden="true">{{ guild.initial }}</span>{% endif %}
+      <div class="who"><strong>{{ guild.name }}</strong></div>
+      <a class="btn btn-secondary btn-sm" href="{{ guild.add_url }}">Add bot</a>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="help">Just added the bot? Reload this page. Server lists are refreshed each time you log in.</p>
+</section>
 {% endif %}
 {% endblock %}

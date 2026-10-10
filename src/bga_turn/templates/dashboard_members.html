@@ -1,94 +1,109 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="breadcrumb"><a href="/dashboard">Dashboard</a> › <a href="/dashboard/{{ guild_id }}">{{ guild_name }}</a> › Members</div>
-<div class="section-title">{{ guild_name }} — Member linking</div>
-{% if link_saved %}<div class="alert-success">✅ Member link saved.</div>{% endif %}
-{% if unlinked %}<div class="alert-success">✅ Member link removed.</div>{% endif %}
-
-<div class="table-section">
-  <h3>Linked members ({{ linked_cards|length }})</h3>
-  {% if linked_cards %}
-    {% for link in linked_cards %}
-    <div class="card table-card">
-      <div class="table-card-header">
-        <h4>{{ link.discord_display_name }} <span class="member-sub">(@{{ link.discord_username }})</span></h4>
-        <form method="post" action="/dashboard/{{ guild_id }}/members/{{ link.discord_user_id }}/unlink" onsubmit="return confirm('Remove this linked member?');">
-          <button type="submit" class="btn btn-danger">Unlink</button>
-        </form>
-      </div>
-      <div class="table-meta">
-        <div>Discord ID: {{ link.discord_user_id }}</div>
-        <div>BGA ID: {{ link.bga_player_id or 'Unknown' }}</div>
-        <div>BGA name: {{ link.bga_player_name or 'Unknown' }}</div>
-      </div>
-    </div>
-    {% endfor %}
-  {% else %}
-    <p class="muted">No linked members in this server.</p>
-  {% endif %}
+{% macro picker(id) -%}
+<div class="picker" data-search-url="/dashboard/{{ guild_id }}/members/search">
+  <label class="sr-only" for="{{ id }}">Discord member</label>
+  <input id="{{ id }}" class="input picker-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ id }}-results" placeholder="Search Discord member…" autocomplete="off" spellcheck="false">
+  <div class="picker-chosen" hidden>
+    <span class="picker-chosen-label"></span>
+    <button type="button" class="btn btn-ghost btn-sm picker-clear">Change</button>
+  </div>
+  <ul class="picker-results" id="{{ id }}-results" role="listbox" hidden></ul>
+  <input type="hidden" name="discord_user_id" value="">
 </div>
+{%- endmacro %}
+{% block content %}
+{% include "_guild_header.html" %}
 
-<div class="table-section">
-  <h3>Unmatched BGA names ({{ unmatched_cards|length }})</h3>
-  {% if unmatched_cards %}
-    {% for row in unmatched_cards %}
-    <div class="card table-card">
-      <div class="table-meta">
-        <div>BGA name: {{ row.bga_player_name }}</div>
-        <div>BGA ID: {{ row.bga_player_id or 'Unknown' }}</div>
+{% if link_saved %}<div class="alert alert-success" role="status">✓ Member linked. They'll be mentioned when it's their turn.</div>{% endif %}
+{% if unlinked %}<div class="alert alert-success" role="status">✓ Link removed.</div>{% endif %}
+{% if error == "not_member" %}<div class="alert alert-error" role="alert">That person isn't a member of this server.</div>{% endif %}
+{% if error == "member" %}<div class="alert alert-error" role="alert">Pick a Discord member from the search results.</div>{% endif %}
+{% if error == "bga" %}<div class="alert alert-error" role="alert">Enter a BGA username or player ID.</div>{% endif %}
+{% if error == "bga_id" %}<div class="alert alert-error" role="alert">A BGA player ID contains digits only.</div>{% endif %}
+{% if members_error %}<div class="alert alert-warning" role="status">Discord didn't return the member list, so linked members may be missing below. Reload in a moment.</div>{% endif %}
+
+<p class="muted small" style="margin-bottom:20px;max-width:720px">
+  Linking tells the bot which Discord member plays as which BGA player, so it can @mention them on their turn.
+  Links are per person, not per server: a member linked here is linked everywhere the bot runs.
+  Players can also link themselves with the <strong>Link your BGA &amp; Discord</strong> button on any table message.
+</p>
+
+<section class="section">
+  <div class="section-head"><h2>Link a member</h2></div>
+  <form class="card" method="post" action="/dashboard/{{ guild_id }}/members/link">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="row" style="align-items:flex-start">
+      {{ picker("link-new") }}
+      <div style="flex:1;min-width:200px">
+        <label class="sr-only" for="bga_player_name">BGA username</label>
+        <input class="input" id="bga_player_name" name="bga_player_name" type="text" maxlength="100" placeholder="BGA username" autocomplete="off">
       </div>
-      <form method="post" action="/dashboard/{{ guild_id }}/members/link" class="link-form">
+      <div style="width:150px">
+        <label class="sr-only" for="bga_player_id">BGA player ID</label>
+        <input class="input" id="bga_player_id" name="bga_player_id" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="32" placeholder="ID (optional)" autocomplete="off">
+      </div>
+      <button type="submit" class="btn btn-primary">Link</button>
+    </div>
+    <p class="help">Enter either a username or an ID; the bot fills in the other one the next time it sees that player.</p>
+  </form>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Seen at your tables, not linked</h2><span class="count">{{ unmatched_cards | length }}</span>
+  </div>
+  {% if unmatched_cards %}
+  <div class="list">
+    {% for row in unmatched_cards %}
+    <div class="list-item">
+      <div class="bga">
+        <strong>{{ row.bga_player_name }}</strong>
+        <div class="faint small">{% if row.bga_player_id %}BGA ID {{ row.bga_player_id }}{% else %}ID not known yet{% endif %}</div>
+      </div>
+      <span class="arrow" aria-hidden="true">→</span>
+      <form class="inline-form" method="post" action="/dashboard/{{ guild_id }}/members/link">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="bga_player_id" value="{{ row.bga_player_id }}">
         <input type="hidden" name="bga_player_name" value="{{ row.bga_player_name }}">
-        <div class="link-form-row">
-          <input
-            type="text"
-            class="member-search-input"
-            placeholder="Search Discord member"
-            data-search-url="/dashboard/{{ guild_id }}/members/search"
-            autocomplete="off"
-            required
-          >
-          <select name="discord_user_id" class="member-select" required>
-            <option value="">Select a member…</option>
-          </select>
-          <button type="submit" class="btn btn-primary">Link</button>
-        </div>
+        {{ picker("link-" ~ loop.index) }}
+        <button type="submit" class="btn btn-secondary">Link</button>
       </form>
     </div>
     {% endfor %}
+  </div>
   {% else %}
-    <p class="muted">No unmatched BGA names detected for this server.</p>
+  <p class="muted small">Everyone seen at this server's tables is linked. 🎉</p>
   {% endif %}
-</div>
+</section>
 
-<script>
-(() => {
-  const forms = document.querySelectorAll('.link-form');
-  forms.forEach((form) => {
-    const searchInput = form.querySelector('.member-search-input');
-    const select = form.querySelector('.member-select');
-    if (!searchInput || !select) return;
-    let timer = null;
-    const updateMembers = async (query) => {
-      const url = `${searchInput.dataset.searchUrl}?q=${encodeURIComponent(query)}`;
-      const response = await fetch(url, {headers: {'Accept': 'application/json'}});
-      if (!response.ok) return;
-      const payload = await response.json();
-      select.innerHTML = '<option value="">Select a member…</option>';
-      for (const member of (payload.members || [])) {
-        const option = document.createElement('option');
-        option.value = member.id;
-        option.textContent = `${member.display_name} (@${member.username})`;
-        select.appendChild(option);
-      }
-    };
-    searchInput.addEventListener('input', () => {
-      const value = searchInput.value || '';
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { updateMembers(value); }, 180);
-    });
-  });
-})();
-</script>
+<section class="section">
+  <div class="section-head"><h2>Linked members</h2><span class="count">{{ linked_cards | length }}</span></div>
+  {% if linked_cards %}
+  <div class="list">
+    {% for link in linked_cards %}
+    <div class="list-item">
+      <img class="avatar" src="{{ link.avatar_url }}" alt="">
+      <div class="who">
+        <strong>{{ link.discord_display_name }}</strong>
+        <span class="faint small">@{{ link.discord_username }}</span>
+      </div>
+      <span class="arrow" aria-hidden="true">→</span>
+      <div class="bga">
+        <strong>{{ link.bga_player_name or "Name not known yet" }}</strong>
+        <div class="faint small">{% if link.bga_player_id %}BGA ID {{ link.bga_player_id }}{% else %}ID not known yet{% endif %}</div>
+      </div>
+      <form method="post" action="/dashboard/{{ guild_id }}/members/{{ link.discord_user_id }}/unlink" data-confirm="Unlink {{ link.discord_display_name }}? They'll no longer be mentioned on their turn, in any server.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger btn-sm">Unlink</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <span class="icon" aria-hidden="true">🔗</span>
+    <p>No members of this server are linked yet.</p>
+  </div>
+  {% endif %}
+</section>
 {% endblock %}

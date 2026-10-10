@@ -1,33 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="section-title">⚙ Admin — All Servers</div>
-<p style="color:#888;font-size:.85rem;margin-bottom:20px">
-  You are logged in as a global administrator. This view shows every server the bot is currently in.
-</p>
+<div class="page-header">
+  <div>
+    <h1>All servers</h1>
+    <p>You're a global admin, so you can open and manage every server the bot is in.</p>
+  </div>
+</div>
 
 {% if guild_cards %}
+<div class="list">
   {% for guild in guild_cards %}
-  <div class="card">
-    <div class="card-row">
-      {% if guild.icon_url %}<img src="{{ guild.icon_url }}" alt="">{% endif %}
-      <div style="flex:1">
-        <h3><a href="/dashboard/{{ guild.id }}">{{ guild.name }}</a></h3>
-        <div class="card-stats">
-          {% if guild.member_count is not none %}{{ guild.member_count }} member{{ 's' if guild.member_count != 1 }} &nbsp;·&nbsp; {% endif %}
-          {{ guild.stats.recruiting }} recruiting &nbsp;·&nbsp;
-          {{ guild.stats.total }} total watched
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <a class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" href="/dashboard/{{ guild.id }}">Settings</a>
-        <a class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" href="/dashboard/{{ guild.id }}/tables">Tables</a>
-        <a class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" href="/dashboard/{{ guild.id }}/members">Members</a>
-        <a class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" href="/dashboard/{{ guild.id }}/stats">Stats</a>
-      </div>
+  <div class="list-item">
+    {% if guild.icon_url %}<img class="avatar" src="{{ guild.icon_url }}" alt="">{% else %}<span class="avatar" aria-hidden="true">{{ guild.initial }}</span>{% endif %}
+    <div class="who">
+      <strong><a href="/dashboard/{{ guild.id }}">{{ guild.name }}</a></strong>
+      <span class="faint small">
+        {% if guild.member_count is not none %}{{ guild.member_count }} member{{ 's' if guild.member_count != 1 }} · {% endif %}
+        {{ guild.stats.total }} watched · {{ guild.stats.recruiting }} recruiting
+      </span>
+    </div>
+    <div class="row" style="gap:6px">
+      <a class="btn btn-ghost btn-sm" href="/dashboard/{{ guild.id }}/tables">Tables</a>
+      <a class="btn btn-ghost btn-sm" href="/dashboard/{{ guild.id }}/members">Members</a>
+      <a class="btn btn-ghost btn-sm" href="/dashboard/{{ guild.id }}/stats">Stats</a>
     </div>
   </div>
   {% endfor %}
+</div>
 {% else %}
-  <p style="color:#b0b0c0">The bot is not currently in any servers.</p>
+<div class="empty"><p>The bot is not in any servers yet.</p></div>
 {% endif %}
 {% endblock %}

@@ -60,15 +60,6 @@ class GameHistoryEntry:
 
 
 @dataclass(slots=True)
-class FollowedPlayer:
-    follow_id: int
-    guild_id: str
-    discord_user_id: str
-    channel_id: str
-    created_by_discord_user_id: str
-
-
-@dataclass(slots=True)
 class BgaTableInfo:
     table_id: str
     table_url: str

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -10,12 +10,20 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .bga_client import BgaClient, BgaClientError, BgaNotPublicError
-from .database import Database
+from .bga_client import (
+    BgaClient,
+    BgaClientError,
+    BgaNotPublicError,
+    BgaRateLimitError,
+    BgaServerError,
+    BgaTableFinishedError,
+    BgaTableUnavailableError,
+)
+from .database import AsyncDatabase, Database
 from .i18n import tr
 from .monitor import BgaMonitor
 from .models import WatchSubscription
-from .utils import build_table_url, format_game_name, parse_public_table_url, parse_table_id
+from .utils import build_table_url, extract_table_links, format_game_name, parse_public_table_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -133,7 +141,6 @@ class StatsLayoutView(discord.ui.LayoutView):
                         f"🟢 {tr('stats_metric_live_tables')}: **{self._cog._stat_int(self._stats, 'currently_watching')}**",
                         f"📣 {tr('stats_metric_recruiting_now')}: **{self._cog._stat_int(self._stats, 'currently_recruiting')}**",
                         f"🔗 {tr('stats_metric_linked_accounts')}: **{self._cog._stat_int(self._stats, 'members_linked')}**",
-                        f"👀 {tr('stats_metric_followed_members')}: **{self._cog._stat_int(self._stats, 'followed_members')}**",
                         f"💬 {tr('stats_metric_channels')}: **{self._cog._stat_int(self._stats, 'tracked_channels')}**",
                         f"⏱ {tr('stats_metric_avg_recruiting')}: **{self._cog._format_minutes(self._stats.get('avg_recruiting_minutes'))}**",
                         f"⌛ {tr('stats_metric_avg_game')}: **{self._cog._format_hours(self._stats.get('avg_game_hours'))}**",
@@ -218,7 +225,14 @@ class StatsLayoutView(discord.ui.LayoutView):
 class BgaCommands(commands.Cog):
     bga = app_commands.Group(name="bga", description=tr("command_group_description"))
 
-    _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+    # After the status note says "waiting on BGA", keep waiting this long for the
+    # table card before giving up on deleting the original link message.
+    _CARD_WAIT_EXTRA_SECONDS = 120.0
+    # A note pointing at a forced channel removes itself after this many seconds.
+    _ELSEWHERE_NOTE_SECONDS = 120.0
+    # How many recent messages remember which tables they already linked, so an
+    # edit only acts on links that are new.
+    _SEEN_LINKS_LIMIT = 2000
 
     def __init__(
         self,
@@ -229,9 +243,12 @@ class BgaCommands(commands.Cog):
         default_delete_invite_message: bool = False,
     ) -> None:
         self.database = database
+        self.db = AsyncDatabase(database)
         self.bga_client = bga_client
         self.monitor = monitor
         self._default_delete_invite_message = default_delete_invite_message
+        # message id -> table ids already handled for that message.
+        self._seen_links: OrderedDict[int, set[str]] = OrderedDict()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Log every ``/bga`` command invocation. Never blocks the command."""
@@ -242,82 +259,222 @@ class BgaCommands(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
             return
-        if not message.content or not any(host in message.content.lower() for host in ("boardgamearena.com", "bga.li/")):
-            return
+        links = self._claim_new_links(message.id, extract_table_links(self._message_text(message)))
+        if links:
+            await self._handle_shared_links(message, links)
 
-        table_references = self._extract_table_references(message.content)
-        if not table_references:
-            return
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        """Pick up table links added to a message after it was posted.
 
-        registered_subscriptions: list[int] = []
-        subscriptions_to_repost: dict[int, WatchSubscription] = {}
-        for table_reference in table_references:
-            try:
-                registration = await self._register_watch(
-                    guild_id=str(message.guild.id),
-                    channel_id=str(message.channel.id),
-                    created_by_discord_user_id=str(message.author.id),
-                    table_or_url=table_reference,
+        Uses the raw event so edits to messages outside the cache are seen too.
+        Only links that were not in the message before count: fixing a typo, or
+        Discord adding a link preview (which is also an edit), changes nothing.
+        """
+        message = payload.message
+        if message.guild is None or message.author.bot:
+            return
+        links = extract_table_links(self._message_text(message))
+        if not links:
+            return
+        previous_text = self._message_text(payload.cached_message) if payload.cached_message is not None else ""
+        previous_ids = {self._link_table_id(url) for url in extract_table_links(previous_text)}
+        new_links = [url for url in links if self._link_table_id(url) not in previous_ids]
+        # An edit should never move an existing card, so skip tables this
+        # channel already watches (this also covers edits after a restart, when
+        # neither the cache nor _seen_links knows the old content).
+        new_links = [
+            url
+            for url in new_links
+            if await self.db.get_watch_subscription_by_scope(
+                table_id=self._link_table_id(url),
+                guild_id=str(message.guild.id),
+                channel_id=str(message.channel.id),
+            )
+            is None
+        ]
+        new_links = self._claim_new_links(message.id, new_links)
+        if new_links:
+            await self._handle_shared_links(message, new_links)
+
+    @staticmethod
+    def _link_table_id(url: str) -> str:
+        return parse_public_table_url(url)[0]
+
+    def _claim_new_links(self, message_id: int, links: list[str]) -> list[str]:
+        """Return the links not yet handled for *message_id*, and mark them handled."""
+        seen = self._seen_links.get(message_id)
+        if seen is None:
+            seen = self._seen_links[message_id] = set()
+            while len(self._seen_links) > self._SEEN_LINKS_LIMIT:
+                self._seen_links.popitem(last=False)
+        fresh = [url for url in links if self._link_table_id(url) not in seen]
+        seen.update(self._link_table_id(url) for url in fresh)
+        return fresh
+
+    async def _handle_shared_links(self, message: discord.Message, links: list[str]) -> None:
+        # Acknowledge every link straight away; registration can take a while.
+        notes: list[discord.Message | None] = []
+        for url in links:
+            table_id = parse_public_table_url(url)[0]
+            notes.append(
+                await self.monitor.send_link_status(
+                    message.channel,
+                    table_id=table_id,
+                    text=tr("link_status_detecting", table_id=table_id),
                 )
-            except (BgaClientError, BgaNotPublicError, ValueError) as exc:
-                LOGGER.debug(
-                    tr(
-                        "auto_watch_skipped",
-                        table_reference=table_reference,
-                        channel_id=message.channel.id,
-                        error=exc,
-                    )
-                )
+            )
+
+        registered: list[WatchSubscription] = []
+        adopted: list[WatchSubscription] = []
+        any_failed = False
+        for url, note in zip(links, notes, strict=True):
+            result = await self._register_shared_link(message, url, note)
+            if result is None:
+                any_failed = True
                 continue
-            registered_subscriptions.append(registration.subscription.subscription_id)
-            if registration.replaced_existing_watch:
-                subscriptions_to_repost[registration.subscription.subscription_id] = registration.subscription
+            subscription, was_adopted = result
+            registered.append(subscription)
+            if was_adopted:
+                adopted.append(subscription)
 
-        if registered_subscriptions:
-            for subscription in subscriptions_to_repost.values():
-                await self.monitor.reset_tracked_message(subscription)
+        if not registered:
+            return
+        LOGGER.info(tr("auto_watch_registered", guild_id=message.guild.id, channel_id=message.channel.id))
+
+        await self.monitor.refresh_now()
+        registered_ids = [item.subscription_id for item in registered]
+        shown = await self.monitor.wait_for_active_messages(
+            registered_ids,
+            timeout_seconds=self.monitor.LINK_STATUS_WAITING_AFTER_SECONDS,
+        )
+        if not shown:
+            for subscription in adopted:
+                await self.monitor.mark_link_status_waiting(subscription)
+            shown = await self.monitor.wait_for_active_messages(
+                registered_ids,
+                timeout_seconds=self._CARD_WAIT_EXTRA_SECONDS,
+            )
+
+        guild_settings = await self.db.get_guild_settings(
+            str(message.guild.id),
+            default_delete_invite_message=self._default_delete_invite_message,
+        )
+        if not guild_settings.delete_invite_message:
+            return
+        if any_failed or not shown:
+            # Keep the original so nobody loses a link the bot could not show.
             LOGGER.info(
                 tr(
-                    "auto_watch_registered",
-                    guild_id=message.guild.id,
+                    "trigger_message_delete_skipped_no_replacement",
                     channel_id=message.channel.id,
+                    guild_id=message.guild.id,
                 )
             )
-            guild_settings = self.database.get_guild_settings(
-                str(message.guild.id),
-                default_delete_invite_message=self._default_delete_invite_message,
+            return
+        if await self.monitor.delete_discord_message(message, operation="delete_trigger_message"):
+            LOGGER.info(tr("trigger_message_deleted", channel_id=message.channel.id, guild_id=message.guild.id))
+        else:
+            LOGGER.warning(
+                tr("trigger_message_delete_failed", channel_id=message.channel.id, error="rate-limit or Discord error")
             )
-            await self.monitor.refresh_now()
-            if guild_settings.delete_invite_message and await self.monitor.wait_for_active_messages(
-                registered_subscriptions
-            ):
-                deleted = await self.monitor.delete_discord_message(
-                    message, operation="delete_trigger_message"
-                )
-                if deleted:
-                    LOGGER.info(
-                        tr(
-                            "trigger_message_deleted",
-                            channel_id=message.channel.id,
-                            guild_id=message.guild.id,
-                        )
-                    )
-                else:
-                    LOGGER.warning(
-                        tr(
-                            "trigger_message_delete_failed",
-                            channel_id=message.channel.id,
-                            error="rate-limit or Discord error",
-                        )
-                    )
-            elif guild_settings.delete_invite_message:
+
+    @staticmethod
+    def _message_text(message: discord.Message) -> str:
+        """The message's text plus the text of any forwarded messages it carries."""
+        parts = [message.content or ""]
+        for snapshot in getattr(message, "message_snapshots", None) or []:
+            parts.append(getattr(snapshot, "content", "") or "")
+        return "\n".join(parts)
+
+    async def _register_shared_link(
+        self,
+        message: discord.Message,
+        url: str,
+        note: discord.Message | None,
+    ) -> tuple[WatchSubscription, bool] | None:
+        """Register one shared table link and update its status note.
+
+        Returns the subscription and whether the note became its table card, or
+        ``None`` if the table could not be registered (the note then says why).
+        """
+        table_id = parse_public_table_url(url)[0]
+        try:
+            registration = await self._register_watch(
+                guild_id=str(message.guild.id),
+                channel_id=str(message.channel.id),
+                created_by_discord_user_id=str(message.author.id),
+                table_or_url=url,
+            )
+        except Exception as exc:  # noqa: BLE001 - every failure must reach the note
+            if isinstance(exc, (BgaClientError, ValueError)):
                 LOGGER.info(
-                    tr(
-                        "trigger_message_delete_skipped_no_replacement",
-                        channel_id=message.channel.id,
-                        guild_id=message.guild.id,
-                    )
+                    tr("auto_watch_skipped", table_reference=url, channel_id=message.channel.id, error=exc)
                 )
+            else:
+                LOGGER.exception("Unexpected error registering table %s from a shared link.", table_id)
+            if note is not None:
+                await self.monitor.edit_link_status(
+                    note,
+                    table_id=table_id,
+                    text=tr("link_status_failed", table_id=table_id, reason=self._describe_link_error(exc)),
+                    color=discord.Color.red(),
+                    table_url=url,
+                )
+            return None
+
+        subscription = registration.subscription
+        outcome = "other_channel"
+        if note is not None:
+            outcome = await self.monitor.adopt_link_status_message(subscription, note)
+
+        if outcome == "adopted":
+            if registration.replaced_existing_watch:
+                # The stored state is current: turn the note into the card now.
+                await self.monitor.redraw_card_from_saved_state(subscription.subscription_id)
+            return subscription, True
+
+        if registration.replaced_existing_watch:
+            await self.monitor.reset_tracked_message(subscription)
+        if note is not None and outcome == "other_channel":
+            guild_settings = await self.db.get_guild_settings(
+                subscription.guild_id,
+                default_forced_channel_id=self.monitor._default_forced_channel_id,
+            )
+            await self.monitor.edit_link_status(
+                note,
+                table_id=table_id,
+                text=tr(
+                    "link_status_tracking_elsewhere",
+                    game_name=format_game_name(subscription.game_name),
+                    table_id=table_id,
+                    channel_id=guild_settings.forced_channel_id or subscription.channel_id,
+                ),
+                color=discord.Color.green(),
+                table_url=subscription.table_url or url,
+                delete_after=self._ELSEWHERE_NOTE_SECONDS,
+            )
+        return subscription, False
+
+    @staticmethod
+    def _describe_link_error(exc: BaseException) -> str:
+        """A short, human explanation of why a shared link could not be tracked."""
+        if isinstance(exc, ValueError):
+            return tr("link_error_invalid")
+        if isinstance(exc, BgaTableFinishedError):
+            return tr("link_error_finished")
+        if isinstance(exc, BgaTableUnavailableError):
+            return tr("link_error_unavailable")
+        if isinstance(exc, BgaNotPublicError):
+            return tr("link_error_not_public")
+        if isinstance(exc, BgaRateLimitError):
+            return tr("link_error_rate_limited")
+        if isinstance(exc, BgaServerError):
+            return tr("link_error_bga_down", status_code=exc.status_code)
+        if isinstance(exc, BgaClientError):
+            detail = " ".join(str(exc).split())
+            return tr("link_error_bga", detail=detail[:200] + ("…" if len(detail) > 200 else ""))
+        return tr("link_error_unexpected")
 
     @staticmethod
     def _flatten_command_options(options: list[dict] | None) -> list[str]:
@@ -378,7 +535,7 @@ class BgaCommands(commands.Cog):
         operation: str,
         coro_factory,
     ) -> None:
-        await self.monitor._discord_call_with_retry(
+        await self.monitor.discord.call(
             operation=operation,
             table_id=f"interaction:{interaction.guild_id or 'dm'}",
             coro_factory=coro_factory,
@@ -475,13 +632,12 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        guild_id = str(interaction.guild_id)
-        self.database.upsert_linked_user(
+        await self.db.upsert_linked_user(
             discord_user_id=str(member.id),
             bga_player_id=candidate_id,
             bga_player_name=candidate_name,
         )
-        linked_user = self.database.get_linked_user(str(member.id))
+        linked_user = await self.db.get_linked_user(str(member.id))
         if linked_user is None:
             raise RuntimeError("Failed to load the linked BGA user after saving it.")
         name_display = linked_user.bga_player_name or tr("link_missing_value_placeholder")
@@ -528,7 +684,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        removed = self.database.remove_linked_user(str(member.id))
+        removed = await self.db.remove_linked_user(str(member.id))
         if not removed:
             await self._interaction_send_with_retry(
                 interaction,
@@ -558,7 +714,7 @@ class BgaCommands(commands.Cog):
         table_or_url: str,
     ) -> WatchRegistrationResult:
         table_id, table_url, base_url, gameserver, game_name = parse_public_table_url(table_or_url)
-        existing_subscription = self.database.get_watch_subscription_by_scope(
+        existing_subscription = await self.db.get_watch_subscription_by_scope(
             table_id=table_id,
             guild_id=guild_id,
             channel_id=channel_id,
@@ -578,7 +734,7 @@ class BgaCommands(commands.Cog):
                 self.bga_client.fetch_public_table_snapshot, table_id, base_url
             )
             if snapshot.is_finished:
-                raise BgaNotPublicError(tr("error_resolve_missing_game_server", table_id=table_id))
+                raise BgaTableFinishedError(tr("link_error_finished"))
             resolved_table_url = snapshot.table_url or build_table_url(table_id)
             resolved_gameserver = snapshot.gameserver
             resolved_game_name = snapshot.game_name
@@ -606,7 +762,7 @@ class BgaCommands(commands.Cog):
             detected_player_names = dict(state.player_names)
             source = state.source
 
-        subscription = self.database.upsert_watch_subscription(
+        subscription = await self.db.upsert_watch_subscription(
             table_id=table_id,
             table_url=resolved_table_url or build_table_url(table_id),
             base_url=base_url,
@@ -618,7 +774,7 @@ class BgaCommands(commands.Cog):
         )
         persisted_player_names = dict(subscription.player_names)
         persisted_player_names.update(detected_player_names)
-        self.database.update_watch_state(
+        await self.db.update_watch_state(
             subscription_id=subscription.subscription_id,
             last_packet_id=subscription.last_packet_id,
             waiting_ids=[] if state is None else subscription.last_waiting_ids,
@@ -634,11 +790,10 @@ class BgaCommands(commands.Cog):
             game_name=resolved_game_name or subscription.game_name,
             player_count=len(persisted_player_names),
         )
-        await asyncio.to_thread(
-            self.database.enrich_linked_users_from_players, persisted_player_names
+        await self.db.enrich_linked_users_from_players(persisted_player_names
         )
         if state is None:
-            subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+            subscription = await self.db.get_watch_subscription(subscription.subscription_id) or subscription
             return WatchRegistrationResult(
                 subscription=subscription,
                 source=source,
@@ -647,7 +802,7 @@ class BgaCommands(commands.Cog):
                 replaced_existing_watch=existing_subscription is not None,
             )
 
-        subscription = self.database.get_watch_subscription(subscription.subscription_id) or subscription
+        subscription = await self.db.get_watch_subscription(subscription.subscription_id) or subscription
         return WatchRegistrationResult(
             subscription=subscription,
             source=source,
@@ -659,21 +814,6 @@ class BgaCommands(commands.Cog):
             ),
             replaced_existing_watch=existing_subscription is not None,
         )
-
-    def _extract_table_references(cls, message_content: str) -> list[str]:
-        references: list[str] = []
-        seen: set[str] = set()
-        for match in cls._URL_PATTERN.finditer(message_content):
-            candidate = match.group(0).rstrip(".,!?)]}>\"'")
-            try:
-                table_id = parse_table_id(candidate)
-            except ValueError:
-                continue
-            if table_id in seen:
-                continue
-            seen.add(table_id)
-            references.append(candidate)
-        return references
 
     @bga.command(name="status", description=tr("command_status_description"))
     async def status(self, interaction: discord.Interaction) -> None:
@@ -688,7 +828,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        subscriptions = self.database.list_watch_subscriptions_for_guild(str(interaction.guild_id))
+        subscriptions = await self.db.list_watch_subscriptions_for_guild(str(interaction.guild_id))
         if not subscriptions:
             await self._interaction_send_with_retry(
                 interaction,
@@ -713,7 +853,7 @@ class BgaCommands(commands.Cog):
             elif not subscription.is_initialized:
                 state = tr("status_unknown")
             elif subscription.last_waiting_ids:
-                linked_users = self.database.get_linked_users_by_bga_ids(
+                linked_users = await self.db.get_linked_users_by_bga_ids(
                     subscription.last_waiting_ids
                 )
                 if linked_users:
@@ -789,7 +929,7 @@ class BgaCommands(commands.Cog):
             return
 
         guild_id = str(interaction.guild_id)
-        current = self.database.get_guild_settings(
+        current = await self.db.get_guild_settings(
             guild_id,
             default_recruiting_only=self.monitor._default_recruiting_only,
             default_delete_invite_message=self._default_delete_invite_message,
@@ -823,7 +963,7 @@ class BgaCommands(commands.Cog):
         else:
             new_forced_channel_id = current.forced_channel_id
 
-        self.database.upsert_guild_settings(
+        await self.db.upsert_guild_settings(
             guild_id=guild_id,
             recruiting_only=new_recruiting_only,
             delete_invite_message=new_delete_invite_message,
@@ -1150,11 +1290,10 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        stats = await asyncio.to_thread(
-            self.database.get_global_extended_stats
+        stats = (
+            await self.db.get_global_extended_stats()
             if global_scope
-            else self.database.get_guild_extended_stats,
-            *(() if global_scope else (str(interaction.guild_id),)),
+            else await self.db.get_guild_extended_stats(str(interaction.guild_id))
         )
         await self._interaction_send_with_retry(
             interaction,
@@ -1183,7 +1322,7 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        all_subscriptions = self.database.list_watch_subscriptions_for_guild(str(interaction.guild_id))
+        all_subscriptions = await self.db.list_watch_subscriptions_for_guild(str(interaction.guild_id))
         subscriptions = [s for s in all_subscriptions if s.lifecycle_state == "recruiting"]
 
         if not subscriptions:

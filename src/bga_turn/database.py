@@ -1,5 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 import sqlite3
@@ -7,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from .models import FollowedPlayer, GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
+from .models import GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
 
 
@@ -32,6 +34,8 @@ class Database:
             self._drop_legacy_tables_if_safe()
             self._migrate_users_to_guild_scope()
             self._migrate_users_to_global()
+            # Auto-follow was removed; drop its table from older deployments.
+            self._connection.execute("DROP TABLE IF EXISTS followed_players")
             self._connection.commit()
 
     def close(self) -> None:
@@ -98,11 +102,6 @@ class Database:
         with self._lock:
             cursor = self._connection.execute(
                 "DELETE FROM users WHERE discord_user_id = ?",
-                (discord_user_id,),
-            )
-            # Remove auto-follows for this user across all guilds/channels.
-            self._connection.execute(
-                "DELETE FROM followed_players WHERE discord_user_id = ?",
                 (discord_user_id,),
             )
             self._connection.commit()
@@ -274,11 +273,6 @@ class Database:
                 )
                 self._connection.commit()
                 return None
-            self._connection.execute(
-                "UPDATE dashboard_sessions SET updated_at = ? WHERE session_id = ?",
-                (utc_now_iso(), session_id),
-            )
-            self._connection.commit()
 
         return {
             "session_id": str(row["session_id"]),
@@ -296,15 +290,6 @@ class Database:
                 (session_id,),
             )
             self._connection.commit()
-
-    def cleanup_expired_dashboard_sessions(self) -> int:
-        with self._lock:
-            cursor = self._connection.execute(
-                "DELETE FROM dashboard_sessions WHERE expires_at <= ?",
-                (int(time.time()),),
-            )
-            self._connection.commit()
-            return cursor.rowcount
 
     def _parse_dashboard_session_guilds(self, raw: str | None) -> list[dict[str, str]]:
         if not raw:
@@ -408,15 +393,6 @@ class Database:
             self._connection.commit()
             return cursor.rowcount > 0
 
-    def remove_followed_players_for_guild(self, guild_id: str) -> int:
-        with self._lock:
-            cursor = self._connection.execute(
-                "DELETE FROM followed_players WHERE guild_id = ?",
-                (guild_id,),
-            )
-            self._connection.commit()
-            return int(cursor.rowcount)
-
     def remove_guild_scoped_users_for_guild(self, guild_id: str) -> int:
         # Current schema stores one global users row per Discord user. This cleanup
         # only applies to legacy guild-scoped deployments that still have guild_id.
@@ -500,15 +476,6 @@ class Database:
                 "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
             ).fetchone()
 
-            followed_row = self._connection.execute(
-                """
-                SELECT COUNT(DISTINCT discord_user_id) AS count
-                FROM followed_players
-                WHERE guild_id = ?
-                """,
-                (guild_id,),
-            ).fetchone()
-
             games_by_name_rows = self._connection.execute(
                 """
                 SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
@@ -569,7 +536,6 @@ class Database:
             live_row=live_row,
             hist_row=hist_row,
             members_row=members_row,
-            followed_row=followed_row,
             games_by_name_rows=games_by_name_rows,
             games_over_time_rows=games_over_time_rows,
             player_rows=player_rows,
@@ -621,13 +587,6 @@ class Database:
 
             members_row = self._connection.execute(
                 "SELECT COUNT(*) AS count FROM users WHERE bga_player_id != '' OR bga_player_name != ''"
-            ).fetchone()
-
-            followed_row = self._connection.execute(
-                """
-                SELECT COUNT(DISTINCT discord_user_id) AS count
-                FROM followed_players
-                """
             ).fetchone()
 
             scope_row = self._connection.execute(
@@ -687,7 +646,6 @@ class Database:
             live_row=live_row,
             hist_row=hist_row,
             members_row=members_row,
-            followed_row=followed_row,
             games_by_name_rows=games_by_name_rows,
             games_over_time_rows=games_over_time_rows,
             player_rows=player_rows,
@@ -702,7 +660,6 @@ class Database:
         live_row: object,
         hist_row: object,
         members_row: object,
-        followed_row: object,
         games_by_name_rows: list,
         games_over_time_rows: list,
         player_rows: list,
@@ -771,7 +728,6 @@ class Database:
             "avg_game_hours": round(float(avg_game), 1) if avg_game is not None else None,
             "avg_players_per_game": round(float(avg_players), 1) if avg_players is not None else None,
             "members_linked": int((members_row["count"] if members_row else 0) or 0),
-            "followed_members": int((followed_row["count"] if followed_row else 0) or 0),
             "tracked_channels": int((hist_row["tracked_channels"] if hist_row else 0) or 0),
             "recruiter_count": int((hist_row["recruiter_count"] if hist_row else 0) or 0),
             "guild_count": int((scope_row["guild_count"] if scope_row else 0) or 0),
@@ -801,8 +757,30 @@ class Database:
             ],
         }
 
+    def get_all_guild_stats(self) -> dict[str, dict[str, int]]:
+        """Return ``get_guild_stats`` for every guild with a watch, in one query."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT
+                    ws.guild_id AS guild_id,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS recruiting
+                FROM watch_subscriptions ws
+                LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+                GROUP BY ws.guild_id
+                """
+            ).fetchall()
+        return {
+            str(row["guild_id"]): {
+                "total": int(row["total"] or 0),
+                "recruiting": int(row["recruiting"] or 0),
+            }
+            for row in rows
+        }
+
     def get_guild_stats(self, guild_id: str) -> dict[str, int]:
-        """Return subscription counts and followed-player count for one guild."""
+        """Return total and currently-recruiting subscription counts for one guild."""
         with self._lock:
             sub_row = self._connection.execute(
                 """
@@ -815,96 +793,10 @@ class Database:
                 """,
                 (guild_id,),
             ).fetchone()
-            follow_row = self._connection.execute(
-                """
-                SELECT COUNT(DISTINCT discord_user_id) AS followed
-                FROM followed_players
-                WHERE guild_id = ?
-                """,
-                (guild_id,),
-            ).fetchone()
         return {
             "total": int((sub_row["total"] if sub_row else 0) or 0),
             "recruiting": int((sub_row["recruiting"] if sub_row else 0) or 0),
-            "followed": int((follow_row["followed"] if follow_row else 0) or 0),
         }
-
-    # ------------------------------------------------------------------
-    # Followed players
-    # ------------------------------------------------------------------
-
-    def toggle_followed_player(
-        self,
-        *,
-        guild_id: str,
-        discord_user_id: str,
-        channel_id: str,
-        created_by_discord_user_id: str,
-    ) -> bool:
-        """Flip auto-follow for a member in a channel and return the resulting state.
-
-        ``True`` means the member is now followed. The delete/insert pair runs under
-        the connection lock so two concurrent slash commands cannot both observe the
-        same "off" state and end up inserting twice.
-        """
-        now = utc_now_iso()
-        with self._lock:
-            cursor = self._connection.execute(
-                """
-                DELETE FROM followed_players
-                WHERE guild_id = ? AND discord_user_id = ? AND channel_id = ?
-                """,
-                (guild_id, discord_user_id, channel_id),
-            )
-            if cursor.rowcount > 0:
-                self._connection.commit()
-                return False
-
-            self._connection.execute(
-                """
-                INSERT INTO followed_players (
-                    guild_id,
-                    discord_user_id,
-                    channel_id,
-                    created_by_discord_user_id,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (guild_id, discord_user_id, channel_id, created_by_discord_user_id, now),
-            )
-            self._connection.commit()
-            return True
-
-    def is_player_followed(self, *, guild_id: str, discord_user_id: str, channel_id: str) -> bool:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT 1 FROM followed_players
-                WHERE guild_id = ? AND discord_user_id = ? AND channel_id = ?
-                """,
-                (guild_id, discord_user_id, channel_id),
-            ).fetchone()
-        return row is not None
-
-    def list_followed_players(self) -> list[FollowedPlayer]:
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT follow_id, guild_id, discord_user_id, channel_id, created_by_discord_user_id
-                FROM followed_players
-                ORDER BY guild_id, channel_id, discord_user_id
-                """
-            ).fetchall()
-        return [
-            FollowedPlayer(
-                follow_id=int(row["follow_id"]),
-                guild_id=row["guild_id"],
-                discord_user_id=row["discord_user_id"],
-                channel_id=row["channel_id"],
-                created_by_discord_user_id=row["created_by_discord_user_id"],
-            )
-            for row in rows
-        ]
 
     # ------------------------------------------------------------------
     # Watch subscriptions / states
@@ -1098,16 +990,6 @@ class Database:
             (subscription_id,),
         )
         return True
-
-    def _archive_watch_subscription(self, *, subscription_id: int, outcome: str) -> bool:
-        with self._lock:
-            archived = self._archive_watch_subscription_locked(
-                subscription_id=subscription_id,
-                outcome=outcome,
-                finished_at=utc_now_iso(),
-            )
-            self._connection.commit()
-            return archived
 
     def remove_watch_subscription(
         self,
@@ -1690,3 +1572,27 @@ class Database:
             tracked_message_kind=row["tracked_message_kind"],
             recruiting_started_at=row["recruiting_started_at"],
         )
+
+
+class AsyncDatabase:
+    """Awaitable view of a :class:`Database` for code running on the event loop.
+
+    SQLite calls block, and every query shares one connection behind a lock, so a
+    slow query (stats, for example) run directly on the event loop would stall
+    the Discord gateway and every table worker. Each method here runs the
+    matching ``Database`` method in a worker thread: ``await db.get_x(...)``.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def __getattr__(self, name: str):
+        method = getattr(self._database, name)
+        if not callable(method) or name.startswith("_"):
+            raise AttributeError(name)
+
+        @functools.wraps(method)
+        async def run_in_thread(*args, **kwargs):
+            return await asyncio.to_thread(method, *args, **kwargs)
+
+        return run_in_thread
