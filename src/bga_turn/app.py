@@ -18,7 +18,8 @@ from .bga_client import BgaClient
 from .commands_bga import BgaCommands
 from .database import Database
 from .i18n import tr
-from .monitor import BgaMonitor, LinkSelfPersistentView
+from .monitor import BgaMonitor
+from .views import LinkSelfPersistentView
 
 
 def setup_logging() -> None:

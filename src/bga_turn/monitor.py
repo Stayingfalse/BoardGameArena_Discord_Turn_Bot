@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 import logging
-import random
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 
 import discord
-from discord.components import MediaGalleryItem
 from discord.ext import tasks
 
+from . import cards
 from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaServerError, BgaTableUnavailableError
 from .database import Database
+from .discord_io import DiscordRateLimiter
 from .i18n import tr
 from .models import BgaTableSnapshot, LinkedUser, WatchSubscription
-from .utils import BASE_URL, build_table_url, format_game_name
+from .utils import BASE_URL, build_table_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,112 +28,10 @@ class ActiveTableMessage:
     payload_signature: str | None = None
 
 
-class LinkBgaModal(discord.ui.Modal):
-    """Modal shown when a user clicks the self-service 'Link your BGA & Discord' button."""
-
-    bga_input: discord.ui.TextInput = discord.ui.TextInput(  # type: ignore[assignment]
-        label="BGA Username or Player ID",
-        placeholder="e.g. Haurrus  or  91713763",
-        min_length=1,
-        max_length=100,
-    )
-
-    def __init__(self) -> None:
-        super().__init__(title=tr("modal_link_bga_title"))
-        self.bga_input.label = tr("modal_link_bga_input_label")
-        self.bga_input.placeholder = tr("modal_link_bga_input_placeholder")
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                tr("link_self_no_guild"), ephemeral=True
-            )
-            return
-
-        raw = self.bga_input.value.strip()
-        if not raw:
-            await interaction.response.send_message(
-                tr("link_self_invalid_id"), ephemeral=True
-            )
-            return
-
-        # Determine whether the input is a numeric ID or a username.
-        if raw.isdigit():
-            bga_player_id: str | None = raw
-            bga_player_name: str | None = None
-        else:
-            bga_player_id = None
-            bga_player_name = raw
-
-        database: Database = interaction.client.database  # type: ignore[attr-defined]
-        discord_user_id = str(interaction.user.id)
-
-        await asyncio.to_thread(
-            database.upsert_linked_user,
-            discord_user_id,
-            bga_player_id,
-            bga_player_name,
-        )
-        linked = await asyncio.to_thread(database.get_linked_user, discord_user_id)
-        name_display = (linked.bga_player_name if linked else None) or tr("link_missing_value_placeholder")
-        id_display = (linked.bga_player_id if linked else None) or tr("link_missing_value_placeholder")
-
-        await interaction.response.send_message(
-            tr("link_self_saved", bga_name=name_display, bga_id=id_display),
-            ephemeral=True,
-        )
-
-
-class LinkSelfButton(discord.ui.Button["LinkSelfPersistentView"]):
-    """Persistent interactive button that lets any server member self-link their BGA account."""
-
-    _CUSTOM_ID = "bga:link_self"
-
-    def __init__(self) -> None:
-        super().__init__(
-            label=tr("button_link_bga_discord"),
-            style=discord.ButtonStyle.secondary,
-            custom_id=self._CUSTOM_ID,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                tr("link_self_no_guild"), ephemeral=True
-            )
-            return
-
-        database: Database = interaction.client.database  # type: ignore[attr-defined]
-        discord_user_id = str(interaction.user.id)
-
-        existing = await asyncio.to_thread(database.get_linked_user, discord_user_id)
-        if existing is not None and (existing.bga_player_id or existing.bga_player_name):
-            name_display = existing.bga_player_name or tr("link_missing_value_placeholder")
-            id_display = existing.bga_player_id or tr("link_missing_value_placeholder")
-            await interaction.response.send_message(
-                tr("link_self_already_linked", bga_name=name_display, bga_id=id_display),
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_modal(LinkBgaModal())
-
-
-class LinkSelfPersistentView(discord.ui.LayoutView):
-    """Minimal persistent LayoutView registered at startup so that self-link buttons
-    on existing messages continue to work after a bot restart."""
-
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-        row = discord.ui.ActionRow(LinkSelfButton())
-        container = discord.ui.Container(row)
-        self.add_item(container)
-
-
 class BgaMonitor:
-    LIFECYCLE_RECRUITING = "recruiting"
-    LIFECYCLE_IN_PROGRESS = "in_progress"
-    LIFECYCLE_FINISHED = "finished"
+    LIFECYCLE_RECRUITING = cards.LIFECYCLE_RECRUITING
+    LIFECYCLE_IN_PROGRESS = cards.LIFECYCLE_IN_PROGRESS
+    LIFECYCLE_FINISHED = cards.LIFECYCLE_FINISHED
     # Kind of a tracked message that is still the "link detected" status note,
     # waiting to be turned into the table's lifecycle card.
     LINK_STATUS_KIND = "link_status"
@@ -146,13 +42,6 @@ class BgaMonitor:
         LIFECYCLE_IN_PROGRESS: 1,
         LIFECYCLE_FINISHED: 2,
     }
-    _DISCORD_WRITE_THRESHOLD = 5
-    _DISCORD_WRITE_WINDOW_SECONDS = 5.0
-    _DISCORD_OLD_EDIT_THRESHOLD = 3
-    _DISCORD_OLD_EDIT_WINDOW_SECONDS = 6.0
-    _DISCORD_OLD_EDIT_AGE = timedelta(hours=1)
-    _DISCORD_GLOBAL_CONCURRENT_CALLS = 8
-    _DISCORD_CHANNEL_STATE_TTL_SECONDS = 1800.0
     # Cross-table 500 error tracking: how many seconds a server error is counted
     # as "recent" when deciding whether the outage is site-wide or table-specific.
     _SERVER_ERROR_WINDOW_SECONDS = 120.0
@@ -189,17 +78,7 @@ class BgaMonitor:
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._last_player_name_refresh_at: dict[str, float] = {}
         self._cover_image_urls: dict[str, str] = {}
-        self._discord_channel_locks: dict[str, asyncio.Lock] = {}
-        self._discord_channel_requests: dict[tuple[str, str], deque[float]] = {}
-        self._discord_channel_activity: dict[str, float] = {}
-        self._discord_global_call_semaphore = asyncio.Semaphore(
-            self._DISCORD_GLOBAL_CONCURRENT_CALLS
-        )
-        # Monotonic timestamp before which Discord I/O should be skipped due to
-        # rate-limiting. Zero means no active pause.
-        self._discord_rate_limit_until: float = 0.0
-        # Exponential backoff for Discord rate-limit pauses (seconds).
-        self._discord_rl_backoff: float = 5.0
+        self.discord = DiscordRateLimiter()
         # Per-table 500 error tracking for site-wide vs table-specific detection.
         # Monotonic time of the most recent server error per table.
         self._table_server_error_at: dict[str, float] = {}
@@ -224,11 +103,7 @@ class BgaMonitor:
         self._message_locks.clear()
         self._last_player_name_refresh_at.clear()
         self._cover_image_urls.clear()
-        self._discord_channel_locks.clear()
-        self._discord_channel_requests.clear()
-        self._discord_channel_activity.clear()
-        self._discord_rate_limit_until = 0.0
-        self._discord_rl_backoff = 5.0
+        self.discord.reset()
         self._table_server_error_at.clear()
         self._table_consecutive_server_errors.clear()
         self._table_error_note.clear()
@@ -304,14 +179,14 @@ class BgaMonitor:
         active_table_ids = {subscription.table_id for subscription in subscriptions}
         active_subscription_ids = {subscription.subscription_id for subscription in subscriptions}
         active_channel_ids = {subscription.channel_id for subscription in subscriptions}
-        self._sweep_discord_channel_rate_limit_state(active_channel_ids)
+        self.discord.sweep(active_channel_ids)
 
         for subscription_id in list(self._active_messages):
             if subscription_id not in active_subscription_ids:
                 active_message = self._active_messages.pop(subscription_id, None)
                 if active_message is not None:
                     try:
-                        result = await self._discord_call_with_retry(
+                        result = await self.discord.call(
                             "delete_orphan",
                             "?",
                             lambda msg=active_message.message: msg.delete(),
@@ -691,7 +566,7 @@ class BgaMonitor:
         active_message: ActiveTableMessage,
         table_id: str,
     ) -> bool:
-        if not self._discord_io_allowed():
+        if not self.discord.io_allowed():
             return False
         channel = await self._resolve_channel(subscription, table_id)
         if not self._is_supported_message_channel(channel):
@@ -699,7 +574,7 @@ class BgaMonitor:
 
         message = active_message.message
         try:
-            result = await self._discord_call_with_retry(
+            result = await self.discord.call(
                 "delete_message",
                 table_id,
                 lambda: message.delete(),
@@ -780,187 +655,6 @@ class BgaMonitor:
                 snapshot=snapshot,
             )
 
-    async def _discord_call_with_retry(
-        self,
-        operation: str,
-        table_id: str,
-        coro_factory,
-        *,
-        max_retries: int = 3,
-        channel_id: str | None = None,
-        operation_kind: str = "send",
-        message_created_at: datetime | None = None,
-    ):
-        """Call a Discord coroutine, retrying on HTTP 429 rate-limit responses.
-
-        *coro_factory* must be a zero-argument callable that returns a fresh
-        coroutine each time it is called (awaitables cannot be re-awaited).
-
-        Calls are proactively queued per channel to reduce rate-limit hits before
-        they happen, then retried on 429 responses using Discord's ``retry_after``
-        value plus jitter. If retries are exhausted it logs a warning, records a
-        Discord I/O pause and returns ``None``. All other exceptions are re-raised
-        immediately so callers can handle them normally.
-        """
-        for attempt in range(1, max_retries + 2):
-            # Record a slot (and wait if the channel bucket is full) on every
-            # attempt, including retries, so the proactive queue correctly
-            # accounts for all API calls made against each channel.
-            if channel_id is not None:
-                await self._wait_for_discord_channel_slot(
-                    channel_id=channel_id,
-                    operation=operation,
-                    operation_kind=operation_kind,
-                    message_created_at=message_created_at,
-                )
-            try:
-                async with self._discord_global_call_semaphore:
-                    result = await coro_factory()
-                # Successful call — reset the Discord backoff.
-                self._discord_rate_limit_until = 0.0
-                self._discord_rl_backoff = 5.0
-                return result
-            except (discord.RateLimited, discord.HTTPException) as exc:
-                retry_after: float | None = None
-                if isinstance(exc, discord.RateLimited):
-                    retry_after = exc.retry_after
-                elif isinstance(exc, discord.HTTPException) and exc.status == 429:
-                    # discord.py populates retry_after on HTTPException for 429s too.
-                    retry_after = getattr(exc, "retry_after", None)
-
-                if retry_after is None:
-                    # Not a rate-limit error; let it propagate.
-                    raise
-
-                # Broadcast the rate-limit window immediately so all other
-                # concurrent workers stop issuing Discord calls while we wait.
-                broadcast_until = time.monotonic() + retry_after
-                if broadcast_until > self._discord_rate_limit_until:
-                    self._discord_rate_limit_until = broadcast_until
-
-                if attempt > max_retries:
-                    LOGGER.warning(
-                        tr(
-                            "discord_rate_limit_exhausted",
-                            operation=operation,
-                            table_id=table_id,
-                        )
-                    )
-                    # Extend the I/O pause to at least retry_after so a brief
-                    # Discord window doesn't cause an immediate re-flood.
-                    extended_until = time.monotonic() + max(retry_after, min(self._discord_rl_backoff, 60.0))
-                    if extended_until > self._discord_rate_limit_until:
-                        self._discord_rate_limit_until = extended_until
-                    self._discord_rl_backoff = min(self._discord_rl_backoff * 2, 60.0)
-                    return None
-
-                sleep_for = retry_after + random.uniform(0.1, 0.5)
-                LOGGER.debug(
-                    tr(
-                        "discord_rate_limited_retry",
-                        operation=operation,
-                        table_id=table_id,
-                        retry_after=sleep_for,
-                        attempt=attempt,
-                        max_retries=max_retries,
-                    )
-                )
-                await asyncio.sleep(sleep_for)
-
-    async def _wait_for_discord_channel_slot(
-        self,
-        *,
-        channel_id: str,
-        operation: str,
-        operation_kind: str,
-        message_created_at: datetime | None,
-    ) -> None:
-        lock = self._discord_channel_locks.setdefault(channel_id, asyncio.Lock())
-        while True:
-            sleep_for: float | None = None
-            async with lock:
-                now = time.monotonic()
-                self._discord_channel_activity[channel_id] = now
-                bucket_limits: list[tuple[str, int, float]] = [
-                    (
-                        "write",
-                        self._DISCORD_WRITE_THRESHOLD,
-                        self._DISCORD_WRITE_WINDOW_SECONDS,
-                    )
-                ]
-                if (
-                    operation_kind == "edit"
-                    and message_created_at is not None
-                    and self._is_old_discord_message(message_created_at)
-                ):
-                    bucket_limits.append(
-                        (
-                            "edit_old",
-                            self._DISCORD_OLD_EDIT_THRESHOLD,
-                            self._DISCORD_OLD_EDIT_WINDOW_SECONDS,
-                        )
-                    )
-
-                waits: list[float] = []
-                for bucket_name, threshold, window_seconds in bucket_limits:
-                    bucket_key = (channel_id, bucket_name)
-                    attempts = self._discord_channel_requests.setdefault(bucket_key, deque())
-                    while attempts and now - attempts[0] >= window_seconds:
-                        attempts.popleft()
-                    if len(attempts) >= threshold:
-                        waits.append(window_seconds - (now - attempts[0]))
-
-                if not waits:
-                    for bucket_name, _threshold, _window_seconds in bucket_limits:
-                        self._discord_channel_requests[(channel_id, bucket_name)].append(now)
-                    return
-
-                sleep_for = max(waits) + random.uniform(0.05, 0.20)
-
-            if sleep_for is None:
-                return
-            LOGGER.debug(
-                tr(
-                    "discord_queue_wait",
-                    operation=operation,
-                    channel_id=channel_id,
-                    wait=sleep_for,
-                )
-            )
-            await asyncio.sleep(sleep_for)
-
-    def _sweep_discord_channel_rate_limit_state(self, active_channel_ids: set[str]) -> None:
-        now = time.monotonic()
-        stale_channels = [
-            channel_id
-            for channel_id, last_seen in self._discord_channel_activity.items()
-            if channel_id not in active_channel_ids
-            and (now - last_seen) > self._DISCORD_CHANNEL_STATE_TTL_SECONDS
-        ]
-        if not stale_channels:
-            return
-        stale_set = set(stale_channels)
-        for channel_id in stale_channels:
-            self._discord_channel_locks.pop(channel_id, None)
-            self._discord_channel_activity.pop(channel_id, None)
-        for bucket_key in list(self._discord_channel_requests):
-            if bucket_key[0] in stale_set:
-                self._discord_channel_requests.pop(bucket_key, None)
-
-    @classmethod
-    def _is_old_discord_message(cls, created_at: datetime) -> bool:
-        normalized = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
-        return (datetime.now(UTC) - normalized) >= cls._DISCORD_OLD_EDIT_AGE
-
-    def _discord_io_allowed(self) -> bool:
-        """Return ``True`` unless Discord I/O is currently paused due to rate-limiting."""
-        now = time.monotonic()
-        if now >= self._discord_rate_limit_until:
-            return True
-        wait = self._discord_rate_limit_until - now
-        LOGGER.debug(tr("discord_io_paused", wait=wait))
-        return False
-
     def _message_lock(self, subscription_id: int) -> asyncio.Lock:
         lock = self._message_locks.get(subscription_id)
         if lock is None:
@@ -997,21 +691,22 @@ class BgaMonitor:
         player_names: dict[str, str],
         snapshot: BgaTableSnapshot | None,
     ) -> None:
-        if not self._discord_io_allowed():
+        if not self.discord.io_allowed():
             return
 
         channel = await self._resolve_channel(subscription, table_id)
         if not self._is_supported_message_channel(channel):
             return
 
-        payload_signature = self._build_lifecycle_payload_signature(
-            lifecycle_state=lifecycle_state,
-            table_id=table_id,
+        card = self._card_data(
             subscription=subscription,
+            table_id=table_id,
+            lifecycle_state=lifecycle_state,
             waiting_ids=waiting_ids,
             player_names=player_names,
             snapshot=snapshot,
         )
+        payload_signature = cards.card_signature(card)
         active_message = self._active_messages.get(subscription.subscription_id)
         if (
             active_message is not None
@@ -1021,17 +716,10 @@ class BgaMonitor:
             return
 
         message = await self._resolve_tracked_message(subscription, channel)
-        layout_view = await self._build_lifecycle_message_payload(
-            lifecycle_state=lifecycle_state,
-            table_id=table_id,
-            subscription=subscription,
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            snapshot=snapshot,
-        )
+        layout_view = cards.build_card(card, await self._linked_users_for_card(card))
 
         if message is None:
-            sent = await self._discord_call_with_retry(
+            sent = await self.discord.call(
                 "send_lifecycle",
                 table_id,
                 lambda: channel.send(view=layout_view),
@@ -1051,7 +739,7 @@ class BgaMonitor:
             message = sent
         else:
             try:
-                edited = await self._discord_call_with_retry(
+                edited = await self.discord.call(
                     "edit_lifecycle",
                     table_id,
                     lambda: message.edit(view=layout_view),
@@ -1084,7 +772,7 @@ class BgaMonitor:
                     LOGGER.error(tr("turn_message_update_failed", table_id=table_id, error=exc))
                     return
                 try:
-                    await self._discord_call_with_retry(
+                    await self.discord.call(
                         "delete_legacy_lifecycle",
                         table_id,
                         lambda: message.delete(),
@@ -1125,6 +813,34 @@ class BgaMonitor:
             tracked_message_kind=lifecycle_state,
         )
 
+    def _card_data(
+        self,
+        *,
+        subscription: WatchSubscription,
+        table_id: str,
+        lifecycle_state: str,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        snapshot: BgaTableSnapshot | None,
+    ) -> cards.CardData:
+        return cards.CardData(
+            lifecycle_state=lifecycle_state,
+            table_id=table_id,
+            subscription=subscription,
+            waiting_ids=list(waiting_ids),
+            player_names=dict(player_names),
+            snapshot=snapshot,
+            cover_image_url=self._cover_image_urls.get(table_id),
+            error_note=self._table_error_note.get(table_id),
+        )
+
+    async def _linked_users_for_card(self, card: cards.CardData) -> list[LinkedUser]:
+        try:
+            return await asyncio.to_thread(self.database.get_linked_users_for_players, card.players_to_link())
+        except sqlite3.Error as exc:
+            LOGGER.warning("Linked-user lookup failed while building table message: %s", exc)
+            return []
+
     async def _resolve_tracked_message(
         self,
         subscription: WatchSubscription,
@@ -1136,7 +852,7 @@ class BgaMonitor:
         if subscription.tracked_message_id is None:
             return None
         try:
-            message = await self._discord_call_with_retry(
+            message = await self.discord.call(
                 "fetch_tracked_message",
                 "?",
                 lambda mid=subscription.tracked_message_id: channel.fetch_message(mid),
@@ -1160,321 +876,6 @@ class BgaMonitor:
             waiting_ids=list(subscription.last_waiting_ids),
         )
         return message
-
-    def _build_lifecycle_payload_signature(
-        self,
-        *,
-        lifecycle_state: str,
-        table_id: str,
-        subscription: WatchSubscription,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        snapshot: BgaTableSnapshot | None,
-    ) -> str:
-        snapshot_player_avatars = () if snapshot is None else tuple(sorted(snapshot.player_avatars.items()))
-        snapshot_winner_names = () if snapshot is None else tuple(snapshot.winner_names)
-        snapshot_final_standings = () if snapshot is None else tuple(snapshot.final_standings)
-        signature = (
-            lifecycle_state,
-            table_id,
-            subscription.game_name or "",
-            subscription.table_url or "",
-            tuple(waiting_ids),
-            tuple(sorted(player_names.items())),
-            self._cover_image_urls.get(table_id) or "",
-            "" if snapshot is None else snapshot.game_name,
-            "" if snapshot is None else snapshot.status,
-            "" if snapshot is None else (snapshot.table_url or ""),
-            "" if snapshot is None else (snapshot.cover_image_url or ""),
-            0 if snapshot is None else snapshot.seats_taken,
-            None if snapshot is None else snapshot.seats_total,
-            None if snapshot is None else snapshot.seats_remaining,
-            snapshot_player_avatars,
-            snapshot_winner_names,
-            snapshot_final_standings,
-            "" if snapshot is None else (snapshot.finished_at or ""),
-            "" if snapshot is None else (snapshot.finish_reason or ""),
-            self._table_error_note.get(table_id) or "",
-        )
-        return repr(signature)
-
-    async def _build_lifecycle_message_payload(
-        self,
-        *,
-        lifecycle_state: str,
-        table_id: str,
-        subscription: WatchSubscription,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        snapshot: BgaTableSnapshot | None,
-    ) -> discord.ui.LayoutView:
-        cover_image_url = self._cover_image_urls.get(table_id)
-        if lifecycle_state == self.LIFECYCLE_RECRUITING:
-            return await self._build_recruiting_layout(
-                table_id=table_id,
-                subscription=subscription,
-                player_names=player_names,
-                snapshot=snapshot,
-            )
-        if lifecycle_state == self.LIFECYCLE_FINISHED:
-            return self._build_finished_layout(
-                table_id=table_id,
-                subscription=subscription,
-                snapshot=snapshot,
-                cover_image_url=(snapshot.cover_image_url if snapshot is not None else None) or cover_image_url,
-            )
-        return await self._build_in_progress_layout(
-            table_id=table_id,
-            subscription=subscription,
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            cover_image_url=cover_image_url,
-        )
-
-    async def _build_recruiting_layout(
-        self,
-        *,
-        table_id: str,
-        subscription: WatchSubscription,
-        player_names: dict[str, str],
-        snapshot: BgaTableSnapshot | None,
-    ) -> discord.ui.LayoutView:
-        game_name = format_game_name(
-            (snapshot.game_name if snapshot is not None else None) or subscription.game_name
-        )
-        table_url = subscription.table_url or build_table_url(table_id)
-
-        header_text = f"🎲  **{game_name}**\n{tr('label_table')}: {table_id}"
-        join_btn = discord.ui.Button(label=tr("button_join_table"), url=table_url)
-        header_section = discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=join_btn)
-
-        items: list[discord.ui.Item] = [header_section, discord.ui.Separator()]
-
-        if snapshot is not None and snapshot.cover_image_url:
-            items.append(discord.ui.MediaGallery(MediaGalleryItem(snapshot.cover_image_url)))
-            items.append(discord.ui.Separator())
-
-        players_value = await self._build_player_lines(
-            player_names=player_names,
-            player_avatars={} if snapshot is None else snapshot.player_avatars,
-        )
-        players_text = f"**{tr('label_players_joined')}**\n{players_value or tr('value_none')}"
-        items.append(discord.ui.TextDisplay(players_text))
-
-        if snapshot is not None and snapshot.seats_total is not None and snapshot.seats_remaining is not None:
-            seat_icons = self._build_seat_icons(snapshot.seats_taken, snapshot.seats_total)
-            seats_line = f"{seat_icons}  " + tr(
-                "invite_message_seats_value",
-                seats_taken=snapshot.seats_taken,
-                seats_total=snapshot.seats_total,
-                seats_remaining=snapshot.seats_remaining,
-            )
-        else:
-            joined_count = len(player_names)
-            seats_line = tr("invite_message_seats_unknown", seats_taken=joined_count)
-        status = (snapshot.status if snapshot is not None else "") or tr("value_unknown")
-        footer_text = f"_{seats_line} · {tr('label_status')}: {status}_"
-        items.append(discord.ui.TextDisplay(footer_text))
-        items.append(discord.ui.Separator())
-        error_note = self._table_error_note.get(table_id)
-        if error_note:
-            items.append(discord.ui.TextDisplay(error_note))
-            items.append(discord.ui.Separator())
-        items.append(discord.ui.ActionRow(LinkSelfButton()))
-
-        container = discord.ui.Container(*items, accent_color=discord.Color.gold())
-        view = discord.ui.LayoutView(timeout=None)
-        view.add_item(container)
-        return view
-
-    async def _build_in_progress_layout(
-        self,
-        *,
-        table_id: str,
-        subscription: WatchSubscription,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        cover_image_url: str | None = None,
-    ) -> discord.ui.LayoutView:
-        game_name = format_game_name(subscription.game_name)
-        table_url = subscription.table_url or build_table_url(table_id)
-        header_text = f"🎮  **{game_name}** · {tr('lifecycle_in_progress_title')}\n{tr('label_table')}: {table_id}"
-
-        items: list[discord.ui.Item] = []
-        if cover_image_url:
-            items.append(
-                discord.ui.Section(
-                    discord.ui.TextDisplay(header_text),
-                    accessory=discord.ui.Thumbnail(cover_image_url),
-                )
-            )
-        else:
-            items.append(
-                discord.ui.Section(
-                    discord.ui.TextDisplay(header_text),
-                    accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
-                )
-            )
-
-        items.append(discord.ui.Separator())
-
-        if waiting_ids:
-            waiting_players = await self._build_waiting_players_text(
-                waiting_ids=waiting_ids,
-                player_names=player_names,
-                subscription=subscription,
-            )
-            ping_text = f"**🎯 {tr('label_current_turn')}**\n{waiting_players or tr('value_none')}"
-            items.append(discord.ui.TextDisplay(ping_text))
-            items.append(discord.ui.Separator())
-
-        if player_names:
-            waiting_set = set(waiting_ids)
-            all_players_lines = [
-                f"🎮 {name}" if pid in waiting_set else f"⏳ {name}"
-                for pid, name in sorted(player_names.items(), key=lambda kv: kv[1].casefold())
-            ]
-            all_players_text = f"**{tr('label_all_players')}**\n" + "\n".join(all_players_lines)
-            items.append(discord.ui.TextDisplay(all_players_text))
-
-        if cover_image_url:
-            items.append(
-                discord.ui.Section(
-                    discord.ui.TextDisplay("\u200b"),
-                    accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
-                )
-            )
-
-        items.append(discord.ui.Separator())
-        error_note = self._table_error_note.get(table_id)
-        if error_note:
-            items.append(discord.ui.TextDisplay(error_note))
-            items.append(discord.ui.Separator())
-        items.append(discord.ui.ActionRow(LinkSelfButton()))
-
-        container = discord.ui.Container(*items, accent_color=discord.Color.blurple())
-        view = discord.ui.LayoutView(timeout=None)
-        view.add_item(container)
-        return view
-
-    def _build_finished_layout(
-        self,
-        *,
-        table_id: str,
-        subscription: WatchSubscription,
-        snapshot: BgaTableSnapshot | None,
-        cover_image_url: str | None = None,
-    ) -> discord.ui.LayoutView:
-        game_name = format_game_name(
-            (snapshot.game_name if snapshot is not None else None) or subscription.game_name
-        )
-        finished_at = (snapshot.finished_at if snapshot is not None else None) or ""
-        header_text = (
-            f"🏆  **{game_name}** · {tr('lifecycle_finished_title')}\n"
-            f"{tr('label_table')}: {table_id}"
-            + (f" · {finished_at}" if finished_at else "")
-        )
-
-        items: list[discord.ui.Item] = []
-        if cover_image_url:
-            items.append(
-                discord.ui.Section(
-                    discord.ui.TextDisplay(header_text),
-                    accessory=discord.ui.Thumbnail(cover_image_url),
-                )
-            )
-        else:
-            items.append(discord.ui.TextDisplay(header_text))
-
-        items.append(discord.ui.Separator())
-
-        if snapshot is not None and snapshot.winner_names:
-            winner_text = f"**🥇 {tr('label_winner')}:** {', '.join(snapshot.winner_names)}"
-            items.append(discord.ui.TextDisplay(winner_text))
-            items.append(discord.ui.Separator())
-
-        if snapshot is not None and snapshot.final_standings:
-            standings_lines = "\n".join(snapshot.final_standings[:10])
-            standings_text = f"**{tr('label_final_standings')}**\n{standings_lines}"
-            items.append(discord.ui.TextDisplay(standings_text))
-
-        if snapshot is not None and snapshot.finish_reason:
-            items.append(discord.ui.TextDisplay(f"_{tr('label_finish_reason')}: {snapshot.finish_reason}_"))
-
-        error_note = self._table_error_note.get(table_id)
-        if error_note:
-            items.append(discord.ui.Separator())
-            items.append(discord.ui.TextDisplay(error_note))
-
-        container = discord.ui.Container(*items, accent_color=discord.Color.dark_green())
-        view = discord.ui.LayoutView(timeout=None)
-        view.add_item(container)
-        return view
-
-    async def _build_waiting_players_text(
-        self,
-        *,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        subscription: WatchSubscription,
-    ) -> str:
-        observed_waiting_players = {
-            player_id: player_names.get(player_id, "")
-            for player_id in waiting_ids
-        }
-        linked_users = await self._get_linked_users_for_players_safe(observed_waiting_players)
-        linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
-        linked_users_by_name = {
-            user.bga_player_name.casefold(): user
-            for user in linked_users
-            if user.bga_player_name
-        }
-        waiting_descriptions = "\n".join(
-            self._format_waiting_player(
-                player_id,
-                player_names,
-                linked_users_by_bga_id,
-                linked_users_by_name,
-            )
-            for player_id in waiting_ids
-        )
-        return waiting_descriptions
-
-    async def _build_player_lines(
-        self,
-        *,
-        player_names: dict[str, str],
-        player_avatars: dict[str, str],
-    ) -> str:
-        linked_users = await self._get_linked_users_for_players_safe(player_names)
-        linked_by_bga_id = {item.bga_player_id: item for item in linked_users if item.bga_player_id}
-        linked_by_name = {
-            item.bga_player_name.casefold(): item
-            for item in linked_users
-            if item.bga_player_name
-        }
-        lines: list[str] = []
-        for player_id, player_name in sorted(player_names.items(), key=lambda item: item[1].casefold()):
-            linked = linked_by_bga_id.get(player_id)
-            if linked is None and player_name:
-                linked = linked_by_name.get(player_name.casefold())
-            mention = f"<@{linked.discord_user_id}> " if linked is not None else ""
-            avatar = player_avatars.get(player_id)
-            avatar_suffix = f" • [avatar]({avatar})" if avatar else ""
-            lines.append(f"{mention}{player_name} ({player_id}){avatar_suffix}")
-        return "\n".join(lines)
-
-    async def _get_linked_users_for_players_safe(
-        self, player_names: dict[str, str]
-    ) -> list[LinkedUser]:
-        try:
-            return await asyncio.to_thread(
-                self.database.get_linked_users_for_players,
-                player_names,
-            )
-        except sqlite3.Error as exc:
-            LOGGER.warning("Linked-user lookup failed while building table message: %s", exc)
-            return []
 
     async def _refresh_missing_player_names(
         self,
@@ -1563,7 +964,7 @@ class BgaMonitor:
         if channel is None:
             channel = self.bot.get_channel(int(channel_id))
         if channel is None:
-            if not self._discord_io_allowed():
+            if not self.discord.io_allowed():
                 return None
             try:
                 channel = await self.bot.fetch_channel(int(channel_id))
@@ -1617,23 +1018,6 @@ class BgaMonitor:
     # Link status notes ("link detected" → table card, or → error)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def build_link_status_view(
-        text: str,
-        *,
-        color: discord.Color,
-        table_url: str | None = None,
-    ) -> discord.ui.LayoutView:
-        body: discord.ui.Item = discord.ui.TextDisplay(text)
-        if table_url:
-            body = discord.ui.Section(
-                discord.ui.TextDisplay(text),
-                accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
-            )
-        view = discord.ui.LayoutView(timeout=None)
-        view.add_item(discord.ui.Container(body, accent_color=color))
-        return view
-
     async def send_link_status(
         self,
         channel: discord.abc.Messageable,
@@ -1643,10 +1027,10 @@ class BgaMonitor:
     ) -> discord.Message | None:
         """Post a status note; returns ``None`` if it could not be sent."""
         try:
-            return await self._discord_call_with_retry(
+            return await self.discord.call(
                 "send_link_status",
                 table_id,
-                lambda: channel.send(view=self.build_link_status_view(text, color=discord.Color.light_grey())),
+                lambda: channel.send(view=cards.build_link_status_view(text, color=discord.Color.light_grey())),
                 channel_id=str(getattr(channel, "id", "")) or None,
                 operation_kind="send",
             )
@@ -1664,9 +1048,9 @@ class BgaMonitor:
         table_url: str | None = None,
         delete_after: float | None = None,
     ) -> bool:
-        view = self.build_link_status_view(text, color=color, table_url=table_url)
+        view = cards.build_link_status_view(text, color=color, table_url=table_url)
         try:
-            edited = await self._discord_call_with_retry(
+            edited = await self.discord.call(
                 "edit_link_status",
                 table_id,
                 lambda: message.edit(view=view, delete_after=delete_after),
@@ -1728,7 +1112,7 @@ class BgaMonitor:
 
     async def _delete_quietly(self, message: discord.Message, table_id: str, *, operation: str) -> None:
         try:
-            await self._discord_call_with_retry(
+            await self.discord.call(
                 operation,
                 table_id,
                 lambda: message.delete(),
@@ -1827,10 +1211,10 @@ class BgaMonitor:
         ``False`` if rate-limit retries were exhausted or Discord I/O is
         currently paused.
         """
-        if not self._discord_io_allowed():
+        if not self.discord.io_allowed():
             return False
         try:
-            result = await self._discord_call_with_retry(
+            result = await self.discord.call(
                 operation,
                 "?",
                 lambda: message.delete(),
@@ -1889,38 +1273,6 @@ class BgaMonitor:
     def _can_transition_lifecycle(cls, current: str | None, target: str) -> bool:
         current_state = cls._normalize_lifecycle_state(current)
         return cls._LIFECYCLE_ORDER[target] >= cls._LIFECYCLE_ORDER[current_state]
-
-    @staticmethod
-    def _format_player_reference(player_id: str, player_names: dict[str, str]) -> str:
-        player_name = player_names.get(player_id)
-        if player_name and player_name != player_id:
-            return f"{player_name} ({player_id})"
-        return player_id
-
-    @classmethod
-    def _format_waiting_player(
-        cls,
-        player_id: str,
-        player_names: dict[str, str],
-        linked_users_by_bga_id: dict[str, LinkedUser],
-        linked_users_by_name: dict[str, LinkedUser],
-    ) -> str:
-        linked_user = linked_users_by_bga_id.get(player_id)
-        if linked_user is None:
-            player_name = player_names.get(player_id, "").strip()
-            if player_name:
-                linked_user = linked_users_by_name.get(player_name.casefold())
-        if linked_user is None:
-            return cls._format_player_reference(player_id, player_names)
-        player_label = linked_user.bga_player_name or player_names.get(player_id, "").strip() or player_id
-        player_id_label = linked_user.bga_player_id or player_id
-        return f"<@{linked_user.discord_user_id}> {player_label} ({player_id_label})"
-
-    @staticmethod
-    def _build_seat_icons(seats_taken: int, seats_total: int) -> str:
-        filled = "🪑" * seats_taken
-        empty = "⬜" * max(0, seats_total - seats_taken)
-        return filled + empty
 
     @staticmethod
     def _select_previous_waiting_ids(subscriptions: list[WatchSubscription]) -> list[str]:

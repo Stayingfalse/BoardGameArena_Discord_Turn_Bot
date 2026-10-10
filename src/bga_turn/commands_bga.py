@@ -534,7 +534,7 @@ class BgaCommands(commands.Cog):
         operation: str,
         coro_factory,
     ) -> None:
-        await self.monitor._discord_call_with_retry(
+        await self.monitor.discord.call(
             operation=operation,
             table_id=f"interaction:{interaction.guild_id or 'dm'}",
             coro_factory=coro_factory,
