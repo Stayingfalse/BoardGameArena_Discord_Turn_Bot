@@ -1018,13 +1018,17 @@ class BgaMonitor:
         *,
         table_id: str,
         text: str,
+        delete_after: float | None = None,
     ) -> discord.Message | None:
         """Post a status note; returns ``None`` if it could not be sent."""
         try:
             return await self.discord.call(
                 "send_link_status",
                 table_id,
-                lambda: channel.send(view=cards.build_link_status_view(text, color=discord.Color.light_grey())),
+                lambda: channel.send(
+                    view=cards.build_link_status_view(text, color=discord.Color.light_grey()),
+                    delete_after=delete_after,
+                ),
                 channel_id=str(getattr(channel, "id", "")) or None,
                 operation_kind="send",
             )

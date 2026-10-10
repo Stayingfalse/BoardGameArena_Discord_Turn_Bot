@@ -257,6 +257,8 @@ As soon as a link is seen, the bot replies with a status message, **"Board Game 
 3. **If something goes wrong**, the status message says why: the game has already finished, the table is private or no longer exists, Board Game Arena is down or rate-limiting, etc. The original message is kept.
 4. If Board Game Arena takes more than ~20 seconds to respond, the status message says it is still waiting; it updates by itself when the details arrive.
 
+To keep one person or message from flooding a channel, the bot tracks at most **5 table links per message** and **10 per person every 10 minutes**; extra links are ignored and a short note (removed after a minute) says so.
+
 When the server uses a forced notification channel, the status message stays in the channel where the link was posted and points to the channel the card is in, then removes itself after two minutes.
 
 This requires the **Message Content Intent** to be enabled in the Discord Developer Portal (see Step 1).
@@ -271,7 +273,9 @@ For each watched table the bot maintains exactly one Discord message and updates
 
 ### Self-service player linking
 
-Players can link themselves without an admin by clicking the **Link your BGA & Discord** button on any recruiting message. A modal appears asking for their BGA username or numeric player ID.
+Players can link themselves without an admin by clicking the **Link your BGA & Discord** button on any recruiting message. A modal appears asking for their BGA username or numeric player ID. Clicking the button again when already linked offers **Change** and **Unlink**.
+
+Each BGA account can be linked to only one Discord user. Linking a name or ID that someone else already holds is refused (two holders would leave the bot unable to tell whom to mention). A server admin can free it by unlinking the other person if they are in the same server; otherwise a global admin can reassign it from the dashboard.
 
 ### Player link enrichment
 
@@ -313,7 +317,7 @@ Displays for each watch: the table ID, game name, channel, whose turn it is (BGA
 
 ### `/bga stats`
 
-Show a compact multi-page stats card for the current server, with a `global:true` option for bot-wide totals.
+Post a compact multi-page stats card in the channel for everyone to see, for the current server or, with `global:true`, bot-wide totals. Nobody is pinged by the card. Only the person who ran the command turns its pages; anyone else who clicks a page button gets their own private copy of that page. The buttons are removed after five minutes. Global stats only show totals and game titles: player, recruiter and channel rankings mix every server's data, so they are only shown per server.
 
 ```text
 /bga stats
@@ -412,12 +416,12 @@ The dashboard is then accessible at `http://localhost:8080` (or your configured 
 - **Overview & settings**: recruiting-only mode, link clean-up, and a picker for the channel that receives all updates.
 - **Tables**: recruiting, in-progress and recently finished tables, whose turn it is, and a "Stop watching" button.
 - **Member links**: link Discord members to BGA players (including players the bot has seen at your tables but can't match yet), or remove links.
-- **Stats**: per-server and global charts and leaderboards.
+- **Stats**: per-server charts and leaderboards. The public global stats page (and the home page) show totals and game titles only; global admins also see the cross-server player leaderboard. Public global stats are cached for one minute.
 
 ### Security model
 
 - Access to a server's pages is checked live with Discord (cached for one minute), so removing someone's **Manage Server** permission takes effect almost immediately.
-- Links are global (one per Discord user), so the dashboard only lets an admin link or unlink people who are members of the server they're managing.
+- Links are global (one per Discord user), so the dashboard only lets an admin link or unlink people who are members of the server they're managing, and refuses a BGA account another Discord user already holds (only global admins can reassign one).
 - The forced notification channel must be a text channel in the same server; the bot ignores any other value.
 - Every form carries a CSRF token signed with `DASHBOARD_SECRET_KEY`, and pages are served with a strict Content-Security-Policy.
 - The dashboard does **not** need the privileged Server Members Intent: member search and lookups use on-demand Discord queries.

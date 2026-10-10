@@ -19,6 +19,7 @@
 {% if error == "not_member" %}<div class="alert alert-error" role="alert">That person isn't a member of this server.</div>{% endif %}
 {% if error == "member" %}<div class="alert alert-error" role="alert">Pick a Discord member from the search results.</div>{% endif %}
 {% if error == "bga" %}<div class="alert alert-error" role="alert">Enter a BGA username or player ID.</div>{% endif %}
+{% if error == "claimed" %}<div class="alert alert-error" role="alert">That BGA account is already linked to another Discord user. If they're in this server, unlink them below first; otherwise ask the bot owner.</div>{% endif %}
 {% if error == "bga_id" %}<div class="alert alert-error" role="alert">A BGA player ID contains digits only.</div>{% endif %}
 {% if members_error %}<div class="alert alert-warning" role="status">Discord didn't return the member list, so linked members may be missing below. Reload in a moment.</div>{% endif %}
 

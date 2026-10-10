@@ -48,6 +48,7 @@ import discord
 from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from .database import LinkConflictError, redact_global_stats
 from .utils import build_table_url, format_game_name
 
 if TYPE_CHECKING:
@@ -69,6 +70,8 @@ _AUTH_MAX_ATTEMPTS = 2
 _RECENT_FINISHED_LIMIT = 10
 _PERMISSION_CACHE_SECONDS = 60.0
 _MEMBER_SEARCH_LIMIT = 25
+# Global stats scan all game history; public pages reuse one result this long.
+_GLOBAL_STATS_CACHE_SECONDS = 60.0
 _OAUTH_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 _SNOWFLAKE_PATTERN = re.compile(r"[0-9]{1,20}")
@@ -489,12 +492,28 @@ def _guild_page_context(ctx: GuildContext, active_tab: str) -> dict[str, object]
 # ---------------------------------------------------------------------------
 
 
+async def _global_stats_for(request: web.Request, session: dict[str, object] | None) -> dict[str, object]:
+    """Cross-server stats, cached briefly; player and channel rankings only for global admins.
+
+    These pages need no login, so without the cache every hit would rescan the
+    whole game history while holding the database lock the table monitor needs.
+    """
+    app = request.app
+    cache: dict[str, object] = app["global_stats_cache"]
+    async with app["global_stats_lock"]:
+        if cache["stats"] is None or float(cache["expires_at"]) <= time.monotonic():
+            database: Database = app["database"]
+            cache["stats"] = await asyncio.to_thread(database.get_global_extended_stats)
+            cache["expires_at"] = time.monotonic() + _GLOBAL_STATS_CACHE_SECONDS
+        stats: dict[str, object] = cache["stats"]
+    return stats if _is_global_admin(session, app) else redact_global_stats(stats)
+
+
 async def _index(request: web.Request) -> web.Response:
     session, _ = await _get_session(request)
-    database: Database = request.app["database"]
     client_id: str = request.app["client_id"]
 
-    stats = await asyncio.to_thread(database.get_global_extended_stats)
+    stats = await _global_stats_for(request, session)
     add_bot_url = _build_add_bot_url(client_id) if client_id else ""
 
     return _html(
@@ -517,8 +536,7 @@ async def _stats_json(request: web.Request) -> web.Response:
 
 async def _global_stats(request: web.Request) -> web.Response:
     session, _ = await _get_session(request)
-    database: Database = request.app["database"]
-    stats = await asyncio.to_thread(database.get_global_extended_stats)
+    stats = await _global_stats_for(request, session)
     return _html(
         _render_template(
             request,
@@ -1069,12 +1087,19 @@ async def _dashboard_guild_members_link_post(request: web.Request, ctx: GuildCon
         raise web.HTTPFound(location=f"{members_url}?error=not_member")
 
     database: Database = request.app["database"]
-    await asyncio.to_thread(
-        database.upsert_linked_user,
-        discord_user_id,
-        bga_player_id,
-        bga_player_name,
-    )
+    try:
+        await asyncio.to_thread(
+            functools.partial(
+                database.link_user,
+                discord_user_id,
+                bga_player_id,
+                bga_player_name,
+                # Only the bot owner's admins may take a BGA account from whoever holds it.
+                override=_is_global_admin(ctx.session, request.app),
+            )
+        )
+    except LinkConflictError:
+        raise web.HTTPFound(location=f"{members_url}?error=claimed") from None
     raise web.HTTPFound(location=f"{members_url}?linked=1")
 
 
@@ -1196,6 +1221,8 @@ def create_dashboard_app(
     app["cookie_secure"] = urllib.parse.urlparse(base_url).scheme.lower() == "https"
     app["global_admin_ids"] = global_admin_ids if global_admin_ids is not None else frozenset()
     app["permission_cache"] = {}
+    app["global_stats_cache"] = {"expires_at": 0.0, "stats": None}
+    app["global_stats_lock"] = asyncio.Lock()
 
     app.router.add_get("/", _index)
     app.router.add_get("/stats", _stats_json)
