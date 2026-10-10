@@ -315,7 +315,7 @@ Show a compact multi-page stats card for the current server, with a `global:true
 The stats view uses Discord component cards and page buttons to surface highlights such as:
 
 - total tracked games, live tables, and recruiting tables
-- linked accounts and auto-follow usage
+- linked accounts
 - most played games and most active players
 - most active recruiters and busiest channels
 - recent activity and outcome breakdowns
@@ -427,7 +427,7 @@ The bot does not use cookies, browser sessions, or a BGA account.
 | `src/bga_turn/app.py` | Application entry point, environment loading, bot startup |
 | `src/bga_turn/commands_bga.py` | `/bga` slash commands and the `on_message` link detector |
 | `src/bga_turn/bga_client.py` | Public BGA networking, HTML parsing, websocket handling |
-| `src/bga_turn/monitor.py` | Watch loop, Discord message lifecycle, followed-player sync |
+| `src/bga_turn/monitor.py` | Watch loop and Discord message lifecycle |
 | `src/bga_turn/database.py` | SQLite persistence |
 | `src/bga_turn/dashboard.py` | Optional aiohttp web dashboard |
 | `src/bga_turn/models.py` | Domain dataclasses |

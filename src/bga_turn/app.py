@@ -174,7 +174,6 @@ class BgaDiscordBot(commands.Bot):
             outcome="cancelled",
         )
         await asyncio.to_thread(self.database.remove_guild_settings, guild_id)
-        await asyncio.to_thread(self.database.remove_followed_players_for_guild, guild_id)
         await asyncio.to_thread(self.database.remove_guild_scoped_users_for_guild, guild_id)
         self.logger.info("Cleaned up guild data for removed guild %s (watches=%d).", guild_id, removed_watches)
 

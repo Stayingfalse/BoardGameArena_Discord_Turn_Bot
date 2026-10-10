@@ -133,7 +133,6 @@ class StatsLayoutView(discord.ui.LayoutView):
                         f"🟢 {tr('stats_metric_live_tables')}: **{self._cog._stat_int(self._stats, 'currently_watching')}**",
                         f"📣 {tr('stats_metric_recruiting_now')}: **{self._cog._stat_int(self._stats, 'currently_recruiting')}**",
                         f"🔗 {tr('stats_metric_linked_accounts')}: **{self._cog._stat_int(self._stats, 'members_linked')}**",
-                        f"👀 {tr('stats_metric_followed_members')}: **{self._cog._stat_int(self._stats, 'followed_members')}**",
                         f"💬 {tr('stats_metric_channels')}: **{self._cog._stat_int(self._stats, 'tracked_channels')}**",
                         f"⏱ {tr('stats_metric_avg_recruiting')}: **{self._cog._format_minutes(self._stats.get('avg_recruiting_minutes'))}**",
                         f"⌛ {tr('stats_metric_avg_game')}: **{self._cog._format_hours(self._stats.get('avg_game_hours'))}**",

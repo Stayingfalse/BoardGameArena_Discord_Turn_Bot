@@ -406,7 +406,7 @@ Le bot n'utilise pas de cookies, pas de session navigateur, pas de compte BGA.
 | `src/bga_turn/app.py` | Point d'entree, chargement de l'environnement, demarrage du bot |
 | `src/bga_turn/commands_bga.py` | Slash commands `/bga` et detecteur de liens `on_message` |
 | `src/bga_turn/bga_client.py` | Reseau BGA public, parsing HTML, gestion websocket |
-| `src/bga_turn/monitor.py` | Boucle de surveillance, cycle de vie des messages Discord, sync des joueurs suivis |
+| `src/bga_turn/monitor.py` | Boucle de surveillance et cycle de vie des messages Discord |
 | `src/bga_turn/database.py` | Persistance SQLite |
 | `src/bga_turn/dashboard.py` | Tableau de bord web aiohttp optionnel |
 | `src/bga_turn/models.py` | Dataclasses metier |

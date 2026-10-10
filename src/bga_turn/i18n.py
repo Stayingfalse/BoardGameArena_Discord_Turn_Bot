@@ -15,138 +15,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Board Game Arena commands",
         "FR": "Commandes Board Game Arena",
     },
-    "command_help_description": {
-        "EN": "Show what the bot does and how to use it",
-        "FR": "Explique ce que fait le bot et comment l'utiliser",
-    },
-    "help_header": {
-        "EN": "╔═══════════════════════════════╗\nBGA BOT — HELP\n╚═══════════════════════════════╝",
-        "FR": "╔═══════════════════════════════╗\nBOT BGA — AIDE\n╚═══════════════════════════════╝",
-    },
-    "help_section_intro": {
-        "EN": (
-            "・ WHAT THIS BOT DOES\n"
-            "It spectates public Board Game Arena tables and posts a message when someone has to play.\n"
-            "No BGA account, no password, no cookie: it only reads what any anonymous spectator can see.\n"
-            "The message is updated as the turn moves on, and removed once nobody is waiting."
-        ),
-        "FR": (
-            "・ CE QUE FAIT CE BOT\n"
-            "Il observe des tables Board Game Arena publiques en mode spectateur et publie un message quand quelqu'un doit jouer.\n"
-            "Aucun compte BGA, aucun mot de passe, aucun cookie : il ne lit que ce qu'un spectateur anonyme peut voir.\n"
-            "Le message est mis a jour au fil du tour, puis retire quand plus personne n'est attendu."
-        ),
-    },
-    "help_section_watch": {
-        "EN": (
-            "・ WATCH A TABLE\n"
-            "The bot follows the game and notifies when it's someone's turn to play.\n"
-            "/bga watch <table_link>\n"
-            "Example ▸ /bga watch https://boardgamearena.com/6/perfectwords?table=827318521\n"
-            "Copy the full table URL from your browser. A tableview link or the bare table id works too."
-        ),
-        "FR": (
-            "・ SURVEILLER UNE TABLE\n"
-            "Le bot suit la partie et notifie quand c'est au tour de quelqu'un de jouer.\n"
-            "/bga watch <lien_de_la_table>\n"
-            "Exemple ▸ /bga watch https://boardgamearena.com/6/perfectwords?table=827318521\n"
-            "Copie l'URL complete de la table depuis ton navigateur. Un lien tableview ou l'id seul marchent aussi."
-        ),
-    },
-    "help_section_follow": {
-        "EN": (
-            "・ FOLLOW A PLAYER — ON / OFF\n"
-            "Watch every table a member plays on, automatically, instead of adding them one by one.\n"
-            "/bga follow-tables @nickname\n"
-            "Example ▸ /bga follow-tables @Haurrus\n"
-            "Run it once to turn it ON, run it again to turn it OFF: the reply always tells you which state you are in.\n"
-            "New tables are picked up on their own within 3 minutes.\n"
-            "The member must be linked and have a BGA ID (see ADD A PLAYER below)."
-        ),
-        "FR": (
-            "・ SUIVRE UN JOUEUR — ON / OFF\n"
-            "Surveille automatiquement toutes les tables d'un membre, au lieu de les ajouter une par une.\n"
-            "/bga follow-tables @pseudo\n"
-            "Exemple ▸ /bga follow-tables @Haurrus\n"
-            "Lance-la une fois pour ACTIVER, relance-la pour DESACTIVER : la reponse indique toujours l'etat courant.\n"
-            "Les nouvelles tables sont prises en compte toutes seules sous 3 minutes.\n"
-            "Le membre doit etre lie et avoir un ID BGA (voir AJOUTER UN JOUEUR ci-dessous)."
-        ),
-    },
-    "help_section_link": {
-        "EN": (
-            "・ ADD A PLAYER\n"
-            "Link a Discord member to their Board Game Arena account.\n"
-            "/bga link-member @nickname BGAName\n"
-            "Example ▸ /bga link-member @Haurrus Haurrus\n"
-            "The BGA ID is optional: the bot fills it in on its own the first time it sees the person\n"
-            "play a turn on a watched table.\n"
-            "To set it right away, open the BGA profile and read the id in the URL:\n"
-            "https://boardgamearena.com/player?id=91713763 → the ID is 91713763\n"
-            "Then ▸ /bga link-member @Haurrus Haurrus 91713763"
-        ),
-        "FR": (
-            "・ AJOUTER UN JOUEUR\n"
-            "Lie un membre Discord a son compte Board Game Arena.\n"
-            "/bga link-member @pseudo NomBGA\n"
-            "Exemple ▸ /bga link-member @Haurrus Haurrus\n"
-            "L'ID BGA est facultatif : le bot le complete tout seul des la premiere fois qu'il voit la\n"
-            "personne jouer un tour sur une table surveillee.\n"
-            "Pour le renseigner tout de suite, ouvre le profil BGA et lis l'id dans l'URL :\n"
-            "https://boardgamearena.com/player?id=91713763 → l'ID est 91713763\n"
-            "Puis ▸ /bga link-member @Haurrus Haurrus 91713763"
-        ),
-    },
-    "help_section_other": {
-        "EN": (
-            "・ OTHER COMMANDS\n"
-            "/bga watchlist → lists watched tables\n"
-            "/bga status → state of tracked games\n"
-            "/bga linked → lists linked members\n"
-            "/bga unwatch → stops watching a table\n"
-            "/bga unwatch-all → stops all watches\n"
-            "/bga unlink-member → removes a member's link"
-        ),
-        "FR": (
-            "・ AUTRES COMMANDES\n"
-            "/bga watchlist → liste les tables surveillees\n"
-            "/bga status → etat des parties suivies\n"
-            "/bga linked → liste les membres lies\n"
-            "/bga unwatch → arrete de surveiller une table\n"
-            "/bga unwatch-all → arrete toutes les surveillances\n"
-            "/bga unlink-member → supprime le lien d'un membre"
-        ),
-    },
-    "help_section_permissions": {
-        "EN": (
-            "・ PERMISSIONS\n"
-            "Don't forget to give the bot the right permissions in the channel where you want it to work:\n"
-            "▸ View Channels\n"
-            "▸ Send Messages\n"
-            "▸ Embed Links\n"
-            "▸ Read Message History\n"
-            "Linking, unlinking and /bga unwatch-all also need the `Manage Server` permission."
-        ),
-        "FR": (
-            "・ PERMISSIONS\n"
-            "N'oublie pas de donner au bot les bonnes permissions dans le salon ou tu veux qu'il travaille :\n"
-            "▸ View Channels\n"
-            "▸ Send Messages\n"
-            "▸ Embed Links\n"
-            "▸ Read Message History\n"
-            "Lier, delier et /bga unwatch-all demandent en plus la permission `Manage Server`."
-        ),
-    },
-    "help_footer": {
-        "EN": (
-            "The bot automatically stops watching a table when the game is over.\n"
-            "Links and watches are specific to this server."
-        ),
-        "FR": (
-            "Le bot arrete automatiquement de surveiller une table quand la partie est terminee.\n"
-            "Les liens et les surveillances sont propres a ce serveur."
-        ),
-    },
     "command_link_member_description": {
         "EN": "Manually link a Discord member to a BGA player",
         "FR": "Lie manuellement un membre Discord a un joueur BGA",
@@ -171,86 +39,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Discord member to unlink",
         "FR": "Membre Discord a delier",
     },
-    "command_linked_description": {
-        "EN": "Show Discord members linked to BGA players",
-        "FR": "Affiche les membres Discord lies a un joueur BGA",
-    },
-    "command_watch_description": {
-        "EN": "Add a public BGA table to watch in this channel",
-        "FR": "Ajoute une table BGA publique a surveiller dans ce salon",
-    },
-    "command_watch_target": {
-        "EN": "BGA table URL (game link, tableview link) or table id",
-        "FR": "URL de table BGA (lien de jeu, lien tableview) ou identifiant de table",
-    },
-    "command_follow_tables_description": {
-        "EN": "Toggle automatic watching of a member's BGA tables in this channel",
-        "FR": "Active/desactive le suivi auto des tables BGA d'un membre dans ce salon",
-    },
-    "command_follow_tables_member": {
-        "EN": "Discord member whose BGA tables should be followed",
-        "FR": "Membre Discord dont les tables BGA doivent etre suivies",
-    },
-    "error_follow_member_not_linked": {
-        "EN": "{member_mention} is not linked to any BGA player on this server. Link them first with `/bga link-member`.",
-        "FR": "{member_mention} n'est lie a aucun joueur BGA sur ce serveur. Lie-le d'abord avec `/bga link-member`.",
-    },
-    "error_follow_member_without_id": {
-        "EN": "{member_mention} is linked to the BGA name `{bga_name}` but has no BGA ID yet, and the ID is required to list their tables.\nThe ID is in the BGA profile URL: `https://boardgamearena.com/player?id=91713763` → the ID is `91713763`.\nEither set it with `/bga link-member member bga_player_id:<id>`, or wait for the bot to auto-complete it the next time they play a turn on a watched table.",
-        "FR": "{member_mention} est lie au nom BGA `{bga_name}` mais n'a pas encore d'ID BGA, or l'ID est indispensable pour lister ses tables.\nL'ID se trouve dans l'URL du profil BGA : `https://boardgamearena.com/player?id=91713763` → l'ID est `91713763`.\nRenseigne-le avec `/bga link-member membre bga_player_id:<id>`, ou attends que le bot le complete automatiquement quand la personne jouera un tour sur une table surveillee.",
-    },
-    "error_follow_unknown_player": {
-        "EN": "BGA does not know any player with ID `{bga_player_id}` (linked to {member_mention}). Fix the link with `/bga link-member`.",
-        "FR": "BGA ne connait aucun joueur avec l'ID `{bga_player_id}` (lie a {member_mention}). Corrige le lien avec `/bga link-member`.",
-    },
-    "error_follow_lookup_failed": {
-        "EN": "Could not list the BGA tables of {member_mention}: {error}",
-        "FR": "Impossible de lister les tables BGA de {member_mention}: {error}",
-    },
-    "follow_tables_enabled": {
-        "EN": "Automatic follow **enabled** for {member_mention} (`{bga_name}` / `{bga_id}`) in <#{channel_id}>.",
-        "FR": "Suivi automatique **ACTIVE** pour {member_mention} (`{bga_name}` / `{bga_id}`) dans <#{channel_id}>.",
-    },
-    "follow_tables_disabled": {
-        "EN": "Automatic follow **disabled** for {member_mention} in <#{channel_id}>.\nTables already watched stay watched; remove them with `/bga unwatch` or `/bga unwatch-all`.",
-        "FR": "Suivi automatique **DESACTIVE** pour {member_mention} dans <#{channel_id}>.\nLes tables deja surveillees le restent ; retire-les avec `/bga unwatch` ou `/bga unwatch-all`.",
-    },
-    "follow_tables_added_header": {
-        "EN": "Newly watched tables ({count}):",
-        "FR": "Tables nouvellement surveillees ({count}) :",
-    },
-    "follow_tables_added_line": {
-        "EN": "- `{table_id}` | {game_name}",
-        "FR": "- `{table_id}` | {game_name}",
-    },
-    "follow_tables_added_none": {
-        "EN": "No new table to watch: the player has no ongoing table, or they are all already watched in this channel.",
-        "FR": "Aucune nouvelle table a surveiller : le joueur n'a aucune table en cours, ou elles sont deja toutes surveillees dans ce salon.",
-    },
-    "follow_tables_already_watched": {
-        "EN": "Already watched here ({count}): {table_ids}",
-        "FR": "Deja surveillees ici ({count}) : {table_ids}",
-    },
-    "follow_tables_toggle_hint": {
-        "EN": "New tables are picked up automatically. Run `/bga follow-tables` again on this member to disable.",
-        "FR": "Les nouvelles tables seront prises en compte automatiquement. Relance `/bga follow-tables` sur ce membre pour desactiver.",
-    },
-    "command_unwatch_description": {
-        "EN": "Remove a watched BGA table from this channel",
-        "FR": "Retire une table BGA surveillee dans ce salon",
-    },
-    "command_unwatch_target": {
-        "EN": "BGA table ID or full URL",
-        "FR": "ID de table BGA ou URL complete",
-    },
-    "command_unwatch_all_description": {
-        "EN": "Remove every BGA watch from the current server",
-        "FR": "Supprime toutes les watches BGA du serveur courant",
-    },
-    "command_watchlist_description": {
-        "EN": "Show watched tables for this server",
-        "FR": "Affiche les tables surveillees sur ce serveur",
-    },
     "command_status_description": {
         "EN": "Show the known state of watched tables on this server",
         "FR": "Affiche l'etat connu des tables surveillees sur ce serveur",
@@ -271,10 +59,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "You need the `Manage Server` permission to unlink a Discord member.",
         "FR": "Il faut la permission `Manage Server` pour delier un membre Discord.",
     },
-    "error_manage_server_required_unwatch_all": {
-        "EN": "You need the `Manage Server` permission to remove every watch from this server.",
-        "FR": "Il faut la permission `Manage Server` pour supprimer toutes les watches du serveur.",
-    },
     "error_need_bga_name_or_id": {
         "EN": "You must provide at least one `BgaName` or `BgaId` value.",
         "FR": "Il faut renseigner au moins un `NomBGA` ou un `IDBGA`.",
@@ -283,21 +67,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "`bga_player_id` must be a valid numeric BGA player ID.",
         "FR": "`bga_player_id` doit etre un entier BGA valide.",
     },
-    "error_command_server_channel_only": {
-        "EN": "This command must be used in a Discord server channel.",
-        "FR": "Cette commande doit etre lancee dans un salon de serveur Discord.",
-    },
     "error_command_server_only": {
         "EN": "This command must be used in a Discord server.",
         "FR": "Cette commande doit etre lancee dans un serveur Discord.",
-    },
-    "error_watch_not_public": {
-        "EN": "Table `{table_id}` is not usable in public/spectator mode: {error}",
-        "FR": "La table `{table_id}` n'est pas exploitable en mode public/spectateur: {error}",
-    },
-    "error_watch_verify_failed": {
-        "EN": "Could not verify table `{table_id}`: {error}",
-        "FR": "Impossible de verifier la table `{table_id}`: {error}",
     },
     "link_saved": {
         "EN": "Link saved for {member_mention}.\nBGA name: `{bga_name}`\nBGA ID: `{bga_id}`",
@@ -315,30 +87,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "BGA link removed for {member_mention}.",
         "FR": "Lien BGA supprime pour {member_mention}.",
     },
-    "linked_none": {
-        "EN": "No Discord member is linked to BGA yet.",
-        "FR": "Aucun membre Discord n'est encore lie a un joueur BGA.",
-    },
-    "linked_header": {
-        "EN": "Known BGA links:",
-        "FR": "Liens BGA connus :",
-    },
-    "linked_line": {
-        "EN": "- <@{discord_user_id}> -> BgaName=`{bga_player_name}` | BgaId=`{bga_player_id}`",
-        "FR": "- <@{discord_user_id}> -> NomBGA=`{bga_player_name}` | IDBGA=`{bga_player_id}`",
-    },
-    "watch_registered": {
-        "EN": "Watch registered in zero-auth mode.\n{game_label}: `{game_name}`\n{table_label}: `{table_id}`\n{channel_label}: <#{channel_id}>\n{public_source_label}: `{source}`\n{players_detected_label}: {players}\n{url_label}: {table_url}\n{init_state_label}: {init_state}",
-        "FR": "Watch enregistree en mode zero auth.\n{game_label} : `{game_name}`\n{table_label} : `{table_id}`\n{channel_label} : <#{channel_id}>\n{public_source_label} : `{source}`\n{players_detected_label} : {players}\n{url_label} : {table_url}\n{init_state_label} : {init_state}",
-    },
-    "watch_detected_none": {
-        "EN": "no player detected yet",
-        "FR": "aucun joueur detecte pour l'instant",
-    },
-    "watch_detected_more": {
-        "EN": "(+{count} more)",
-        "FR": "(+{count} autres)",
-    },
     "watch_init_active": {
         "EN": "already active",
         "FR": "deja actif",
@@ -350,58 +98,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "watch_init_waiting_players": {
         "EN": "waiting for enough players to join before turn tracking can start",
         "FR": "en attente de suffisamment de joueurs avant de lancer le suivi des tours",
-    },
-    "unwatch_not_found": {
-        "EN": "No active watch for table `{table_id}` in this channel.",
-        "FR": "Aucune watch active pour la table `{table_id}` dans ce salon.",
-    },
-    "unwatch_removed": {
-        "EN": "Watch removed for table `{table_id}` in this channel.",
-        "FR": "Watch supprimee pour la table `{table_id}` dans ce salon.",
-    },
-    "unwatch_all_none": {
-        "EN": "There is no BGA watch to remove on this server.",
-        "FR": "Aucune watch BGA a supprimer sur ce serveur.",
-    },
-    "unwatch_all_removed": {
-        "EN": "{removed_count} BGA watch(es) removed on this server.",
-        "FR": "{removed_count} watch(es) BGA supprimee(s) sur ce serveur.",
-    },
-    "watchlist_none": {
-        "EN": "No BGA table is watched on this server.",
-        "FR": "Aucune table BGA n'est surveillee sur ce serveur.",
-    },
-    "watchlist_header": {
-        "EN": "Watched tables:",
-        "FR": "Tables surveillees :",
-    },
-    "watchlist_embed_summary": {
-        "EN": "{count} watched table(s) on this server.",
-        "FR": "{count} table(s) surveillee(s) sur ce serveur.",
-    },
-    "watchlist_card_title": {
-        "EN": "🧩 Table `{table_id}` • {game_name}",
-        "FR": "🧩 Table `{table_id}` • {game_name}",
-    },
-    "watchlist_card_footer": {
-        "EN": "Table {index}/{total}",
-        "FR": "Table {index}/{total}",
-    },
-    "watchlist_line": {
-        "EN": "- Table `{table_id}` | {game_name}\n  {channel_label}: <#{channel_id}>\n  {state_label}: {state}\n  {url_label}: {table_url}",
-        "FR": "- Table `{table_id}` | {game_name}\n  {channel_label} : <#{channel_id}>\n  {state_label} : {state}\n  {url_label} : {table_url}",
-    },
-    "watch_state_initialized": {
-        "EN": "initialized",
-        "FR": "initialise",
-    },
-    "watch_state_waiting_first_event": {
-        "EN": "waiting for the first websocket event",
-        "FR": "en attente du premier evenement websocket",
-    },
-    "watch_state_waiting_players": {
-        "EN": "waiting for players / game start",
-        "FR": "en attente des joueurs / du debut de partie",
     },
     "status_none": {
         "EN": "No BGA table is watched on this server.",
@@ -422,10 +118,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "status_card_footer": {
         "EN": "Watch {index}/{total}",
         "FR": "Watch {index}/{total}",
-    },
-    "status_line": {
-        "EN": "- Table `{table_id}` | {game_name}\n  {channel_label}: <#{channel_id}>\n  {waiting_ids_label}: `{waiting_ids}`\n  {state_label}: {state}",
-        "FR": "- Table `{table_id}` | {game_name}\n  {channel_label} : <#{channel_id}>\n  {waiting_ids_label} : `{waiting_ids}`\n  {state_label} : {state}",
     },
     "status_unknown": {
         "EN": "unknown",
@@ -530,10 +222,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "stats_metric_linked_accounts": {
         "EN": "Linked accounts",
         "FR": "Comptes lies",
-    },
-    "stats_metric_followed_members": {
-        "EN": "Auto-followed members",
-        "FR": "Membres suivis auto",
     },
     "stats_metric_channels": {
         "EN": "Tracked channels",
@@ -687,18 +375,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "State",
         "FR": "Etat",
     },
-    "label_public_source_initial": {
-        "EN": "Initial public source",
-        "FR": "Source publique initiale",
-    },
-    "label_players_detected_currently": {
-        "EN": "Currently detected players",
-        "FR": "Joueurs detectes actuellement",
-    },
-    "label_init_state": {
-        "EN": "Initialization state",
-        "FR": "Etat d'initialisation",
-    },
     "label_waiting_ids": {
         "EN": "Waiting IDs",
         "FR": "Waiting IDs",
@@ -726,10 +402,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "label_finish_reason": {
         "EN": "Finish reason",
         "FR": "Raison de fin",
-    },
-    "label_finished_at": {
-        "EN": "Finished at",
-        "FR": "Terminee a",
     },
     "value_none": {
         "EN": "none",
@@ -807,50 +479,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Public tableinfos does not contain a valid `data` block for table {table_id}.",
         "FR": "tableinfos public ne contient pas de bloc `data` valide pour la table {table_id}.",
     },
-    "player_tables_resolved": {
-        "EN": "Player {player_id} currently sits at {count} watchable table(s).",
-        "FR": "Le joueur {player_id} est actuellement sur {count} table(s) surveillable(s).",
-    },
-    "error_player_tables_missing_request_token": {
-        "EN": "Could not obtain the anonymous request token from the playertables page for player {player_id}.",
-        "FR": "Impossible d'obtenir le jeton de requete anonyme depuis la page playertables pour le joueur {player_id}.",
-    },
-    "error_load_player_tables": {
-        "EN": "Could not load the table list for player {player_id}: {error}",
-        "FR": "Impossible de charger la liste des tables du joueur {player_id}: {error}",
-    },
-    "error_player_tables_http": {
-        "EN": "The player table list returned HTTP {status_code} for player {player_id}.",
-        "FR": "La liste des tables renvoie HTTP {status_code} pour le joueur {player_id}.",
-    },
-    "error_player_tables_invalid_json": {
-        "EN": "The player table list is not valid JSON for player {player_id}.",
-        "FR": "La liste des tables n'est pas un JSON valide pour le joueur {player_id}.",
-    },
-    "error_player_tables_unexpected_payload": {
-        "EN": "Unexpected player table list payload for player {player_id}: status={status} error={error}",
-        "FR": "Payload inattendu de la liste des tables pour le joueur {player_id}: status={status} error={error}",
-    },
-    "error_player_tables_missing_data": {
-        "EN": "The player table list does not contain a valid `data` block for player {player_id}.",
-        "FR": "La liste des tables ne contient pas de bloc `data` valide pour le joueur {player_id}.",
-    },
-    "error_player_tables_unknown_player": {
-        "EN": "BGA does not know any player with ID {player_id}.",
-        "FR": "BGA ne connait aucun joueur avec l'ID {player_id}.",
-    },
-    "follow_sync_skipped_without_id": {
-        "EN": "Follow sync skipped for Discord user {discord_user_id}: no BGA ID is linked anymore.",
-        "FR": "Sync du suivi ignoree pour l'utilisateur Discord {discord_user_id}: plus aucun ID BGA n'est lie.",
-    },
-    "follow_sync_failed": {
-        "EN": "Follow sync failed for Discord user {discord_user_id} (BGA {bga_player_id}): {error}",
-        "FR": "Sync du suivi echouee pour l'utilisateur Discord {discord_user_id} (BGA {bga_player_id}): {error}",
-    },
-    "follow_sync_added": {
-        "EN": "Follow sync watched {count} new table(s) for BGA {bga_player_id} in channel {channel_id}: {table_ids}",
-        "FR": "La sync du suivi a ajoute {count} nouvelle(s) table(s) pour BGA {bga_player_id} dans le salon {channel_id}: {table_ids}",
-    },
     "error_websocket_closed": {
         "EN": "Websocket connection closed: {error}",
         "FR": "Connexion websocket fermee: {error}",
@@ -911,10 +539,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Tableinfos {table_id} | status={status} | cancelled={cancelled} | time_end={time_end} | endgame_reason={endgame_reason} | finished={finished}",
         "FR": "Tableinfos {table_id} | status={status} | cancelled={cancelled} | time_end={time_end} | endgame_reason={endgame_reason} | finished={finished}",
     },
-    "startup_tableinfos_check_failed": {
-        "EN": "Initial tableinfos check failed for table {table_id}: {error}",
-        "FR": "Le controle initial tableinfos a echoue pour la table {table_id}: {error}",
-    },
     "idle_tableinfos_check_failed": {
         "EN": "Idle tableinfos check failed for table {table_id}: {error}",
         "FR": "Le controle tableinfos en periode d'inactivite a echoue pour la table {table_id}: {error}",
@@ -938,10 +562,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "worker_started": {
         "EN": "Websocket worker started for table {table_id}.",
         "FR": "Worker websocket demarre pour la table {table_id}.",
-    },
-    "legacy_watch_without_url": {
-        "EN": "The watch for table {table_id} comes from an old configuration without a full public URL. Recreate it with /bga watch <url>.",
-        "FR": "La watch de la table {table_id} vient d'une ancienne configuration sans URL publique complete. Recree-la avec /bga watch <url>.",
     },
     "table_not_public": {
         "EN": "Table {table_id} is not publicly usable: {error}",
@@ -982,14 +602,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "notification_send_failed": {
         "EN": "Failed to send Discord notification for table {table_id} to channel {channel_id}: {error}",
         "FR": "Echec d'envoi Discord pour la table {table_id} sur le salon {channel_id}: {error}",
-    },
-    "invite_message_title": {
-        "EN": "BGA table waiting for players",
-        "FR": "Table BGA en attente de joueurs",
-    },
-    "invite_message_description": {
-        "EN": "{game_label}: {game_name}\n{table_label}: {table_id}",
-        "FR": "{game_label} : {game_name}\n{table_label} : {table_id}",
     },
     "invite_message_seats_value": {
         "EN": "{seats_taken}/{seats_total} joined — {seats_remaining} seat(s) remaining",
@@ -1039,21 +651,9 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "This button can only be used inside a server.",
         "FR": "Ce bouton ne peut etre utilise qu'au sein d'un serveur.",
     },
-    "lifecycle_common_description": {
-        "EN": "{game_label}: {game_name}\n{table_label}: {table_id}",
-        "FR": "{game_label} : {game_name}\n{table_label} : {table_id}",
-    },
-    "lifecycle_recruiting_title": {
-        "EN": "🎲 BGA Table Recruiting",
-        "FR": "🎲 Table BGA en recrutement",
-    },
     "lifecycle_in_progress_title": {
         "EN": "🎮 BGA Game in Progress",
         "FR": "🎮 Partie BGA en cours",
-    },
-    "lifecycle_in_progress_footer": {
-        "EN": "This message updates live during the game.",
-        "FR": "Ce message se met a jour en direct pendant la partie.",
     },
     "turn_ping_prefix": {
         "EN": "Current turn: {mentions}",
@@ -1062,10 +662,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "lifecycle_finished_title": {
         "EN": "🏆 BGA Game Finished",
         "FR": "🏆 Partie BGA terminee",
-    },
-    "lifecycle_finished_footer": {
-        "EN": "Watch closed automatically after game completion.",
-        "FR": "Watch fermee automatiquement apres la fin de partie.",
     },
     "invite_message_sent": {
         "EN": "Invite snapshot sent for table {table_id}.",
