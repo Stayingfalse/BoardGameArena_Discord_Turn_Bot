@@ -631,7 +631,6 @@ class BgaCommands(commands.Cog):
             )
             return
 
-        guild_id = str(interaction.guild_id)
         self.database.upsert_linked_user(
             discord_user_id=str(member.id),
             bga_player_id=candidate_id,

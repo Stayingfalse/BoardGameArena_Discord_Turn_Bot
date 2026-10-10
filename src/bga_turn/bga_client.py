@@ -228,60 +228,6 @@ class BgaClient:
             game_name=game_name,
         )
 
-    def resolve_public_table_info(self, table_id: str, base_url: str | None = None) -> BgaTableInfo:
-        """Resolve a bare table id (or `tableview`/`table` link) into a spectable game URL.
-
-        ``tableview?table=`` links do not embed the game server / game name; that
-        mapping is only exposed via the login-gated ``tableinfos.html`` AJAX call,
-        which additionally requires the per-session anti-CSRF ``requestToken``.
-        We reproduce the anonymous browser flow: load the tableview page to obtain
-        both an anonymous ``PHPSESSID`` cookie (kept by ``self._http``) and the
-        ``requestToken``, then call ``tableinfos.html`` with that token.
-        """
-        base = (base_url or BASE_URL).rstrip("/")
-        tableview_url = f"{base}/tableview?table={table_id}"
-        try:
-            response = self._http_get(tableview_url, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise BgaClientError(
-                tr("error_load_public_page", table_url=tableview_url, error=exc)
-            ) from exc
-
-        self._raise_for_bga_status(response)
-        if response.status_code >= 400:
-            raise BgaNotPublicError(tr("error_public_page_http", status_code=response.status_code))
-
-        data = self._fetch_tableinfos_with_token(
-            table_id=table_id, base_url=base, html=response.text
-        )
-        gameserver = str(data.get("gameserver") or "").strip()
-        game_name = str(data.get("game_name") or "").strip()
-        if not gameserver.isdigit() or not game_name:
-            raise BgaTableUnavailableError(
-                tr("error_resolve_missing_game_server", table_id=table_id)
-            )
-
-        # Reuse the roster we just paid for so the subsequent bootstrap does not
-        # re-fetch tableinfos.
-        self._cache_roster(table_id, self._extract_roster_from_tableinfos(data))
-
-        table_url = f"{base}/{gameserver}/{game_name}?table={table_id}"
-        LOGGER.info(
-            tr(
-                "resolved_public_table",
-                table_id=table_id,
-                gameserver=gameserver,
-                game_name=game_name,
-            )
-        )
-        return BgaTableInfo(
-            table_id=table_id,
-            table_url=table_url,
-            base_url=base,
-            gameserver=gameserver,
-            game_name=game_name,
-        )
-
     def fetch_public_table_finished_status(self, table_info: BgaTableInfo) -> bool | None:
         tableview_url = f"{table_info.base_url}/tableview?table={table_info.table_id}"
         try:
@@ -399,9 +345,6 @@ class BgaClient:
 
     def _http_get(self, url: str, **kwargs: Any) -> requests.Response:
         return self._get_session().get(url, **kwargs)
-
-    def _http_post(self, url: str, **kwargs: Any) -> requests.Response:
-        return self._get_session().post(url, **kwargs)
 
     @staticmethod
     def _raise_for_bga_status(response: requests.Response) -> None:

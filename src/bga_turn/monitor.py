@@ -189,8 +189,6 @@ class BgaMonitor:
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._last_player_name_refresh_at: dict[str, float] = {}
         self._cover_image_urls: dict[str, str] = {}
-        # Tracks per-table effective poll/backoff seconds for observability.
-        self._table_backoff_seconds: dict[str, float] = {}
         self._discord_channel_locks: dict[str, asyncio.Lock] = {}
         self._discord_channel_requests: dict[tuple[str, str], deque[float]] = {}
         self._discord_channel_activity: dict[str, float] = {}
@@ -226,7 +224,6 @@ class BgaMonitor:
         self._message_locks.clear()
         self._last_player_name_refresh_at.clear()
         self._cover_image_urls.clear()
-        self._table_backoff_seconds.clear()
         self._discord_channel_locks.clear()
         self._discord_channel_requests.clear()
         self._discord_channel_activity.clear()
@@ -235,14 +232,6 @@ class BgaMonitor:
         self._table_server_error_at.clear()
         self._table_consecutive_server_errors.clear()
         self._table_error_note.clear()
-
-    def get_effective_poll_seconds(self, table_id: str) -> float:
-        """Return the current effective poll interval for *table_id*.
-
-        Equals the configured ``_poll_seconds`` floor when the table is healthy,
-        or a larger backoff value while the worker is recovering from errors.
-        """
-        return self._table_backoff_seconds.get(table_id, float(self._poll_seconds))
 
     def _is_site_wide_outage(self) -> bool:
         """Return True if enough active tables are seeing recent 500 errors to suggest BGA is down.
@@ -401,7 +390,6 @@ class BgaMonitor:
                     await self._apply_invite_state(table_id, subscriptions, snapshot)
                     # Decay backoff toward the configured poll interval on success.
                     backoff_seconds = max(self._poll_seconds, backoff_seconds / 2)
-                    self._table_backoff_seconds[table_id] = backoff_seconds
                     self._clear_server_error_state(table_id)
                     await asyncio.sleep(self._poll_seconds)
                     continue
@@ -419,7 +407,6 @@ class BgaMonitor:
 
                 # Successful snapshot fetch — decay backoff toward configured floor.
                 backoff_seconds = max(self._poll_seconds, backoff_seconds / 2)
-                self._table_backoff_seconds[table_id] = backoff_seconds
                 self._clear_server_error_state(table_id)
 
                 async for state in self.bga_client.watch_table(
@@ -440,7 +427,6 @@ class BgaMonitor:
                     await self._finalize_finished_table(subscriptions, table_id)
                 else:
                     self._table_tasks.pop(table_id, None)
-                self._table_backoff_seconds.pop(table_id, None)
                 return
             except BgaRateLimitError as exc:
                 # BGA asked us to back off for a specific duration; honour it
@@ -449,7 +435,6 @@ class BgaMonitor:
                 LOGGER.warning(
                     tr("bga_rate_limited", table_id=table_id, retry_after=wait)
                 )
-                self._table_backoff_seconds[table_id] = float(wait)
                 await asyncio.sleep(wait)
             except BgaServerError as exc:
                 # BGA returned a 5xx error.  Record it for site-wide detection.
@@ -474,7 +459,6 @@ class BgaMonitor:
                     )
                     # Use a longer wait for site-wide outages to reduce hammering.
                     wait = min(backoff_seconds * 2, 120)
-                    self._table_backoff_seconds[table_id] = wait
                     await asyncio.sleep(wait)
                     backoff_seconds = min(backoff_seconds * 2, 120)
                 else:
@@ -494,17 +478,14 @@ class BgaMonitor:
                             await self._push_error_note_to_discord(table_id)
                     await asyncio.sleep(backoff_seconds)
                     backoff_seconds = min(backoff_seconds * 2, 120)
-                    self._table_backoff_seconds[table_id] = backoff_seconds
             except BgaNotPublicError as exc:
                 LOGGER.warning(tr("table_not_public", table_id=table_id, error=exc))
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
-                self._table_backoff_seconds[table_id] = backoff_seconds
             except BgaClientError as exc:
                 LOGGER.error(tr("websocket_error", table_id=table_id, error=exc))
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
-                self._table_backoff_seconds[table_id] = backoff_seconds
             except Exception:
                 LOGGER.exception(tr("unexpected_worker_error", table_id=table_id))
                 consecutive = self._table_consecutive_server_errors.get(table_id, 0) + 1
@@ -516,7 +497,6 @@ class BgaMonitor:
                         await self._push_error_note_to_discord(table_id)
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)
-                self._table_backoff_seconds[table_id] = backoff_seconds
 
     async def _apply_table_state(self, table_id: str, fallback_game_name: str, state) -> None:
         subscriptions = self._subscriptions_for_table(table_id)
@@ -533,10 +513,8 @@ class BgaMonitor:
             waiting_ids=waiting_ids,
             player_names=merged_player_names,
         )
-        for guild_id in {subscription.guild_id for subscription in subscriptions}:
-            await asyncio.to_thread(
-                self.database.enrich_linked_users_from_players, merged_player_names
-            )
+        # Links are global, so one pass covers every server watching this table.
+        await asyncio.to_thread(self.database.enrich_linked_users_from_players, merged_player_names)
 
         if state.is_game_finished:
             LOGGER.info(tr("table_finished_public", table_id=table_id))
@@ -705,160 +683,6 @@ class BgaMonitor:
 
         self._table_tasks.pop(table_id, None)
         LOGGER.info(tr("table_finished_cleanup", table_id=table_id))
-
-    async def _handle_waiting_ids_transition(
-        self,
-        *,
-        subscription: WatchSubscription,
-        table_id: str,
-        previous_waiting_ids: list[str],
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        game_label: str,
-    ) -> None:
-        active_message = self._active_messages.get(subscription.subscription_id)
-        previous_set = set(previous_waiting_ids)
-        waiting_set = set(waiting_ids)
-        is_same_turn_progress = bool(previous_waiting_ids) and waiting_set.issubset(previous_set)
-
-        if active_message is not None and not waiting_ids:
-            deleted = await self._delete_tracked_message(
-                subscription=subscription,
-                active_message=active_message,
-                table_id=table_id,
-            )
-            if deleted:
-                self._active_messages.pop(subscription.subscription_id, None)
-            return
-
-        if active_message is not None and waiting_ids and is_same_turn_progress:
-            edited = await self._edit_turn_message(
-                subscription=subscription,
-                active_message=active_message,
-                table_id=table_id,
-                waiting_ids=waiting_ids,
-                player_names=player_names,
-                game_label=game_label,
-            )
-            if edited:
-                active_message.waiting_ids = list(waiting_ids)
-                return
-
-        if active_message is not None and waiting_ids and not is_same_turn_progress:
-            deleted = await self._delete_tracked_message(
-                subscription=subscription,
-                active_message=active_message,
-                table_id=table_id,
-            )
-            if deleted:
-                self._active_messages.pop(subscription.subscription_id, None)
-
-        if not waiting_ids:
-            return
-
-        message = await self._publish_turn_snapshot(
-            subscription=subscription,
-            table_id=table_id,
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            game_label=game_label,
-        )
-        if message is not None:
-            self._active_messages[subscription.subscription_id] = ActiveTableMessage(
-                message=message,
-                kind="turn",
-                waiting_ids=list(waiting_ids),
-            )
-
-    async def _publish_turn_snapshot(
-        self,
-        *,
-        subscription: WatchSubscription,
-        table_id: str,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        game_label: str,
-    ) -> discord.Message | None:
-        if not self._discord_io_allowed():
-            return None
-
-        channel = await self._resolve_channel(subscription, table_id)
-        if channel is None:
-            return None
-
-        content = await self._build_turn_message_content(
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            table_id=table_id,
-            subscription=subscription,
-            game_label=game_label,
-        )
-
-        message = await self._discord_call_with_retry(
-            "send_turn",
-            table_id,
-            lambda: channel.send(content),
-            channel_id=str(channel.id),
-            operation_kind="send",
-        )
-        if message is not None:
-            LOGGER.info(tr("notification_sent", table_id=table_id, waiting_ids=waiting_ids))
-        else:
-            LOGGER.error(
-                tr(
-                    "notification_send_failed",
-                    table_id=table_id,
-                    channel_id=subscription.channel_id,
-                    error="rate-limit retries exhausted",
-                )
-            )
-        return message
-
-    async def _edit_turn_message(
-        self,
-        *,
-        subscription: WatchSubscription,
-        active_message: ActiveTableMessage,
-        table_id: str,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        game_label: str,
-    ) -> bool:
-        if not self._discord_io_allowed():
-            return False
-
-        channel = await self._resolve_channel(subscription, table_id)
-        if not self._is_supported_message_channel(channel):
-            return False
-
-        message = active_message.message
-
-        content = await self._build_turn_message_content(
-            waiting_ids=waiting_ids,
-            player_names=player_names,
-            table_id=table_id,
-            subscription=subscription,
-            game_label=game_label,
-        )
-        try:
-            result = await self._discord_call_with_retry(
-                "edit_turn",
-                table_id,
-                lambda: message.edit(content=content),
-                channel_id=str(channel.id),
-                operation_kind="edit",
-                message_created_at=message.created_at,
-            )
-            if result is None:
-                return False
-            LOGGER.info(tr("turn_message_updated", table_id=table_id, waiting_ids=waiting_ids))
-            return True
-        except discord.NotFound:
-            LOGGER.info(tr("turn_message_missing_update", table_id=table_id))
-            return False
-        except discord.DiscordException as exc:
-            LOGGER.error(tr("turn_message_update_failed", table_id=table_id, error=exc))
-            return False
 
     async def _delete_tracked_message(
         self,
@@ -1587,21 +1411,6 @@ class BgaMonitor:
         view.add_item(container)
         return view
 
-    async def _build_turn_mentions(
-        self,
-        *,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        subscription: WatchSubscription,
-    ) -> str:
-        linked_users = await self._get_linked_users_for_players_safe(
-            {player_id: player_names.get(player_id, "") for player_id in waiting_ids}
-        )
-        mentions = [f"<@{item.discord_user_id}>" for item in linked_users]
-        if not mentions:
-            return ""
-        return tr("turn_ping_prefix", mentions=" ".join(sorted(set(mentions))))
-
     async def _build_waiting_players_text(
         self,
         *,
@@ -1655,215 +1464,6 @@ class BgaMonitor:
             lines.append(f"{mention}{player_name} ({player_id}){avatar_suffix}")
         return "\n".join(lines)
 
-    async def _publish_invite_snapshot(
-        self,
-        *,
-        subscription: WatchSubscription,
-        table_id: str,
-        snapshot: BgaTableSnapshot,
-    ) -> discord.Message | None:
-        if not self._discord_io_allowed():
-            return None
-
-        channel = await self._resolve_channel(subscription, table_id)
-        if channel is None:
-            return None
-
-        embed = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
-        message = await self._discord_call_with_retry(
-            "send_invite",
-            table_id,
-            lambda: channel.send(view=embed),
-            channel_id=str(channel.id),
-            operation_kind="send",
-        )
-        if message is not None:
-            LOGGER.info(tr("invite_message_sent", table_id=table_id))
-        else:
-            LOGGER.error(
-                tr(
-                    "invite_message_send_failed",
-                    table_id=table_id,
-                    channel_id=subscription.channel_id,
-                    error="rate-limit retries exhausted",
-                )
-            )
-        return message
-
-    async def _edit_invite_message(
-        self,
-        *,
-        subscription: WatchSubscription,
-        active_message: ActiveTableMessage,
-        table_id: str,
-        snapshot: BgaTableSnapshot,
-    ) -> bool:
-        if not self._discord_io_allowed():
-            return False
-
-        channel = await self._resolve_channel(subscription, table_id)
-        if not self._is_supported_message_channel(channel):
-            return False
-
-        layout = self._build_invite_layout(table_id=table_id, subscription=subscription, snapshot=snapshot)
-        try:
-            result = await self._discord_call_with_retry(
-                "edit_invite",
-                table_id,
-                lambda: active_message.message.edit(view=layout),
-                channel_id=str(channel.id),
-                operation_kind="edit",
-                message_created_at=active_message.message.created_at,
-            )
-            if result is None:
-                return False
-            LOGGER.info(tr("invite_message_updated", table_id=table_id))
-            return True
-        except discord.NotFound:
-            LOGGER.info(tr("invite_message_missing_update", table_id=table_id))
-            return False
-        except discord.DiscordException as exc:
-            LOGGER.error(tr("invite_message_update_failed", table_id=table_id, error=exc))
-            return False
-
-    async def _cleanup_stale_table_messages(
-        self,
-        subscriptions: list[WatchSubscription],
-        table_id: str,
-    ) -> None:
-        if self.bot.user is None:
-            return
-        if not self._discord_io_allowed():
-            return
-
-        seen_channels: set[str] = set()
-        deleted_count = 0
-        table_markers = {f"{tr('label_table')} : {table_id}", f"{tr('label_table')}: {table_id}", f"Table : {table_id}", f"Table: {table_id}"}
-
-        for subscription in subscriptions:
-            effective_channel_id = self.database.get_guild_settings(
-                subscription.guild_id,
-                default_forced_channel_id=self._default_forced_channel_id,
-            ).forced_channel_id or subscription.channel_id
-            if effective_channel_id in seen_channels:
-                continue
-            seen_channels.add(effective_channel_id)
-
-            channel = await self._resolve_channel(subscription, table_id)
-            if channel is None or not hasattr(channel, "history"):
-                continue
-
-            try:
-                async for message in channel.history(limit=100):
-                    if message.author.id != self.bot.user.id:
-                        continue
-                    if not self._message_contains_table_marker(message, table_markers):
-                        continue
-                    try:
-                        deleted = await self._discord_call_with_retry(
-                            "cleanup_stale",
-                            table_id,
-                            lambda msg=message: msg.delete(),
-                            channel_id=str(channel.id),
-                            operation_kind="delete",
-                        )
-                        if deleted is not None:
-                            deleted_count += 1
-                    except discord.NotFound:
-                        continue
-                    except discord.DiscordException as exc:
-                        LOGGER.warning(
-                            tr(
-                                "stale_message_delete_failed",
-                                table_id=table_id,
-                                channel_id=subscription.channel_id,
-                                error=exc,
-                            )
-                        )
-            except discord.DiscordException as exc:
-                LOGGER.warning(
-                    tr(
-                        "channel_history_cleanup_failed",
-                        channel_id=subscription.channel_id,
-                        table_id=table_id,
-                        error=exc,
-                    )
-                )
-
-        if deleted_count:
-            LOGGER.info(tr("startup_cleanup", deleted_count=deleted_count, table_id=table_id))
-
-    @staticmethod
-    def _message_contains_table_marker(message: discord.Message, table_markers: set[str]) -> bool:
-        content_parts = [message.content]
-        for embed in message.embeds:
-            content_parts.extend(
-                filter(
-                    None,
-                    [
-                        embed.title,
-                        embed.description,
-                        *(field.name for field in embed.fields),
-                        *(field.value for field in embed.fields),
-                    ],
-                )
-            )
-        for component in message.components:
-            content_parts.extend(BgaMonitor._extract_component_text(component))
-        return any(marker in "\n".join(content_parts) for marker in table_markers)
-
-    @staticmethod
-    def _extract_component_text(component: object) -> list[str]:
-        texts: list[str] = []
-        if hasattr(component, "content") and isinstance(getattr(component, "content"), str):
-            texts.append(component.content)  # type: ignore[union-attr]
-        if hasattr(component, "children"):
-            for child in (component.children or []):  # type: ignore[union-attr]
-                texts.extend(BgaMonitor._extract_component_text(child))
-        return texts
-
-    async def _build_turn_message_content(
-        self,
-        *,
-        waiting_ids: list[str],
-        player_names: dict[str, str],
-        table_id: str,
-        subscription: WatchSubscription,
-        game_label: str,
-    ) -> str:
-        observed_waiting_players = {
-            player_id: player_names.get(player_id, "")
-            for player_id in waiting_ids
-        }
-        linked_users = await self._get_linked_users_for_players_safe(observed_waiting_players)
-        linked_users_by_bga_id = {user.bga_player_id: user for user in linked_users if user.bga_player_id}
-        linked_users_by_name = {
-            user.bga_player_name.casefold(): user
-            for user in linked_users
-            if user.bga_player_name
-        }
-        waiting_descriptions = ", ".join(
-            self._format_waiting_player(
-                player_id,
-                player_names,
-                linked_users_by_bga_id,
-                linked_users_by_name,
-            )
-            for player_id in waiting_ids
-        )
-
-        return tr(
-            "turn_message_content",
-            game_label=tr("label_game"),
-            game_name=game_label,
-            table_label=tr("label_table"),
-            table_id=table_id,
-            players_label=tr("label_players_still_waiting"),
-            players=waiting_descriptions or tr("value_none"),
-            url_label=tr("label_url"),
-            table_url=subscription.table_url or build_table_url(table_id),
-        )
-
     async def _get_linked_users_for_players_safe(
         self, player_names: dict[str, str]
     ) -> list[LinkedUser]:
@@ -1875,50 +1475,6 @@ class BgaMonitor:
         except sqlite3.Error as exc:
             LOGGER.warning("Linked-user lookup failed while building table message: %s", exc)
             return []
-
-    def _build_invite_layout(
-        self,
-        *,
-        table_id: str,
-        subscription: WatchSubscription,
-        snapshot: BgaTableSnapshot,
-    ) -> discord.ui.LayoutView:
-        game_name = format_game_name(snapshot.game_name or subscription.game_name)
-        table_url = subscription.table_url or build_table_url(table_id)
-        players = sorted(snapshot.player_names.values(), key=str.casefold)
-        players_text = "\n".join(players) if players else tr("value_none")
-
-        if snapshot.seats_total is not None and snapshot.seats_remaining is not None:
-            seats_text = tr(
-                "invite_message_seats_value",
-                seats_taken=snapshot.seats_taken,
-                seats_total=snapshot.seats_total,
-                seats_remaining=snapshot.seats_remaining,
-            )
-        else:
-            seats_text = tr("invite_message_seats_unknown", seats_taken=snapshot.seats_taken)
-
-        header_text = f"🎲  **{game_name}**\n{tr('label_table')}: {table_id}"
-        join_btn = discord.ui.Button(label=tr("button_join_table"), url=table_url)
-        header_section = discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=join_btn)
-
-        status = snapshot.status or tr("value_unknown")
-        details_text = (
-            f"**{tr('label_players_joined')}**\n{players_text}\n\n"
-            f"{tr('label_seats')}: {seats_text} · {tr('label_status')}: {status}"
-        )
-        footer_text = f"_{tr('invite_message_footer')}_"
-
-        container = discord.ui.Container(
-            header_section,
-            discord.ui.Separator(),
-            discord.ui.TextDisplay(details_text),
-            discord.ui.TextDisplay(footer_text),
-            accent_color=discord.Color.gold(),
-        )
-        view = discord.ui.LayoutView(timeout=None)
-        view.add_item(container)
-        return view
 
     async def _refresh_missing_player_names(
         self,
@@ -2286,23 +1842,6 @@ class BgaMonitor:
             return True
         except discord.DiscordException:
             return False
-
-    async def _clear_active_invite_messages(
-        self,
-        subscriptions: list[WatchSubscription],
-        table_id: str,
-    ) -> None:
-        for subscription in subscriptions:
-            active_message = self._active_messages.get(subscription.subscription_id)
-            if active_message is None or active_message.kind != "invite":
-                continue
-            deleted = await self._delete_tracked_message(
-                subscription=subscription,
-                active_message=active_message,
-                table_id=table_id,
-            )
-            if deleted:
-                self._active_messages.pop(subscription.subscription_id, None)
 
     async def _sync_subscriptions_from_snapshot(
         self,

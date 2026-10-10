@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -13,29 +13,6 @@ BASE_URL = "https://boardgamearena.com"
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def parse_table_id(value: str) -> str:
-    candidate = value.strip()
-    if not candidate:
-        raise ValueError(tr("error_empty_table_value"))
-    if candidate.isdigit():
-        return candidate
-
-    parsed = urlparse(candidate)
-    if parsed.scheme and parsed.netloc:
-        short_link_match = re.search(r"^/t/(\d+)/?$", parsed.path, re.IGNORECASE)
-        if parsed.netloc.lower() in {"bga.li", "www.bga.li"} and short_link_match:
-            return short_link_match.group(1)
-        table_values = parse_qs(parsed.query).get("table")
-        if table_values and table_values[0].isdigit():
-            return table_values[0]
-
-    match = re.search(r"(?:table=|/t/)(\d+)", candidate, re.IGNORECASE)
-    if match:
-        return match.group(1)
-
-    raise ValueError(tr("error_invalid_table_id"))
 
 
 # Any boardgamearena.com (any subdomain) or bga.li link, with or without a scheme.

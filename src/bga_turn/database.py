@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -288,15 +288,6 @@ class Database:
                 (session_id,),
             )
             self._connection.commit()
-
-    def cleanup_expired_dashboard_sessions(self) -> int:
-        with self._lock:
-            cursor = self._connection.execute(
-                "DELETE FROM dashboard_sessions WHERE expires_at <= ?",
-                (int(time.time()),),
-            )
-            self._connection.commit()
-            return cursor.rowcount
 
     def _parse_dashboard_session_guilds(self, raw: str | None) -> list[dict[str, str]]:
         if not raw:
@@ -997,16 +988,6 @@ class Database:
             (subscription_id,),
         )
         return True
-
-    def _archive_watch_subscription(self, *, subscription_id: int, outcome: str) -> bool:
-        with self._lock:
-            archived = self._archive_watch_subscription_locked(
-                subscription_id=subscription_id,
-                outcome=outcome,
-                finished_at=utc_now_iso(),
-            )
-            self._connection.commit()
-            return archived
 
     def remove_watch_subscription(
         self,
