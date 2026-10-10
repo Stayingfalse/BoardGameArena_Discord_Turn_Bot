@@ -102,7 +102,7 @@ Ouvre cette URL dans ton navigateur, choisis ton serveur et valide. Le bot aura 
    - `Send Messages`
    - `Embed Links`
    - `Read Message History`
-   - `Manage Messages` *(uniquement si `BGA_DELETE_INVITE_MESSAGE=1`)*
+   - `Manage Messages` *(pour nettoyer les liens partages)*
 5. Copie l'URL generee, ouvre-la dans un navigateur et ajoute le bot a ton serveur.
 
 ---
@@ -152,7 +152,7 @@ BGA_RECRUITING_ONLY=0
 
 # Mettre a 1 pour supprimer le message d'origine contenant le lien BGA apres enregistrement de la watch.
 # Necessite la permission Manage Messages.
-BGA_DELETE_INVITE_MESSAGE=0
+BGA_DELETE_INVITE_MESSAGE=
 
 # ID du salon pour forcer toutes les notifications dans un seul salon,
 # independamment du salon ou le lien a ete poste.
@@ -186,7 +186,7 @@ DASHBOARD_SECRET_KEY=
 | `BGA_WS_URL` | — | `wss://ws-x1.boardgamearena.com/connection/websocket` | URL du websocket public BGA |
 | `BGA_ENABLE_TABLEINFOS_FALLBACK` | — | `0` | Reactive le fallback HTTP legacy pour la detection de fin de partie |
 | `BGA_RECRUITING_ONLY` | — | `0` | Ne publier que le message de recrutement et supprimer la watch au demarrage de la partie |
-| `BGA_DELETE_INVITE_MESSAGE` | — | `0` | Supprimer le message d'origine apres enregistrement de la watch |
+| `BGA_DELETE_INVITE_MESSAGE` | — | vide | Supprimer le message d'origine une fois la carte de la table affichee. Vide : active pour les serveurs rejoints desormais, desactive pour les autres ; `1`/`0` : valeur par defaut partout |
 | `BGA_FORCED_CHANNEL_ID` | — | — | Forcer toutes les notifications dans un salon specifique |
 | `LOG_LEVEL` | — | `INFO` | Niveau de logs console (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `BOT_LANG` | — | `EN` | Langue des messages du bot (`EN` ou `FR`) |
@@ -242,12 +242,20 @@ Ce depot est distribue sous licence MIT. Voir `LICENSE`.
 
 ### Detection automatique des liens (fonctionnalite principale)
 
-Le bot ecoute les messages dans tous les salons qu'il peut voir. Quand un message contient une URL de table BGA (ex. `https://boardgamearena.com/...?table=12345`), le bot :
+Le bot ecoute les messages dans tous les salons qu'il peut voir. Tout lien de table Board Game Arena est reconnu, notamment :
 
-1. Extrait l'ID de table depuis l'URL.
-2. Recupere anonymement la page publique de la table pour identifier le jeu.
-3. Ouvre une connexion websocket publique vers la table BGA.
-4. Publie un message de statut dans le meme salon et le maintient a jour.
+- les pages de jeu (`https://boardgamearena.com/1/azul?table=12345`), `/table?table=`, `/tableview?table=`, les pages de revue et de replay ;
+- les liens courts (`https://bga.li/t/12345`) et les sous-domaines de langue (`fr.boardgamearena.com`) ;
+- les liens sans `https://`, les liens entoures de mise en forme Discord (`||spoiler||`, `**gras**`, `` `code` ``, `<sans apercu>`) et les liens dans les messages transferes.
+
+Des qu'un lien est detecte, le bot publie un message de statut **« Lien Board Game Arena detecte – enregistrement de la table… »**. Ensuite :
+
+1. Il recupere anonymement la page publique de la table pour identifier le jeu et ouvre un websocket public pour la suivre.
+2. **Si tout fonctionne**, le message de statut devient la carte de la table (voir ci-dessous) : une table n'a jamais qu'un seul message. Si le reglage *Nettoyer les liens partages* du serveur est active, le message d'origine contenant le lien est supprime une fois la carte affichee. Reposter le lien d'une table deja suivie deplace sa carte vers le nouveau message.
+3. **En cas de probleme**, le message de statut explique pourquoi : partie deja terminee, table privee ou inexistante, Board Game Arena indisponible ou limitant les requetes, etc. Le message d'origine est conserve.
+4. Si Board Game Arena met plus de ~20 secondes a repondre, le message de statut indique qu'il attend encore ; il se met a jour tout seul quand les details arrivent.
+
+Si le serveur utilise un salon de notification force, le message de statut reste dans le salon ou le lien a ete poste, indique le salon de la carte, puis disparait apres deux minutes.
 
 Le **Message Content Intent** doit etre active dans le portail developpeur Discord (voir Etape 1).
 

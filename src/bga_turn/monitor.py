@@ -136,6 +136,11 @@ class BgaMonitor:
     LIFECYCLE_RECRUITING = "recruiting"
     LIFECYCLE_IN_PROGRESS = "in_progress"
     LIFECYCLE_FINISHED = "finished"
+    # Kind of a tracked message that is still the "link detected" status note,
+    # waiting to be turned into the table's lifecycle card.
+    LINK_STATUS_KIND = "link_status"
+    # How long the status note may stay unchanged before it says it is waiting on BGA.
+    LINK_STATUS_WAITING_AFTER_SECONDS = 20.0
     _LIFECYCLE_ORDER = {
         LIFECYCLE_RECRUITING: 0,
         LIFECYCLE_IN_PROGRESS: 1,
@@ -179,6 +184,9 @@ class BgaMonitor:
         self._default_forced_channel_id = default_forced_channel_id
         self._table_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_messages: dict[int, ActiveTableMessage] = {}
+        # Serialises everything that swaps a subscription's tracked message, so a
+        # link status note can be handed over without racing the table worker.
+        self._message_locks: dict[int, asyncio.Lock] = {}
         self._last_player_name_refresh_at: dict[str, float] = {}
         self._cover_image_urls: dict[str, str] = {}
         # Tracks per-table effective poll/backoff seconds for observability.
@@ -215,6 +223,7 @@ class BgaMonitor:
             task.cancel()
         self._table_tasks.clear()
         self._active_messages.clear()
+        self._message_locks.clear()
         self._last_player_name_refresh_at.clear()
         self._cover_image_urls.clear()
         self._table_backoff_seconds.clear()
@@ -1128,7 +1137,33 @@ class BgaMonitor:
         LOGGER.debug(tr("discord_io_paused", wait=wait))
         return False
 
+    def _message_lock(self, subscription_id: int) -> asyncio.Lock:
+        lock = self._message_locks.get(subscription_id)
+        if lock is None:
+            lock = self._message_locks[subscription_id] = asyncio.Lock()
+        return lock
+
     async def _publish_or_update_lifecycle_message(
+        self,
+        *,
+        subscription: WatchSubscription,
+        table_id: str,
+        lifecycle_state: str,
+        waiting_ids: list[str],
+        player_names: dict[str, str],
+        snapshot: BgaTableSnapshot | None,
+    ) -> None:
+        async with self._message_lock(subscription.subscription_id):
+            await self._publish_or_update_lifecycle_message_locked(
+                subscription=subscription,
+                table_id=table_id,
+                lifecycle_state=lifecycle_state,
+                waiting_ids=waiting_ids,
+                player_names=player_names,
+                snapshot=snapshot,
+            )
+
+    async def _publish_or_update_lifecycle_message_locked(
         self,
         *,
         subscription: WatchSubscription,
@@ -1210,7 +1245,7 @@ class BgaMonitor:
                     tracked_message_kind=None,
                 )
                 self._active_messages.pop(subscription.subscription_id, None)
-                return await self._publish_or_update_lifecycle_message(
+                return await self._publish_or_update_lifecycle_message_locked(
                     subscription=subscription,
                     table_id=table_id,
                     lifecycle_state=lifecycle_state,
@@ -1241,7 +1276,7 @@ class BgaMonitor:
                     tracked_message_kind=None,
                 )
                 self._active_messages.pop(subscription.subscription_id, None)
-                return await self._publish_or_update_lifecycle_message(
+                return await self._publish_or_update_lifecycle_message_locked(
                     subscription=subscription,
                     table_id=table_id,
                     lifecycle_state=lifecycle_state,
@@ -2005,17 +2040,186 @@ class BgaMonitor:
         timeout_seconds: float = 20.0,
         poll_seconds: float = 0.5,
     ) -> bool:
+        """Wait until every subscription shows its table card (not a link status note)."""
         pending = set(subscription_ids)
         if not pending:
             return False
 
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         while True:
-            if any(subscription_id in self._active_messages for subscription_id in pending):
+            if all(
+                (active := self._active_messages.get(subscription_id)) is not None
+                and active.kind != self.LINK_STATUS_KIND
+                for subscription_id in pending
+            ):
                 return True
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(max(0.1, poll_seconds))
+
+    # ------------------------------------------------------------------
+    # Link status notes ("link detected" → table card, or → error)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_link_status_view(
+        text: str,
+        *,
+        color: discord.Color,
+        table_url: str | None = None,
+    ) -> discord.ui.LayoutView:
+        body: discord.ui.Item = discord.ui.TextDisplay(text)
+        if table_url:
+            body = discord.ui.Section(
+                discord.ui.TextDisplay(text),
+                accessory=discord.ui.Button(label=tr("button_join_table"), url=table_url),
+            )
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(discord.ui.Container(body, accent_color=color))
+        return view
+
+    async def send_link_status(
+        self,
+        channel: discord.abc.Messageable,
+        *,
+        table_id: str,
+        text: str,
+    ) -> discord.Message | None:
+        """Post a status note; returns ``None`` if it could not be sent."""
+        try:
+            return await self._discord_call_with_retry(
+                "send_link_status",
+                table_id,
+                lambda: channel.send(view=self.build_link_status_view(text, color=discord.Color.light_grey())),
+                channel_id=str(getattr(channel, "id", "")) or None,
+                operation_kind="send",
+            )
+        except discord.DiscordException as exc:
+            LOGGER.warning("Could not post link status for table %s: %s", table_id, exc)
+            return None
+
+    async def edit_link_status(
+        self,
+        message: discord.Message,
+        *,
+        table_id: str,
+        text: str,
+        color: discord.Color,
+        table_url: str | None = None,
+        delete_after: float | None = None,
+    ) -> bool:
+        view = self.build_link_status_view(text, color=color, table_url=table_url)
+        try:
+            edited = await self._discord_call_with_retry(
+                "edit_link_status",
+                table_id,
+                lambda: message.edit(view=view, delete_after=delete_after),
+                channel_id=str(message.channel.id),
+                operation_kind="edit",
+                message_created_at=message.created_at,
+            )
+        except discord.DiscordException as exc:
+            LOGGER.warning("Could not update link status for table %s: %s", table_id, exc)
+            return False
+        return edited is not None
+
+    async def adopt_link_status_message(
+        self,
+        subscription: WatchSubscription,
+        message: discord.Message,
+    ) -> str:
+        """Make the status note *message* the tracked message for *subscription*.
+
+        The table worker then edits the note into the table card instead of
+        posting a new message. Returns:
+
+        - ``"adopted"``: the note is now the card's message; an older card for
+          the same table was deleted (re-posting a link moves the card down);
+        - ``"card_posted"``: the worker posted a card after the note while the
+          link was being registered, so the note was deleted instead;
+        - ``"other_channel"``: the table posts to a forced channel elsewhere,
+          so the note stays a standalone note.
+        """
+        channel = await self._resolve_channel(subscription, subscription.table_id)
+        if channel is None or getattr(channel, "id", None) != message.channel.id:
+            return "other_channel"
+
+        async with self._message_lock(subscription.subscription_id):
+            previous = self._active_messages.get(subscription.subscription_id)
+            previous_message: discord.Message | None = previous.message if previous is not None else None
+            if previous_message is None and subscription.tracked_message_id not in (None, message.id):
+                previous_message = await self._resolve_tracked_message(subscription, channel)
+
+            if previous_message is not None and previous_message.id > message.id:
+                # Snowflakes grow over time: this card is newer than the note.
+                await self._delete_quietly(message, subscription.table_id, operation="delete_link_status")
+                return "card_posted"
+
+            self._active_messages[subscription.subscription_id] = ActiveTableMessage(
+                message=message,
+                kind=self.LINK_STATUS_KIND,
+                waiting_ids=[],
+            )
+            self.database.update_watch_message_tracking(
+                subscription_id=subscription.subscription_id,
+                lifecycle_state=self._normalize_lifecycle_state(subscription.lifecycle_state),
+                tracked_message_id=message.id,
+                tracked_message_kind=self.LINK_STATUS_KIND,
+            )
+            if previous_message is not None and previous_message.id != message.id:
+                await self._delete_quietly(previous_message, subscription.table_id, operation="delete_replaced_card")
+        return "adopted"
+
+    async def _delete_quietly(self, message: discord.Message, table_id: str, *, operation: str) -> None:
+        try:
+            await self._discord_call_with_retry(
+                operation,
+                table_id,
+                lambda: message.delete(),
+                channel_id=str(message.channel.id),
+                operation_kind="delete",
+            )
+        except discord.NotFound:
+            pass
+        except discord.DiscordException as exc:
+            LOGGER.warning("Could not delete message %s for table %s: %s", message.id, table_id, exc)
+
+    async def redraw_card_from_saved_state(self, subscription_id: int) -> None:
+        """Render a table card from the stored state, without waiting for BGA.
+
+        Used when a link for an already-watched table is posted again: the stored
+        state is current, so the adopted note can become the card immediately.
+        """
+        subscription = self.database.get_watch_subscription(subscription_id)
+        if subscription is None:
+            return
+        lifecycle_state = self._normalize_lifecycle_state(subscription.lifecycle_state)
+        if lifecycle_state == self.LIFECYCLE_FINISHED:
+            return
+        if lifecycle_state == self.LIFECYCLE_IN_PROGRESS and not subscription.is_initialized:
+            return
+        await self._publish_or_update_lifecycle_message(
+            subscription=subscription,
+            table_id=subscription.table_id,
+            lifecycle_state=lifecycle_state,
+            waiting_ids=list(subscription.last_waiting_ids),
+            player_names=dict(subscription.player_names),
+            snapshot=None,
+        )
+
+    async def mark_link_status_waiting(self, subscription: WatchSubscription) -> None:
+        """If the adopted note still says "registering", say it is waiting on BGA."""
+        async with self._message_lock(subscription.subscription_id):
+            active = self._active_messages.get(subscription.subscription_id)
+            if active is None or active.kind != self.LINK_STATUS_KIND:
+                return
+            await self.edit_link_status(
+                active.message,
+                table_id=subscription.table_id,
+                text=tr("link_status_waiting", table_id=subscription.table_id),
+                color=discord.Color.light_grey(),
+                table_url=subscription.table_url or build_table_url(subscription.table_id),
+            )
 
     async def reset_tracked_message(self, subscription: WatchSubscription) -> bool:
         active_message = self._active_messages.get(subscription.subscription_id)

@@ -32,7 +32,7 @@ def setup_logging() -> None:
 
 def env_flag(name: str, *, default: bool = False) -> bool:
     raw_value = os.getenv(name)
-    if raw_value is None:
+    if raw_value is None or not raw_value.strip():
         return default
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -87,6 +87,7 @@ class BgaDiscordBot(commands.Bot):
         clear_global_commands: bool,
         default_recruiting_only: bool = False,
         default_delete_invite_message: bool = False,
+        new_guild_delete_invite_message: bool = True,
         default_forced_channel_id: str | None = None,
     ) -> None:
         intents = discord.Intents.default()
@@ -107,6 +108,7 @@ class BgaDiscordBot(commands.Bot):
         self._default_recruiting_only = default_recruiting_only
         self._default_forced_channel_id = default_forced_channel_id
         self._default_delete_invite_message = default_delete_invite_message
+        self._new_guild_delete_invite_message = new_guild_delete_invite_message
         self.logger = logging.getLogger(__name__)
         self._startup_completed = False
 
@@ -161,7 +163,7 @@ class BgaDiscordBot(commands.Bot):
             self.database.upsert_guild_settings,
             guild_id,
             recruiting_only=self._default_recruiting_only,
-            delete_invite_message=self._default_delete_invite_message,
+            delete_invite_message=self._new_guild_delete_invite_message,
             forced_channel_id=self._default_forced_channel_id,
         )
         self.logger.info("Initialized guild settings for joined guild %s.", guild_id)
@@ -271,6 +273,9 @@ def main() -> None:
     enable_tableinfos_fallback = env_flag("BGA_ENABLE_TABLEINFOS_FALLBACK")
     default_recruiting_only = env_flag("BGA_RECRUITING_ONLY")
     default_delete_invite_message = env_flag("BGA_DELETE_INVITE_MESSAGE")
+    # Newly joined servers tidy shared links by default (the bot's status note
+    # replaces them), unless BGA_DELETE_INVITE_MESSAGE is set explicitly.
+    new_guild_delete_invite_message = env_flag("BGA_DELETE_INVITE_MESSAGE", default=True)
     default_forced_channel_id = os.getenv("BGA_FORCED_CHANNEL_ID") or None
     websocket_url = os.getenv("BGA_WS_URL", "wss://ws-x1.boardgamearena.com/connection/websocket")
 
@@ -317,6 +322,7 @@ def main() -> None:
         clear_global_commands=clear_global_commands,
         default_recruiting_only=default_recruiting_only,
         default_delete_invite_message=default_delete_invite_message,
+        new_guild_delete_invite_message=new_guild_delete_invite_message,
         default_forced_channel_id=default_forced_channel_id,
     )
     asyncio.run(

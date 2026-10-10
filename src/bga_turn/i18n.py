@@ -447,14 +447,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "EN": "Could not fetch the authoritative player roster for table {table_id}: {error}. Falling back to page extraction.",
         "FR": "Impossible de recuperer le roster autoritaire des joueurs pour la table {table_id}: {error}. Repli sur l'extraction depuis la page.",
     },
-    "error_url_missing_public_path": {
-        "EN": "The BGA URL must contain the public game path, for example /15/sevenwondersdice?table=...",
-        "FR": "L'URL BGA doit contenir le chemin public du jeu, par exemple /15/sevenwondersdice?table=...",
-    },
-    "error_url_missing_game_path": {
-        "EN": "Could not extract the gameserver and game name from the BGA URL.",
-        "FR": "Impossible d'extraire le gameserver et le nom du jeu depuis l'URL BGA.",
-    },
     "error_load_tableinfos": {
         "EN": "Could not load tableinfos for table {table_id}: {error}",
         "FR": "Impossible de charger tableinfos pour la table {table_id}: {error}",
@@ -714,6 +706,54 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "orphan_watch_message_delete_failed": {
         "EN": "Failed to delete orphan {message_kind} message for subscription {subscription_id}: {error}",
         "FR": "Echec de suppression du message {message_kind} orphelin pour la souscription {subscription_id}: {error}",
+    },
+    "link_status_detecting": {
+        "EN": "🔎 **Board Game Arena link detected**\nRegistering table {table_id}…",
+        "FR": "🔎 **Lien Board Game Arena detecte**\nEnregistrement de la table {table_id}…",
+    },
+    "link_status_waiting": {
+        "EN": "✅ **Table {table_id} registered**\nWaiting for Board Game Arena to send the table details. This message updates automatically.",
+        "FR": "✅ **Table {table_id} enregistree**\nEn attente des details de la table depuis Board Game Arena. Ce message se mettra a jour automatiquement.",
+    },
+    "link_status_tracking_elsewhere": {
+        "EN": "✅ **Now tracking {game_name}** (table {table_id})\nUpdates are posted in <#{channel_id}>.",
+        "FR": "✅ **{game_name} est maintenant suivie** (table {table_id})\nLes mises a jour sont publiees dans <#{channel_id}>.",
+    },
+    "link_status_failed": {
+        "EN": "⚠️ **Couldn't track table {table_id}**\n{reason}",
+        "FR": "⚠️ **Impossible de suivre la table {table_id}**\n{reason}",
+    },
+    "link_error_invalid": {
+        "EN": "That link doesn't point to a Board Game Arena table.",
+        "FR": "Ce lien ne pointe pas vers une table Board Game Arena.",
+    },
+    "link_error_finished": {
+        "EN": "This game has already finished, so there are no turns left to follow.",
+        "FR": "Cette partie est deja terminee : il n'y a plus de tour a suivre.",
+    },
+    "link_error_unavailable": {
+        "EN": "This table no longer exists or was cancelled on Board Game Arena.",
+        "FR": "Cette table n'existe plus ou a ete annulee sur Board Game Arena.",
+    },
+    "link_error_not_public": {
+        "EN": "This table can't be watched by spectators (it may be private or restricted to friends).",
+        "FR": "Cette table n'est pas visible par les spectateurs (elle est peut-etre privee ou reservee aux amis).",
+    },
+    "link_error_rate_limited": {
+        "EN": "Board Game Arena is limiting requests right now. Post the link again in a few minutes.",
+        "FR": "Board Game Arena limite les requetes pour le moment. Reposte le lien dans quelques minutes.",
+    },
+    "link_error_bga_down": {
+        "EN": "Board Game Arena isn't responding properly right now (HTTP {status_code}). Post the link again later.",
+        "FR": "Board Game Arena ne repond pas correctement pour le moment (HTTP {status_code}). Reposte le lien plus tard.",
+    },
+    "link_error_bga": {
+        "EN": "Board Game Arena returned an error: {detail}",
+        "FR": "Board Game Arena a renvoye une erreur : {detail}",
+    },
+    "link_error_unexpected": {
+        "EN": "Something unexpected went wrong. The bot owner can find details in the logs.",
+        "FR": "Une erreur inattendue s'est produite. Le proprietaire du bot trouvera les details dans les logs.",
     },
     "auto_watch_skipped": {
         "EN": "Skipping auto-watch for {table_reference} in channel {channel_id}: {error}",

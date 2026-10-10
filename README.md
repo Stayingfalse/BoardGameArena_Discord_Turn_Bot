@@ -102,7 +102,7 @@ Open that URL in your browser, choose your server, and approve. The bot will hav
    - `Send Messages`
    - `Embed Links`
    - `Read Message History`
-   - `Manage Messages` *(needed only if `BGA_DELETE_INVITE_MESSAGE=1`)*
+   - `Manage Messages` *(needed to tidy up shared links)*
 5. Copy the generated URL, open it in a browser, and add the bot to your server.
 
 ---
@@ -152,7 +152,7 @@ BGA_RECRUITING_ONLY=0
 
 # Set to 1 to delete the original message that contained the BGA invite link
 # after the watch is registered. Requires the Manage Messages permission.
-BGA_DELETE_INVITE_MESSAGE=0
+BGA_DELETE_INVITE_MESSAGE=
 
 # Channel ID to route all bot notifications to a single fixed channel,
 # regardless of which channel the original link was posted in.
@@ -186,7 +186,7 @@ DASHBOARD_SECRET_KEY=
 | `BGA_WS_URL` | — | `wss://ws-x1.boardgamearena.com/connection/websocket` | Public BGA websocket URL |
 | `BGA_ENABLE_TABLEINFOS_FALLBACK` | — | `0` | Re-enables the legacy HTTP fallback for end-of-game detection |
 | `BGA_RECRUITING_ONLY` | — | `0` | Only post the recruiting embed; auto-unwatch when the game starts |
-| `BGA_DELETE_INVITE_MESSAGE` | — | `0` | Delete the original link message after registering the watch |
+| `BGA_DELETE_INVITE_MESSAGE` | — | blank | Delete the original link message once the table card is showing. Blank: on for servers joined from now on, off for others; `1`/`0`: the default everywhere |
 | `BGA_FORCED_CHANNEL_ID` | — | — | Force all bot notifications into one specific channel |
 | `LOG_LEVEL` | — | `INFO` | Console log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `BOT_LANG` | — | `EN` | Bot message language (`EN` or `FR`) |
@@ -245,12 +245,20 @@ This repository is distributed under the MIT license. See `LICENSE`.
 
 ### Automatic link detection (primary feature)
 
-The bot listens for messages in all channels it can see. When a message contains a BGA table URL (e.g. `https://boardgamearena.com/...?table=12345`), the bot:
+The bot listens for messages in all channels it can see. Any Board Game Arena table link is recognised, including:
 
-1. Extracts the table ID from the URL.
-2. Anonymously fetches the public table page to identify the game.
-3. Opens a public websocket connection to the BGA table.
-4. Posts a status message in the same channel and keeps it updated.
+- game pages (`https://boardgamearena.com/1/azul?table=12345`), `/table?table=`, `/tableview?table=`, review and replay pages;
+- short links (`https://bga.li/t/12345`) and language subdomains (`fr.boardgamearena.com`);
+- links without `https://`, links wrapped in Discord formatting (`||spoiler||`, `**bold**`, `` `code` ``, `<no embed>`), and links in forwarded messages.
+
+As soon as a link is seen, the bot replies with a status message, **"Board Game Arena link detected – registering table…"**. Then:
+
+1. It anonymously fetches the public table page to identify the game and opens a public websocket to follow it.
+2. **If that works**, the status message turns into the table card (see below), so each table only ever has one message. If the server's *Tidy up shared links* setting is on, the original message with the link is deleted once the card is showing. Re-posting a link for a table that's already watched moves its card down to the new message.
+3. **If something goes wrong**, the status message says why: the game has already finished, the table is private or no longer exists, Board Game Arena is down or rate-limiting, etc. The original message is kept.
+4. If Board Game Arena takes more than ~20 seconds to respond, the status message says it is still waiting; it updates by itself when the details arrive.
+
+When the server uses a forced notification channel, the status message stays in the channel where the link was posted and points to the channel the card is in, then removes itself after two minutes.
 
 This requires the **Message Content Intent** to be enabled in the Discord Developer Portal (see Step 1).
 

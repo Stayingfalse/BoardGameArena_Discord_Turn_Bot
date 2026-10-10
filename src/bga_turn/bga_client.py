@@ -36,6 +36,10 @@ class BgaTableUnavailableError(BgaNotPublicError):
     pass
 
 
+class BgaTableFinishedError(BgaNotPublicError):
+    """The table exists but its game is already over (or was abandoned)."""
+
+
 class BgaRateLimitError(BgaClientError):
     """Raised when BGA responds with HTTP 429.
 
