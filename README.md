@@ -317,7 +317,7 @@ Displays for each watch: the table ID, game name, channel, whose turn it is (BGA
 
 ### `/bga stats`
 
-Show a compact multi-page stats card for the current server, with a `global:true` option for bot-wide totals. Global stats only show totals and game titles: player, recruiter and channel rankings mix every server's data, so they are only shown per server.
+Post a compact multi-page stats card in the channel for everyone to see, for the current server or, with `global:true`, bot-wide totals. Nobody is pinged by the card. Only the person who ran the command turns its pages; anyone else who clicks a page button gets their own private copy of that page. The buttons are removed after five minutes. Global stats only show totals and game titles: player, recruiter and channel rankings mix every server's data, so they are only shown per server.
 
 ```text
 /bga stats

@@ -7,7 +7,7 @@
   "command_unlink_member_description": "Remove the BGA link for a Discord member",
   "command_unlink_member_member": "Discord member to unlink",
   "command_status_description": "Show the known state of watched tables on this server",
-  "command_stats_description": "Show server stats, or global stats with `global:true`",
+  "command_stats_description": "Post server stats in this channel, or global stats with `global:true`",
   "command_stats_global": "When true, show global bot stats instead of this server only",
   "error_manage_server_required_link": "You need the `Manage Server` permission to link a Discord member to BGA.",
   "error_manage_server_required_unlink": "You need the `Manage Server` permission to unlink a Discord member.",

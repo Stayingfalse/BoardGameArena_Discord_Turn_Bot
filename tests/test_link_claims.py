@@ -131,3 +131,77 @@ def test_global_discord_stats_hide_players(database, page):
     assert stats["top_players"]  # the raw data does name the player
     view = StatsLayoutView(cog=cog, guild=None, stats=redact_global_stats(stats), is_global=True, page=page)
     assert "SecretPlayer" not in _texts(view)
+
+
+class FakeStatsResponse(FakeResponse):
+    async def send_message(self, content=None, **kwargs):
+        self.messages.append({"content": content, **kwargs})
+
+
+def _stats_interaction(user_id: int):
+    response = FakeStatsResponse()
+    sent = SimpleNamespace(edits=[])
+
+    async def edit(**kwargs):
+        sent.edits.append(kwargs)
+
+    sent.edit = edit
+
+    async def original_response():
+        return sent
+
+    return SimpleNamespace(
+        guild_id=10,
+        channel_id=20,
+        guild=None,
+        user=SimpleNamespace(id=user_id),
+        response=response,
+        message=sent,
+        original_response=original_response,
+    ), sent
+
+
+def _page_buttons(view):
+    return [item for item in view.walk_children() if isinstance(item, discord.ui.Button)]
+
+
+async def test_stats_are_posted_publicly_without_pings(database):
+    cog = BgaCommands(database, bga_client=None, monitor=SimpleNamespace(discord=_PassThroughDiscord()))
+    interaction, sent = _stats_interaction(7)
+    await BgaCommands.stats_command.callback(cog, interaction, global_scope=False)
+    [message] = interaction.response.messages
+    assert not message.get("ephemeral")
+    assert message["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert message["view"].message is sent
+
+
+async def test_only_the_invoker_turns_the_public_card(database):
+    cog = BgaCommands(database, bga_client=None, monitor=SimpleNamespace())
+    view = StatsLayoutView(cog=cog, guild=None, stats=database.get_guild_extended_stats("10"), is_global=False, owner_id=7)
+
+    other, _ = _stats_interaction(8)
+    await view.show_page(other, "leaders")
+    assert other.response.edits == []
+    [private] = other.response.messages
+    assert private["ephemeral"] is True
+
+    owner, _ = _stats_interaction(7)
+    await view.show_page(owner, "leaders")
+    assert len(owner.response.edits) == 1
+    assert view.is_finished()  # the replaced view no longer times out on the card
+
+
+async def test_timed_out_card_loses_its_buttons(database):
+    cog = BgaCommands(database, bga_client=None, monitor=SimpleNamespace())
+    view = StatsLayoutView(cog=cog, guild=None, stats=database.get_guild_extended_stats("10"), is_global=False, owner_id=7)
+    assert _page_buttons(view)
+    _, sent = _stats_interaction(7)
+    view.message = sent
+    await view.on_timeout()
+    [edit] = sent.edits
+    assert _page_buttons(edit["view"]) == []
+
+
+class _PassThroughDiscord:
+    async def call(self, operation, table_id, coro_factory, **kwargs):
+        return await coro_factory()

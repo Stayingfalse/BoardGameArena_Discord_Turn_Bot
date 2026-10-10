@@ -74,25 +74,57 @@ class StatsLayoutView(discord.ui.LayoutView):
         stats: dict[str, object],
         is_global: bool,
         page: str = "overview",
+        owner_id: int | None = None,
+        interactive: bool = True,
     ) -> None:
-        super().__init__(timeout=300)
+        super().__init__(timeout=300 if interactive else None)
         self._cog = cog
         self._guild = guild
         self._stats = stats
         self._is_global = is_global
         self._page = page if page in self._PAGE_LABELS else "overview"
+        # Only the person who ran the command turns the pages of a public card.
+        self._owner_id = owner_id
+        self._interactive = interactive
+        self.message: discord.Message | discord.InteractionMessage | None = None
         self._build()
 
-    async def show_page(self, interaction: discord.Interaction, page_key: str) -> None:
-        await interaction.response.edit_message(
-            view=StatsLayoutView(
-                cog=self._cog,
-                guild=self._guild,
-                stats=self._stats,
-                is_global=self._is_global,
-                page=page_key,
-            )
+    def _copy(self, *, page: str, owner_id: int | None, interactive: bool = True) -> "StatsLayoutView":
+        return StatsLayoutView(
+            cog=self._cog,
+            guild=self._guild,
+            stats=self._stats,
+            is_global=self._is_global,
+            page=page,
+            owner_id=owner_id,
+            interactive=interactive,
         )
+
+    async def show_page(self, interaction: discord.Interaction, page_key: str) -> None:
+        if self._owner_id is not None and interaction.user.id != self._owner_id:
+            # Someone else is reading the public card: give them their own copy
+            # of that page instead of flipping it under everyone's eyes.
+            private = self._copy(page=page_key, owner_id=interaction.user.id)
+            await interaction.response.send_message(
+                view=private,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            private.message = await interaction.original_response()
+            return
+        replacement = self._copy(page=page_key, owner_id=self._owner_id)
+        replacement.message = self.message or interaction.message
+        await interaction.response.edit_message(view=replacement)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        """Drop the page buttons once they stop working, so nobody clicks a dead card."""
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=self._copy(page=self._page, owner_id=None, interactive=False))
+        except discord.HTTPException as exc:
+            LOGGER.debug("Could not retire stats card buttons: %s", exc)
 
     def _build(self) -> None:
         title = (
@@ -117,19 +149,20 @@ class StatsLayoutView(discord.ui.LayoutView):
         else:
             items.extend(self._build_activity_items())
 
-        items.append(discord.ui.Separator())
-        items.append(
-            discord.ui.ActionRow(
-                *[
-                    StatsPageButton(
-                        page_key=page_key,
-                        label=tr(label_key),
-                        active=page_key == self._page,
-                    )
-                    for page_key, label_key in self._PAGE_LABELS.items()
-                ]
+        if self._interactive:
+            items.append(discord.ui.Separator())
+            items.append(
+                discord.ui.ActionRow(
+                    *[
+                        StatsPageButton(
+                            page_key=page_key,
+                            label=tr(label_key),
+                            active=page_key == self._page,
+                        )
+                        for page_key, label_key in self._PAGE_LABELS.items()
+                    ]
+                )
             )
-        )
         self.add_item(discord.ui.Container(*items, accent_color=self._PAGE_COLORS[self._page]))
 
     def _build_overview_items(self) -> list[discord.ui.Item]:
@@ -1374,19 +1407,27 @@ class BgaCommands(commands.Cog):
             if global_scope
             else await self.db.get_guild_extended_stats(str(interaction.guild_id))
         )
+        view = StatsLayoutView(
+            cog=self,
+            guild=interaction.guild,
+            stats=stats,
+            is_global=global_scope,
+            owner_id=interaction.user.id,
+        )
+        # Posted for the whole channel. Recruiters and channels appear as
+        # mentions so they read nicely, but nobody gets pinged.
         await self._interaction_send_with_retry(
             interaction,
             "stats_display",
             lambda: interaction.response.send_message(
-                view=StatsLayoutView(
-                    cog=self,
-                    guild=interaction.guild,
-                    stats=stats,
-                    is_global=global_scope,
-                ),
-                ephemeral=True,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
             ),
         )
+        try:
+            view.message = await interaction.original_response()
+        except discord.HTTPException:
+            pass  # the buttons then simply stop working after the timeout
 
     @bga.command(name="recruiting", description=tr("command_recruiting_description"))
     async def recruiting(self, interaction: discord.Interaction) -> None:
