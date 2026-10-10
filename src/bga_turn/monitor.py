@@ -1947,8 +1947,30 @@ class BgaMonitor:
             subscription.guild_id,
             default_forced_channel_id=self._default_forced_channel_id,
         )
-        channel_id = guild_settings.forced_channel_id or subscription.channel_id
-        channel = self.bot.get_channel(int(channel_id))
+        channel_id = subscription.channel_id
+        channel = None
+        forced_channel_id = guild_settings.forced_channel_id or ""
+        if forced_channel_id:
+            # Only honour a forced channel that belongs to this subscription's own
+            # server, so a bad setting can never route posts into another server.
+            guild = self.bot.get_guild(int(subscription.guild_id))
+            forced_channel = (
+                guild.get_channel_or_thread(int(forced_channel_id))
+                if guild is not None and forced_channel_id.isascii() and forced_channel_id.isdecimal()
+                else None
+            )
+            if forced_channel is not None:
+                channel_id = forced_channel_id
+                channel = forced_channel
+            else:
+                LOGGER.debug(
+                    "Ignoring forced channel %s: not a channel of guild %s (table %s).",
+                    forced_channel_id,
+                    subscription.guild_id,
+                    table_id,
+                )
+        if channel is None:
+            channel = self.bot.get_channel(int(channel_id))
         if channel is None:
             if not self._discord_io_allowed():
                 return None

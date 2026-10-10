@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="empty" style="margin-top:32px">
+  <span class="icon" aria-hidden="true">{% if status == 403 %}🔒{% elif status == 404 %}🧭{% elif status >= 500 %}⚠️{% else %}✋{% endif %}</span>
+  <h1 style="font-size:1.3rem;margin-bottom:6px">{{ title }}</h1>
+  <p>{{ message }}</p>
+  <div class="row" style="justify-content:center;margin-top:16px">
+    {% if session %}
+    <a class="btn btn-primary" href="/dashboard">Back to my servers</a>
+    {% else %}
+    <a class="btn btn-primary" href="/auth/login">Log in with Discord</a>
+    {% endif %}
+    <a class="btn btn-secondary" href="/">Home</a>
+  </div>
+</div>
+{% endblock %}

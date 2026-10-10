@@ -1,0 +1,17 @@
+<div class="breadcrumb"><a href="/dashboard">My servers</a> › {{ guild_name }}</div>
+<div class="page-header">
+  {% if guild_icon_url %}<img class="avatar avatar-lg" src="{{ guild_icon_url }}" alt="">{% else %}<span class="avatar avatar-lg" aria-hidden="true">{{ guild_name[:1] | upper }}</span>{% endif %}
+  <div>
+    <h1>{{ guild_name }}</h1>
+  </div>
+</div>
+<nav class="tabs" aria-label="Server sections">
+  {% for key, label, href in [
+    ("overview", "Overview & settings", "/dashboard/" ~ guild_id),
+    ("tables", "Tables", "/dashboard/" ~ guild_id ~ "/tables"),
+    ("members", "Member links", "/dashboard/" ~ guild_id ~ "/members"),
+    ("stats", "Stats", "/dashboard/" ~ guild_id ~ "/stats"),
+  ] %}
+  <a class="tab{% if active_tab == key %} active{% endif %}" href="{{ href }}"{% if active_tab == key %} aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>

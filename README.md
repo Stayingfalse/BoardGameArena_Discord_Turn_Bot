@@ -191,11 +191,12 @@ DASHBOARD_SECRET_KEY=
 | `LOG_LEVEL` | — | `INFO` | Console log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `BOT_LANG` | — | `EN` | Bot message language (`EN` or `FR`) |
 | `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
+| `DASHBOARD_HOST` | — | `0.0.0.0` | Interface the web dashboard listens on (use `127.0.0.1` behind a local reverse proxy) |
 | `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
 | `DASHBOARD_BASE_URL` | — | `http://localhost:8080` | Public base URL for dashboard OAuth2 redirect (must be HTTPS in production) |
 | `DISCORD_CLIENT_ID` | — | — | Discord OAuth2 client ID (required when dashboard is enabled) |
 | `DISCORD_CLIENT_SECRET` | — | — | Discord OAuth2 client secret (required when dashboard is enabled) |
-| `DASHBOARD_SECRET_KEY` | — | — | Random secret for dashboard auth state validation (required when dashboard is enabled) |
+| `DASHBOARD_SECRET_KEY` | — | — | Random secret used to sign dashboard form tokens (required when dashboard is enabled) |
 | `GLOBAL_ADMIN_DISCORD_IDS` | — | — | Comma-separated Discord user IDs that can view/manage all bot servers in the dashboard |
 
 ---
@@ -398,6 +399,22 @@ To get `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`:
 
 The dashboard is then accessible at `http://localhost:8080` (or your configured base URL).
 
+### What the dashboard offers
+
+- **My servers**: every server where you have **Manage Server**, plus one-click "Add bot" links for the ones without it.
+- **Overview & settings**: recruiting-only mode, link clean-up, and a picker for the channel that receives all updates.
+- **Tables**: recruiting, in-progress and recently finished tables, whose turn it is, and a "Stop watching" button.
+- **Member links**: link Discord members to BGA players (including players the bot has seen at your tables but can't match yet), or remove links.
+- **Stats**: per-server and global charts and leaderboards.
+
+### Security model
+
+- Access to a server's pages is checked live with Discord (cached for one minute), so removing someone's **Manage Server** permission takes effect almost immediately.
+- Links are global (one per Discord user), so the dashboard only lets an admin link or unlink people who are members of the server they're managing.
+- The forced notification channel must be a text channel in the same server; the bot ignores any other value.
+- Every form carries a CSRF token signed with `DASHBOARD_SECRET_KEY`, and pages are served with a strict Content-Security-Policy.
+- The dashboard does **not** need the privileged Server Members Intent: member search and lookups use on-demand Discord queries.
+
 ## 6. Technical overview
 
 ### High-level architecture
@@ -443,4 +460,12 @@ The bot does not use cookies, browser sessions, or a BGA account.
 - The **Message Content Intent** must be enabled in the Discord Developer Portal for automatic link detection to work.
 - Without that intent, no links are detected and no tables are auto-watched (the bot starts but does nothing until a table is manually registered through the database).
 - Displayed game names come from the BGA slug or public bootstrap and are not always perfectly formatted.
-- The project ships without a unit test suite; validation is kept lightweight through packaging and compilation checks.
+
+### Running the tests
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
+
+The suite covers the dashboard's access controls (permission checks, CSRF, member scoping, channel validation) using fake Discord objects, so it needs no bot token or network access.

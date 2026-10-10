@@ -191,11 +191,12 @@ DASHBOARD_SECRET_KEY=
 | `LOG_LEVEL` | — | `INFO` | Niveau de logs console (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `BOT_LANG` | — | `EN` | Langue des messages du bot (`EN` ou `FR`) |
 | `DASHBOARD_ENABLED` | — | `0` | Active le tableau de bord web sur `DASHBOARD_PORT` |
+| `DASHBOARD_HOST` | — | `0.0.0.0` | Interface d'ecoute du tableau de bord (`127.0.0.1` derriere un reverse proxy local) |
 | `DASHBOARD_PORT` | — | `8080` | Port du tableau de bord web |
 | `DASHBOARD_BASE_URL` | — | `http://localhost:8080` | URL de base publique pour les redirections OAuth2 (HTTPS obligatoire en production) |
 | `DISCORD_CLIENT_ID` | — | — | Client ID OAuth2 Discord (obligatoire si le dashboard est active) |
 | `DISCORD_CLIENT_SECRET` | — | — | Client Secret OAuth2 Discord (obligatoire si le dashboard est active) |
-| `DASHBOARD_SECRET_KEY` | — | — | Secret aleatoire pour la validation de l'etat auth (obligatoire si le dashboard est active) |
+| `DASHBOARD_SECRET_KEY` | — | — | Secret aleatoire utilise pour signer les jetons des formulaires du dashboard (obligatoire si le dashboard est active) |
 
 ---
 
@@ -422,4 +423,12 @@ Le bot n'utilise pas de cookies, pas de session navigateur, pas de compte BGA.
 - Le **Message Content Intent** doit etre active dans le portail developpeur Discord pour que la detection automatique des liens fonctionne.
 - Sans cet intent, aucun lien n'est detecte et aucune table n'est surveillee automatiquement.
 - Les noms de jeux affiches viennent du slug BGA ou du bootstrap public et ne sont pas toujours joliment formates.
-- Le projet est distribue sans suite de tests unitaires ; la validation reste legere via le packaging et la compilation.
+
+### Lancer les tests
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
+
+Les tests couvrent les controles d'acces du tableau de bord (permissions, CSRF, membres du serveur, salon force) avec de faux objets Discord : aucun token ni acces reseau n'est necessaire.

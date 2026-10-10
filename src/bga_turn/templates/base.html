@@ -3,27 +3,47 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{{ title }} — BGA Turn Bot</title>
+  <title>{{ title }} · BGA Turn Bot</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<nav class="nav">
-  <h1>🎲 BGA Turn Bot</h1>
-  <span class="spacer"></span>
-  {% if session %}
-    <a href="/dashboard">Dashboard</a>
-    {% if is_global_admin %}
-    &nbsp;|&nbsp;
-    <a href="/admin/servers">⚙ Admin</a>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/">🎲 BGA Turn Bot</a>
+    <nav class="nav-links" aria-label="Main">
+      {% if session %}
+      <a class="nav-link{% if current_path.startswith('/dashboard') %} active{% endif %}" href="/dashboard">My servers</a>
+      {% endif %}
+      <a class="nav-link{% if current_path == '/global/stats' %} active{% endif %}" href="/global/stats">Global stats</a>
+      {% if is_global_admin %}
+      <a class="nav-link{% if current_path.startswith('/admin') %} active{% endif %}" href="/admin/servers">Admin</a>
+      {% endif %}
+    </nav>
+    <span class="spacer"></span>
+    {% if session %}
+    <div class="nav-user">
+      {% if user_avatar_url %}<img class="avatar" src="{{ user_avatar_url }}" alt="">{% else %}<span class="avatar" aria-hidden="true">{{ session.username[:1] | upper }}</span>{% endif %}
+      <span class="username">{{ session.username }}</span>
+      <form method="post" action="/auth/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-ghost btn-sm">Log out</button>
+      </form>
+    </div>
+    {% else %}
+    <a href="/auth/login" class="btn btn-secondary btn-sm">Log in with Discord</a>
     {% endif %}
-    &nbsp;|&nbsp;
-    <span style="color:#888;font-size:.9rem">{{ session.username }}</span>
-  {% else %}
-    <a href="/auth/login" class="btn btn-secondary">Login with Discord</a>
-  {% endif %}
-</nav>
-<div class="container">
+  </div>
+</header>
+<main class="container">
 {% block content %}{% endblock %}
-</div>
+</main>
+<footer class="footer">
+  <div class="footer-inner">
+    <span>BGA Turn Bot · not affiliated with Board Game Arena</span>
+  </div>
+</footer>
+<script src="/static/app.js"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

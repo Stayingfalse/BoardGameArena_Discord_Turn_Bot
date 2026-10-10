@@ -1,47 +1,65 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="breadcrumb"><a href="/dashboard">Dashboard</a> › {{ guild_name }}</div>
-<div class="section-title">{{ guild_name }}</div>
-{% if saved %}<div class="alert-success">✅ Settings saved.</div>{% endif %}
-<div class="stats-row" style="justify-content:flex-start">
-  <div class="stat-card">
-    <div class="num">{{ stats.recruiting }}</div>
-    <div class="label">Recruiting</div>
-  </div>
-  <div class="stat-card">
+{% include "_guild_header.html" %}
+
+{% if saved %}<div class="alert alert-success" role="status">✓ Settings saved.</div>{% endif %}
+{% if error == "channel" %}<div class="alert alert-error" role="alert">That channel isn't a text channel in this server. Pick one from the list.</div>{% endif %}
+
+<div class="stat-grid">
+  <a class="stat" href="/dashboard/{{ guild_id }}/tables" style="color:inherit;text-decoration:none">
     <div class="num">{{ stats.total }}</div>
-    <div class="label">Total watched</div>
-  </div>
+    <div class="label">Tables watched</div>
+  </a>
+  <a class="stat" href="/dashboard/{{ guild_id }}/tables" style="color:inherit;text-decoration:none">
+    <div class="num">{{ stats.recruiting }}</div>
+    <div class="label">Recruiting now</div>
+  </a>
 </div>
-<div style="margin-bottom:16px">
-  <a class="btn btn-secondary" href="/dashboard/{{ guild_id }}/stats">📊 View stats</a>
-  <a class="btn btn-secondary" href="/dashboard/{{ guild_id }}/tables">View monitored tables</a>
-  <a class="btn btn-secondary" href="/dashboard/{{ guild_id }}/members">Manage member links</a>
-</div>
-<hr>
-<form method="post" action="/dashboard/{{ guild_id }}/settings">
-  <div class="form-group">
-    <div class="toggle-row">
-      <label class="toggle">
+
+<section class="section">
+  <div class="section-head"><h2>Settings</h2></div>
+  <form class="card form-card" method="post" action="/dashboard/{{ guild_id }}/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="field">
+      <label class="switch">
         <input type="checkbox" name="recruiting_only" value="1"{% if settings.recruiting_only %} checked{% endif %}>
-        <span class="slider"></span>
+        <span class="track" aria-hidden="true"></span>
+        <span class="text">
+          <strong>Recruiting-only mode</strong>
+          <span>Stop watching a table as soon as its game starts. Use this if you only want help filling seats, not turn pings.</span>
+        </span>
       </label>
-      <span>Recruiting-only mode — remove watch once the game starts</span>
-    </div>
-  </div>
-  <div class="form-group">
-    <div class="toggle-row">
-      <label class="toggle">
+      <label class="switch">
         <input type="checkbox" name="delete_invite_message" value="1"{% if settings.delete_invite_message %} checked{% endif %}>
-        <span class="slider"></span>
+        <span class="track" aria-hidden="true"></span>
+        <span class="text">
+          <strong>Tidy up shared links</strong>
+          <span>Delete the message containing a BGA link once the bot has started watching it. Needs the Manage Messages permission.</span>
+        </span>
       </label>
-      <span>Delete the Discord message that triggered auto-watch</span>
     </div>
-  </div>
-  <div class="form-group">
-    <label>Forced notification channel ID <span style="color:#888;font-size:.8rem">(leave blank to post in the channel where the link was shared)</span></label>
-    <input type="text" name="forced_channel_id" value="{{ settings.forced_channel_id or '' }}" placeholder="e.g. 1234567890123456789">
-  </div>
-  <button type="submit" class="btn btn-primary">Save settings</button>
-</form>
+
+    <div class="field">
+      <label for="forced_channel_id">Post updates in</label>
+      <select class="select" id="forced_channel_id" name="forced_channel_id">
+        <option value="">The channel where the link was shared</option>
+        {% if settings.forced_channel_id and not forced_channel_valid %}
+        <option value="" selected>⚠ Unknown channel {{ settings.forced_channel_id }} (will be cleared on save)</option>
+        {% endif %}
+        {% for channel in channel_options %}
+        <option value="{{ channel.id }}"{% if channel.selected %} selected{% endif %}>#{{ channel.name }}{% if channel.category %} · {{ channel.category }}{% endif %}{% if not channel.can_post %} — bot can't post here{% endif %}</option>
+        {% endfor %}
+      </select>
+      <p class="help">Send every recruiting card and turn update to one channel instead.</p>
+      {% if settings.forced_channel_id and not forced_channel_valid %}
+      <p class="help" style="color:var(--warning-text)">The saved channel no longer exists in this server, so updates go to the original channel.</p>
+      {% endif %}
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save settings</button>
+    </div>
+  </form>
+</section>
 {% endblock %}

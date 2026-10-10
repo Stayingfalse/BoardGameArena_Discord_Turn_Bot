@@ -271,11 +271,6 @@ class Database:
                 )
                 self._connection.commit()
                 return None
-            self._connection.execute(
-                "UPDATE dashboard_sessions SET updated_at = ? WHERE session_id = ?",
-                (utc_now_iso(), session_id),
-            )
-            self._connection.commit()
 
         return {
             "session_id": str(row["session_id"]),
@@ -767,6 +762,28 @@ class Database:
                 }
                 for row in channel_rows
             ],
+        }
+
+    def get_all_guild_stats(self) -> dict[str, dict[str, int]]:
+        """Return ``get_guild_stats`` for every guild with a watch, in one query."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT
+                    ws.guild_id AS guild_id,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN COALESCE(st.lifecycle_state, 'recruiting') = 'recruiting' THEN 1 ELSE 0 END) AS recruiting
+                FROM watch_subscriptions ws
+                LEFT JOIN watch_states st ON st.subscription_id = ws.subscription_id
+                GROUP BY ws.guild_id
+                """
+            ).fetchall()
+        return {
+            str(row["guild_id"]): {
+                "total": int(row["total"] or 0),
+                "recruiting": int(row["recruiting"] or 0),
+            }
+            for row in rows
         }
 
     def get_guild_stats(self, guild_id: str) -> dict[str, int]:
