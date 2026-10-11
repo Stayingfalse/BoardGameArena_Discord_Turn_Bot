@@ -84,6 +84,33 @@
 <p class="muted small">Player rankings are only shown to each server's admins, on that server's Stats tab.</p>
 {% endif %}
 {% endif %}
+{% set cn = stats.codenames %}
+{% if cn and (cn.finished_games or cn.watching_rooms) %}
+<section class="section">
+  <div class="section-head"><h2>🕵️ Codenames</h2></div>
+  <div class="stat-grid">
+    <div class="stat"><div class="num">{{ cn.finished_games }}</div><div class="label">Games played to the end</div></div>
+    <div class="stat"><div class="num">{{ cn.red_wins }}</div><div class="label">🔴 Red wins</div></div>
+    <div class="stat"><div class="num">{{ cn.blue_wins }}</div><div class="label">🔵 Blue wins</div></div>
+    <div class="stat">
+      <div class="num">{% if cn.avg_game_minutes is none %}—{% elif cn.avg_game_minutes < 60 %}{{ cn.avg_game_minutes | round(0) | int }} min{% else %}{{ (cn.avg_game_minutes / 60) | round(1) }} h{% endif %}</div>
+      <div class="label">Avg game length</div>
+    </div>
+    <div class="stat"><div class="num">{{ cn.watching_rooms }}</div><div class="label">Rooms watched now</div></div>
+    <div class="stat"><div class="num">{{ cn.games_in_progress }}</div><div class="label">Games in progress</div></div>
+  </div>
+  {% if cn.top_rooms %}
+  <table class="data-table">
+    <thead><tr><th>Most played rooms</th><th class="num">Games</th></tr></thead>
+    <tbody>
+      {% for room in cn.top_rooms %}
+      <tr><td><a href="https://codenames.game/r/{{ room.room_id }}" target="_blank" rel="noopener noreferrer">{{ room.room_id }} ↗</a></td><td class="num">{{ room.games }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}

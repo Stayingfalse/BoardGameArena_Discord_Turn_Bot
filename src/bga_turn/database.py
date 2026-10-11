@@ -475,7 +475,7 @@ class Database(CodenamesStore):
             return {"total": 0, "recruiting": 0}
         return {"total": int(row["total"] or 0), "recruiting": int(row["recruiting"] or 0)}
 
-    def get_guild_extended_stats(self, guild_id: str) -> dict[str, object]:
+    def get_guild_extended_stats(self, guild_id: str, *, provider: str = "bga") -> dict[str, object]:
         """Return comprehensive historical and live stats for one guild."""
         with self._lock:
             live_row = self._connection.execute(
@@ -516,9 +516,9 @@ class Database(CodenamesStore):
                     COUNT(DISTINCT channel_id) AS tracked_channels,
                     COUNT(DISTINCT created_by_discord_user_id) AS recruiter_count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchone()
 
             members_row = self._connection.execute(
@@ -529,57 +529,57 @@ class Database(CodenamesStore):
                 """
                 SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 GROUP BY game_name
                 ORDER BY count DESC
                 LIMIT 20
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             games_over_time_rows = self._connection.execute(
                 """
                 SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                   AND finished_at >= date('now', '-90 days')
                 GROUP BY substr(finished_at, 1, 10)
                 ORDER BY day
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             player_rows = self._connection.execute(
                 """
                 SELECT winner_names, final_standings
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             recruiter_rows = self._connection.execute(
                 """
                 SELECT created_by_discord_user_id, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 GROUP BY created_by_discord_user_id
                 ORDER BY count DESC, created_by_discord_user_id
                 LIMIT 10
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             channel_rows = self._connection.execute(
                 """
                 SELECT channel_id, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 GROUP BY channel_id
                 ORDER BY count DESC, channel_id
                 LIMIT 10
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
         return self._build_extended_stats(
             live_row=live_row,
@@ -592,7 +592,7 @@ class Database(CodenamesStore):
             channel_rows=channel_rows,
         )
 
-    def get_global_extended_stats(self) -> dict[str, object]:
+    def get_global_extended_stats(self, *, provider: str = "bga") -> dict[str, object]:
         """Return comprehensive historical and live stats across all guilds."""
         with self._lock:
             live_row = self._connection.execute(
@@ -631,7 +631,9 @@ class Database(CodenamesStore):
                     COUNT(DISTINCT channel_id) AS tracked_channels,
                     COUNT(DISTINCT created_by_discord_user_id) AS recruiter_count
                 FROM game_history
-                """
+                WHERE provider = ?
+                """,
+                (provider,),
             ).fetchone()
 
             members_row = self._connection.execute(
@@ -651,44 +653,51 @@ class Database(CodenamesStore):
                 """
                 SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
                 FROM game_history
+                WHERE provider = ?
                 GROUP BY game_name
                 ORDER BY count DESC
                 LIMIT 20
-                """
+                """,
+                (provider,),
             ).fetchall()
 
             games_over_time_rows = self._connection.execute(
                 """
                 SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
                 FROM game_history
-                WHERE finished_at >= date('now', '-90 days')
+                WHERE provider = ? AND finished_at >= date('now', '-90 days')
                 GROUP BY substr(finished_at, 1, 10)
                 ORDER BY day
-                """
+                """,
+                (provider,),
             ).fetchall()
 
             player_rows = self._connection.execute(
-                "SELECT winner_names, final_standings FROM game_history"
+                "SELECT winner_names, final_standings FROM game_history WHERE provider = ?", (provider,)
             ).fetchall()
 
             recruiter_rows = self._connection.execute(
                 """
                 SELECT created_by_discord_user_id, COUNT(*) AS count
                 FROM game_history
+                WHERE provider = ?
                 GROUP BY created_by_discord_user_id
                 ORDER BY count DESC, created_by_discord_user_id
                 LIMIT 10
-                """
+                """,
+                (provider,),
             ).fetchall()
 
             channel_rows = self._connection.execute(
                 """
                 SELECT channel_id, COUNT(*) AS count
                 FROM game_history
+                WHERE provider = ?
                 GROUP BY channel_id
                 ORDER BY count DESC, channel_id
                 LIMIT 10
-                """
+                """,
+                (provider,),
             ).fetchall()
 
         return self._build_extended_stats(
@@ -1104,7 +1113,9 @@ class Database(CodenamesStore):
             ).fetchall()
         return [self._row_to_watch_subscription(row) for row in rows]
 
-    def list_recent_game_history_for_guild(self, guild_id: str, *, limit: int = 10) -> list[GameHistoryEntry]:
+    def list_recent_game_history_for_guild(
+        self, guild_id: str, *, limit: int = 10, provider: str | None = None
+    ) -> list[GameHistoryEntry]:
         effective_limit = max(1, min(100, int(limit)))
         with self._lock:
             rows = self._connection.execute(
@@ -1125,11 +1136,11 @@ class Database(CodenamesStore):
                     player_count,
                     provider
                 FROM game_history
-                WHERE guild_id = ? AND outcome = 'finished'
+                WHERE guild_id = ? AND outcome = 'finished' AND (? IS NULL OR provider = ?)
                 ORDER BY finished_at DESC, history_id DESC
                 LIMIT ?
                 """,
-                (guild_id, effective_limit),
+                (guild_id, provider, provider, effective_limit),
             ).fetchall()
         return [
             GameHistoryEntry(
@@ -1151,15 +1162,17 @@ class Database(CodenamesStore):
             for row in rows
         ]
 
-    def list_game_history_for_guild(self, guild_id: str, *, limit: int | None = None) -> list[GameHistoryEntry]:
+    def list_game_history_for_guild(
+        self, guild_id: str, *, limit: int | None = None, provider: str | None = None
+    ) -> list[GameHistoryEntry]:
         limit_clause = ""
         params: tuple[object, ...]
         if limit is None:
-            params = (guild_id,)
+            params = (guild_id, provider, provider)
         else:
             effective_limit = max(1, min(5000, int(limit)))
             limit_clause = " LIMIT ?"
-            params = (guild_id, effective_limit)
+            params = (guild_id, provider, provider, effective_limit)
         with self._lock:
             rows = self._connection.execute(
                 f"""
@@ -1179,7 +1192,7 @@ class Database(CodenamesStore):
                     player_count,
                     provider
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND (? IS NULL OR provider = ?)
                 ORDER BY finished_at DESC, history_id DESC{limit_clause}
                 """,
                 params,

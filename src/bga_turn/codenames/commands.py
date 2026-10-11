@@ -113,10 +113,7 @@ class CodenamesCommands(commands.Cog):
             await interaction.response.send_message(tr("cn_server_only"), ephemeral=True)
             return
         watches = await self.db.list_codenames_watches_for_guild(str(interaction.guild_id))
-        if not watches:
-            await interaction.response.send_message(tr("cn_status_none"), ephemeral=True)
-            return
-        lines = []
+        lines = [] if watches else [tr("cn_status_none")]
         for watch in watches:
             game = await self.db.get_latest_codenames_game(watch.watch_id)
             if game is None:
@@ -130,6 +127,16 @@ class CodenamesCommands(commands.Cog):
             lines.append(
                 tr("cn_status_entry", room=watch.room_id, url=build_room_url(watch.room_id),
                    channel=f"<#{watch.channel_id}>", state=state)
+            )
+        stats = await self.db.get_codenames_stats(str(interaction.guild_id))
+        if stats["finished_games"]:
+            lines.append(
+                tr(
+                    "cn_status_summary",
+                    games=stats["finished_games"],
+                    red=stats["red_wins"],
+                    blue=stats["blue_wins"],
+                )
             )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 

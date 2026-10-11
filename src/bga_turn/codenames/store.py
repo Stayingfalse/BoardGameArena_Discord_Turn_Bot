@@ -326,6 +326,73 @@ class CodenamesStore:
         )
 
     # ------------------------------------------------------------------
+    # Stats
+    # ------------------------------------------------------------------
+
+    def get_codenames_stats(self, guild_id: str | None = None) -> dict[str, object]:
+        """Codenames totals for one server, or every server when *guild_id* is ``None``.
+
+        Only the per-server view lists rooms: a room link lets anyone join it.
+        """
+        guild_clause, params = ("AND guild_id = ?", (guild_id,)) if guild_id is not None else ("", ())
+        with self._lock:
+            history = self._connection.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS finished_games,
+                    SUM(CASE WHEN winner_names = '["red"]' THEN 1 ELSE 0 END) AS red_wins,
+                    SUM(CASE WHEN winner_names = '["blue"]' THEN 1 ELSE 0 END) AS blue_wins,
+                    AVG(
+                        CASE WHEN game_started_at IS NOT NULL
+                        THEN (julianday(finished_at) - julianday(game_started_at)) * 1440 END
+                    ) AS avg_game_minutes
+                FROM game_history
+                WHERE provider = ? AND outcome = 'finished' {guild_clause}
+                """,
+                (PROVIDER, *params),
+            ).fetchone()
+            watch_clause = "WHERE w.guild_id = ?" if guild_id is not None else ""
+            live = self._connection.execute(
+                f"""
+                SELECT
+                    COUNT(DISTINCT w.room_id) AS watching_rooms,
+                    SUM(CASE WHEN g.lifecycle_state = 'in_progress' THEN 1 ELSE 0 END) AS games_in_progress
+                FROM codenames_watches w
+                LEFT JOIN codenames_games g ON g.game_id = (
+                    SELECT game_id FROM codenames_games WHERE watch_id = w.watch_id
+                    ORDER BY game_number DESC, game_id DESC LIMIT 1
+                )
+                {watch_clause}
+                """,
+                params,
+            ).fetchone()
+            room_rows = (
+                self._connection.execute(
+                    """
+                    SELECT table_id AS room_id, COUNT(*) AS games
+                    FROM game_history
+                    WHERE provider = ? AND outcome = 'finished' AND guild_id = ?
+                    GROUP BY table_id
+                    ORDER BY games DESC, table_id
+                    LIMIT 10
+                    """,
+                    (PROVIDER, guild_id),
+                ).fetchall()
+                if guild_id is not None
+                else []
+            )
+        avg_minutes = history["avg_game_minutes"]
+        return {
+            "finished_games": int(history["finished_games"] or 0),
+            "red_wins": int(history["red_wins"] or 0),
+            "blue_wins": int(history["blue_wins"] or 0),
+            "avg_game_minutes": round(float(avg_minutes), 1) if avg_minutes is not None else None,
+            "watching_rooms": int(live["watching_rooms"] or 0),
+            "games_in_progress": int(live["games_in_progress"] or 0),
+            "top_rooms": [{"room_id": row["room_id"], "games": int(row["games"])} for row in room_rows],
+        }
+
+    # ------------------------------------------------------------------
     # In-room players
     # ------------------------------------------------------------------
 
