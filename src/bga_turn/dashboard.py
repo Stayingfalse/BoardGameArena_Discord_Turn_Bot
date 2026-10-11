@@ -49,7 +49,8 @@ from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .database import LinkConflictError, redact_global_stats
-from .utils import build_table_url, format_game_name
+from .utils import format_game_name
+from .bga.links import build_table_url
 
 if TYPE_CHECKING:
     from .app import BgaDiscordBot

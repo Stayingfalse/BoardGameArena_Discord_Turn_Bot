@@ -16,7 +16,7 @@ import websockets
 from websockets import ConnectionClosed
 from websockets.exceptions import InvalidStatus
 
-from .i18n import tr
+from ..i18n import tr
 from .models import BgaNotificationState, BgaTableInfo, BgaTableSnapshot
 
 LOGGER = logging.getLogger(__name__)

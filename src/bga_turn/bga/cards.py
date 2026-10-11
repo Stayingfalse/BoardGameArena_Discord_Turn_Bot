@@ -13,9 +13,11 @@ from dataclasses import dataclass
 import discord
 from discord.components import MediaGalleryItem
 
-from .i18n import tr
-from .models import BgaTableSnapshot, LinkedUser, WatchSubscription
-from .utils import build_table_url, format_game_name
+from ..i18n import tr
+from ..models import LinkedUser, WatchSubscription
+from .models import BgaTableSnapshot
+from ..utils import format_game_name
+from .links import build_table_url
 from .views import LinkSelfButton
 
 LIFECYCLE_RECRUITING = "recruiting"

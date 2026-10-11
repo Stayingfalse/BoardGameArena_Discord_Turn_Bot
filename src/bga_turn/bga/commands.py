@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .bga_client import (
+from .client import (
     BgaClient,
     BgaClientError,
     BgaNotPublicError,
@@ -20,11 +20,12 @@ from .bga_client import (
     BgaTableFinishedError,
     BgaTableUnavailableError,
 )
-from .database import AsyncDatabase, Database, LinkConflictError, redact_global_stats
-from .i18n import tr
+from ..database import AsyncDatabase, Database, LinkConflictError, redact_global_stats
+from ..i18n import tr
 from .monitor import BgaMonitor
-from .models import WatchSubscription
-from .utils import build_table_url, extract_table_links, format_game_name, parse_public_table_url
+from ..models import WatchSubscription
+from ..utils import format_game_name
+from .links import build_table_url, extract_table_links, parse_public_table_url
 
 LOGGER = logging.getLogger(__name__)
 

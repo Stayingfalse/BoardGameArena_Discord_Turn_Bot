@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import discord
 import pytest
 
-from bga_turn.commands_bga import BgaCommands, StatsLayoutView
+from bga_turn.bga.commands import BgaCommands, StatsLayoutView
 from bga_turn.database import LinkConflictError
 from bga_turn.i18n import tr
-from bga_turn.views import LinkBgaModal, ManageOwnLinkView
+from bga_turn.bga.views import LinkBgaModal, ManageOwnLinkView
 
 
 def test_claimed_name_or_id_is_refused(database):

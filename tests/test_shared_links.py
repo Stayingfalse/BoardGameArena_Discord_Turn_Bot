@@ -8,7 +8,7 @@ import discord
 import pytest
 from conftest import GUILD_A_ID, make_text_channel
 
-from bga_turn.bga_client import (
+from bga_turn.bga.client import (
     BgaClientError,
     BgaNotPublicError,
     BgaRateLimitError,
@@ -16,9 +16,9 @@ from bga_turn.bga_client import (
     BgaTableFinishedError,
     BgaTableUnavailableError,
 )
-from bga_turn.commands_bga import BgaCommands
+from bga_turn.bga.commands import BgaCommands
 from bga_turn.i18n import tr
-from bga_turn.monitor import ActiveTableMessage, BgaMonitor
+from bga_turn.bga.monitor import ActiveTableMessage, BgaMonitor
 
 TABLE_ID = "891538070"
 

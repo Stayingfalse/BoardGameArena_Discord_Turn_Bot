@@ -453,16 +453,18 @@ The bot does not use cookies, browser sessions, or a BGA account.
 | `docker-compose.yml` | Compose service with auto-restart and persistent data volume |
 | `bot.py` | Optional development launcher from the repository root |
 | `src/bga_turn/app.py` | Application entry point, environment loading, bot startup |
-| `src/bga_turn/commands_bga.py` | `/bga` slash commands and the `on_message` link detector |
-| `src/bga_turn/bga_client.py` | Public BGA networking, HTML parsing, websocket handling |
-| `src/bga_turn/monitor.py` | Watch loop, table workers and Discord message lifecycle |
-| `src/bga_turn/cards.py` | Renders the table cards and link status notes (no I/O) |
 | `src/bga_turn/discord_io.py` | Rate-limit-aware Discord calls (per-channel queues, 429 retries) |
-| `src/bga_turn/views.py` | Persistent "Link your BGA & Discord" button and modal |
 | `src/bga_turn/database.py` | SQLite persistence; `AsyncDatabase` runs it off the event loop |
 | `src/bga_turn/dashboard.py` | Optional aiohttp web dashboard |
-| `src/bga_turn/models.py` | Domain dataclasses |
-| `src/bga_turn/utils.py` | URL parsing, JSON helpers, small utilities |
+| `src/bga_turn/models.py` | Shared domain dataclasses |
+| `src/bga_turn/utils.py` | JSON helpers, small utilities |
+| `src/bga_turn/bga/commands.py` | `/bga` slash commands and the `on_message` link detector |
+| `src/bga_turn/bga/client.py` | Public BGA networking, HTML parsing, websocket handling |
+| `src/bga_turn/bga/monitor.py` | Watch loop, table workers and Discord message lifecycle |
+| `src/bga_turn/bga/cards.py` | Renders the table cards and link status notes (no I/O) |
+| `src/bga_turn/bga/views.py` | Persistent "Link your BGA & Discord" button and modal |
+| `src/bga_turn/bga/links.py` | BGA table URL parsing |
+| `src/bga_turn/bga/models.py` | BGA table and notification dataclasses |
 | `src/bga_turn/schema.sql` | Packaged SQLite schema |
 | `src/bga_turn/locales/en.json` | Bot messages (see Translations) |
 | `pyproject.toml` | Package metadata and console entry point |

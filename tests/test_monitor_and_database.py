@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from conftest import GUILD_A_ID, make_text_channel
 
 from bga_turn.database import Database
-from bga_turn.monitor import BgaMonitor
+from bga_turn.bga.monitor import BgaMonitor
 
 
 def test_initialize_drops_legacy_followed_players_table(tmp_path):
@@ -75,7 +75,7 @@ def test_bot_code_never_calls_the_database_on_the_event_loop():
     import bga_turn
 
     package = Path(bga_turn.__file__).parent
-    for name in ("monitor.py", "commands_bga.py"):
+    for name in ("bga/monitor.py", "bga/commands.py"):
         source = (package / name).read_text(encoding="utf-8")
         direct = [line.strip() for line in source.splitlines() if re.search(r"self\.database\.\w+", line)]
         assert direct == [], f"{name}: use 'await self.db.<method>(...)' instead: {direct}"

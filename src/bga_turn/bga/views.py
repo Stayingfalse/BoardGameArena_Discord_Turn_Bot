@@ -6,8 +6,8 @@ import asyncio
 
 import discord
 
-from .database import Database, LinkConflictError
-from .i18n import tr
+from ..database import Database, LinkConflictError
+from ..i18n import tr
 
 
 class LinkBgaModal(discord.ui.Modal):

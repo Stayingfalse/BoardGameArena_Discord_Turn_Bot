@@ -6,9 +6,10 @@ from types import SimpleNamespace
 import discord
 import pytest
 
-from bga_turn import cards
+from bga_turn.bga import cards
 from bga_turn.discord_io import DiscordRateLimiter
-from bga_turn.models import BgaTableSnapshot, LinkedUser
+from bga_turn.bga.models import BgaTableSnapshot
+from bga_turn.models import LinkedUser
 
 NAMES = {"11": "Alice", "12": "Bob", "13": "Cara"}
 LINKS = [LinkedUser("200", "11", "Alice"), LinkedUser("201", "", "Bob")]

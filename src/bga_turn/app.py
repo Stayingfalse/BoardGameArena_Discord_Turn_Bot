@@ -14,12 +14,12 @@ from dotenv import load_dotenv
 WORKDIR = Path.cwd()
 load_dotenv(dotenv_path=WORKDIR / ".env", encoding="utf-8-sig")
 
-from .bga_client import BgaClient
-from .commands_bga import BgaCommands
+from .bga.client import BgaClient
+from .bga.commands import BgaCommands
 from .database import Database
 from .i18n import tr
-from .monitor import BgaMonitor
-from .views import LinkSelfPersistentView
+from .bga.monitor import BgaMonitor
+from .bga.views import LinkSelfPersistentView
 
 
 def setup_logging() -> None:
