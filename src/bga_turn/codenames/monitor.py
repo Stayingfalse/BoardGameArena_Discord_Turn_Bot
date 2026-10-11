@@ -279,6 +279,7 @@ class CodenamesMonitor:
                         text,
                         reference=message.to_reference(fail_if_not_exists=False),
                         mention_author=False,
+                        view=cards.build_ping_view(watch.room_id),
                         allowed_mentions=discord.AllowedMentions(
                             users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
                         ),

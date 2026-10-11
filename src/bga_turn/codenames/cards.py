@@ -146,6 +146,13 @@ def build_turn_ping(view: GameView, links: dict[str, str], game_number: int) -> 
     return text, user_ids
 
 
+def build_ping_view(room_id: str) -> discord.ui.View:
+    """An "Open room" link under a turn ping, so players needn't scroll back to the card."""
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label=tr("cn_button_open_room"), url=build_room_url(room_id)))
+    return view
+
+
 def _status_line(data: CardData) -> str:
     view = data.view
     if view is None:

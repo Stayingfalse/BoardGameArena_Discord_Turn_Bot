@@ -66,7 +66,7 @@ class FakeChannel:
 
     @property
     def cards(self) -> list[FakeMessage]:
-        return [m for m in self.messages if m.view is not None]
+        return [m for m in self.messages if m.content is None and m.view is not None]
 
     @property
     def pings(self) -> list[FakeMessage]:
@@ -201,6 +201,10 @@ async def test_a_full_game_posts_one_card_and_pings_each_turn(monitor, database,
         ["111"], ["222"], ["333"], ["444"], ["111"], ["222"], ["333"], ["444"], ["111"], ["222"]
     ]
     assert "your turn to give a clue" in channel.pings[0].content
+    # Every ping carries a link straight to the room.
+    for ping in channel.pings:
+        [button] = [item for item in ping.view.children if isinstance(item, discord.ui.Button)]
+        assert button.url == "https://codenames.game/r/test-room"
     assert "**CLUE 1** · 4" in channel.pings[1].content
     # Each ping replaces the last; the game's end clears the final one.
     assert all(p.deleted for p in channel.pings)
