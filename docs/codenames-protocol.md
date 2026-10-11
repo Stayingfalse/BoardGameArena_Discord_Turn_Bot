@@ -33,6 +33,10 @@ full game (lobby → clues/guesses → assassin). Basis for a Codenames provider
 Joining does **not** put us on a team: we stay a spectator. Display names are
 sanitised (brackets stripped: `Turn-Bot (spectator)` → `Turn-Bot spectator`).
 
+A seat keeps the name it was created with: rejoining with the same
+credentials but a different `playerName` does not rename it. So the bot's name
+for a room is fixed when it first joins, and stored with its credentials.
+
 ## Incoming events
 
 | event | args | meaning |

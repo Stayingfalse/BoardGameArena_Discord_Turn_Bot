@@ -209,3 +209,16 @@ async def test_codenames_methods_are_available_on_async_database(database):
     db = AsyncDatabase(database)
     room = await db.get_or_create_codenames_room("juzaf-hitos", bot_credentials="x", bot_name="🤖 Agent Antenna")
     assert room.bot_name == "🤖 Agent Antenna"
+
+
+async def test_a_room_gets_one_identity_that_is_reused(database):
+    from bga_turn.codenames.identity import DEFAULT_BOT_NAMES, ensure_room_identity
+    from bga_turn.database import AsyncDatabase
+
+    db = AsyncDatabase(database)
+    first = await ensure_room_identity(db, "juzaf-hitos")
+    again = await ensure_room_identity(db, "juzaf-hitos", ("🤖 Someone Else",))
+    assert first.bot_name in DEFAULT_BOT_NAMES
+    assert (again.bot_credentials, again.bot_name) == (first.bot_credentials, first.bot_name)
+    other = await ensure_room_identity(db, "other-room")
+    assert other.bot_credentials != first.bot_credentials
