@@ -104,6 +104,7 @@ Open that URL in your browser, choose your server, and approve. The bot will hav
    - `Read Message History`
    - `Manage Messages` *(needed to tidy up shared links)*
    - `Add Reactions` *(the bot reacts 🕵️ to Codenames room links it watches; optional)*
+   - `Manage Webhooks` *(Codenames updates are posted as "Codenames" instead of under the bot's name; optional)*
 5. Copy the generated URL, open it in a browser, and add the bot to your server.
 
 ---
@@ -309,6 +310,7 @@ Things to know:
 - Codenames links are never deleted, even where *Tidy up shared links* is on; the server's forced notification channel is used for the card.
 - Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
 - Turn pings are separate messages because Discord doesn't notify mentions in edited messages; the card itself is posted with mentions turned off.
+- With the **Manage Webhooks** permission, cards and pings are posted by a "Codenames" webhook the bot creates in the channel (with its own avatar), so they don't appear under the bot's name. The buttons still work. Without it, the bot posts them itself and pings start with "🕵️ Codenames". Webhook messages can't be replies, so in that mode pings aren't attached to the card; they have their own **Open room** button.
 
 ## 3. Discord commands
 
@@ -515,6 +517,8 @@ The site runs on [boardgame.io](https://boardgame.io) behind Socket.IO. The bot 
 | `src/bga_turn/codenames/monitor.py` | One client per room; cards, turn pings, play-again, closing rooms |
 | `src/bga_turn/codenames/cards.py` | Renders Codenames cards and turn pings (no I/O) |
 | `src/bga_turn/codenames/views.py` | Persistent "I'm playing" button and seat picker |
+| `src/bga_turn/codenames/posting.py` | Posts as the "Codenames" webhook, or as the bot without Manage Webhooks |
+| `src/bga_turn/static/codenames-avatar.png` | Avatar of the "Codenames" webhook |
 | `src/bga_turn/codenames/store.py` | Codenames tables and stats (mixed into `Database`) |
 | `src/bga_turn/codenames/identity.py` | Per-room bot credentials and names |
 | `src/bga_turn/codenames/jsonpatch.py`, `links.py`, `models.py` | JSON Patch, room URL parsing, dataclasses |

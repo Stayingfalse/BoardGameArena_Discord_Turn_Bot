@@ -221,6 +221,7 @@ class BgaDiscordBot(commands.Bot):
             read_message_history=True,
             manage_messages=True,
             add_reactions=True,
+            manage_webhooks=True,
         )
         invite_url = (
             "https://discord.com/oauth2/authorize"

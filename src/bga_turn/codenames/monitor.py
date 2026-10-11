@@ -24,6 +24,7 @@ from . import cards
 from .client import CLOSE_EXPIRED, CLOSE_FAILED, CLOSE_STOPPED, CLOSE_UNSUPPORTED, CodenamesRoomClient
 from .identity import DEFAULT_BOT_NAMES, ensure_room_identity
 from .models import CodenamesGame, CodenamesWatch
+from .posting import VIA_BOT, VIA_WEBHOOK, BotPoster, Posters
 from .state import GameView
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ _CLOSE_NOTES = {
     CLOSE_IDLE: "cn_note_idle",
 }
 _PING_KEY = "ping_message_id"
+_PING_VIA_KEY = "ping_via"
+_CARD_VIA_KEY = "card_via"
 
 ClientFactory = Callable[..., CodenamesRoomClient]
 
@@ -51,6 +54,7 @@ class CodenamesMonitor:
         update_delay: float = 1.5,
         client_factory: ClientFactory = CodenamesRoomClient,
         rate_limiter: DiscordRateLimiter | None = None,
+        posters: Posters | None = None,
     ) -> None:
         self.bot = bot
         self.db = AsyncDatabase(database)
@@ -59,6 +63,7 @@ class CodenamesMonitor:
         self.update_delay = update_delay
         self.discord = rate_limiter or DiscordRateLimiter()
         self._client_factory = client_factory
+        self.posters = posters or Posters(bot)
         self._clients: dict[str, CodenamesRoomClient] = {}
         self._views: dict[str, GameView] = {}
         self._pending: dict[str, asyncio.Task] = {}
@@ -268,27 +273,31 @@ class CodenamesMonitor:
 
         if view.turn_key != game.turn_key:
             await self._delete_ping(watch, game)
-            ping = cards.build_turn_ping(view, links, game.game_number) if view.turn_key else None
+            poster = await self.posters.for_sending(channel)
+            ping = (
+                cards.build_turn_ping(view, links, game.game_number, branded=poster.via == VIA_BOT)
+                if view.turn_key
+                else None
+            )
             ping_id = None
             if ping is not None:
                 text, user_ids = ping
-                sent = await self._call(
+                sent, poster = await self._send(
                     "send_codenames_ping",
                     watch.room_id,
-                    lambda: channel.send(
-                        text,
-                        reference=message.to_reference(fail_if_not_exists=False),
-                        mention_author=False,
-                        view=cards.build_ping_view(watch.room_id),
-                        allowed_mentions=discord.AllowedMentions(
-                            users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
-                        ),
-                    ),
                     channel,
+                    poster,
+                    text,
+                    view=cards.build_ping_view(watch.room_id),
+                    allowed_mentions=discord.AllowedMentions(
+                        users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
+                    ),
+                    reply_to=message,
                 )
                 ping_id = sent.id if sent is not None else None
             state = dict(game.state)
             state[_PING_KEY] = ping_id
+            state[_PING_VIA_KEY] = poster.via
             await self.db.update_codenames_game(game.game_id, turn_key=view.turn_key, state=state)
             game.turn_key, game.state = view.turn_key, state
 
@@ -316,16 +325,20 @@ class CodenamesMonitor:
                 if edited is None:
                     return message
         if message is None:
-            message = await self._call(
+            message, poster = await self._send(
                 "send_codenames_card",
                 data.room_id,
-                lambda: channel.send(view=layout, allowed_mentions=discord.AllowedMentions.none()),
                 channel,
+                await self.posters.for_sending(channel),
+                view=layout,
+                allowed_mentions=discord.AllowedMentions.none(),
             )
             if message is None:
                 return None
-            await self.db.update_codenames_game(game.game_id, message_id=message.id)
-            game.message_id = message.id
+            state = dict(game.state)
+            state[_CARD_VIA_KEY] = poster.via
+            await self.db.update_codenames_game(game.game_id, message_id=message.id, state=state)
+            game.message_id, game.state = message.id, state
         self._messages[game.game_id] = message
         self._signatures[game.game_id] = signature
         return message
@@ -336,10 +349,12 @@ class CodenamesMonitor:
             return cached
         if game.message_id is None:
             return None
+        poster = await self.posters.for_message(channel, game.state.get(_CARD_VIA_KEY, VIA_BOT))
+        if poster is None:
+            return None
         try:
             message = await self._call(
-                "fetch_codenames_card", game.match_id, lambda: channel.fetch_message(game.message_id), channel,
-                kind="read",
+                "fetch_codenames_card", game.match_id, lambda: poster.fetch(game.message_id), channel, kind="read"
             )
         except discord.NotFound:
             return None
@@ -360,9 +375,12 @@ class CodenamesMonitor:
             return
         channel = await self._channel(watch)
         if channel is not None:
+            # A webhook ping whose webhook is gone can still be deleted by the bot (Manage Messages).
+            poster = await self.posters.for_message(channel, game.state.get(_PING_VIA_KEY, VIA_BOT)) or BotPoster(channel)
             try:
-                partial = channel.get_partial_message(int(ping_id))
-                await self._call("delete_codenames_ping", watch.room_id, lambda: partial.delete(), channel, kind="delete")
+                await self._call(
+                    "delete_codenames_ping", watch.room_id, lambda: poster.delete(int(ping_id)), channel, kind="delete"
+                )
             except discord.NotFound:
                 pass
             except discord.DiscordException as exc:
@@ -408,14 +426,13 @@ class CodenamesMonitor:
             else:
                 channel = await self._channel(watch)
                 if channel is not None:
-                    await self._call(
+                    await self._send(
                         "send_codenames_note",
                         room_id,
-                        lambda ch=channel: ch.send(
-                            tr("cn_note_room", room=room_id, note=note),
-                            allowed_mentions=discord.AllowedMentions.none(),
-                        ),
                         channel,
+                        await self.posters.for_sending(channel),
+                        tr("cn_note_room", room=room_id, note=note),
+                        allowed_mentions=discord.AllowedMentions.none(),
                     )
             await self.db.remove_codenames_watch(watch.watch_id, outcome="cancelled")
         self._clients.pop(room_id, None)
@@ -434,6 +451,18 @@ class CodenamesMonitor:
                 LOGGER.warning("Codenames room %s: channel %s unavailable: %s", watch.room_id, watch.channel_id, exc)
                 return None
         return channel if callable(getattr(channel, "send", None)) else None
+
+    async def _send(self, operation: str, room_id: str, channel, poster, content=None, **kwargs):
+        """Send with *poster*; if its webhook was deleted, set it up again or fall back to the bot.
+        Returns ``(message or None, the poster that sent it)``."""
+        try:
+            return await self._call(operation, room_id, lambda: poster.send(content, **kwargs), channel), poster
+        except discord.NotFound:
+            if poster.via != VIA_WEBHOOK:
+                raise
+        self.posters.forget(channel)
+        poster = await self.posters.for_sending(channel)
+        return await self._call(operation, room_id, lambda: poster.send(content, **kwargs), channel), poster
 
     async def _call(self, operation: str, room_id: str, factory, channel, *, kind: str = "send", created_at=None):
         if not self.discord.io_allowed():

@@ -118,9 +118,12 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
     return layout
 
 
-def build_turn_ping(view: GameView, links: dict[str, str], game_number: int) -> tuple[str, list[int]] | None:
+def build_turn_ping(
+    view: GameView, links: dict[str, str], game_number: int, *, branded: bool = False
+) -> tuple[str, list[int]] | None:
     """The ping message for the current turn and the Discord users it mentions,
-    or ``None`` when no linked player needs pinging."""
+    or ``None`` when no linked player needs pinging. *branded* says "Codenames"
+    in the text, for pings the bot sends as itself rather than as the webhook."""
     user_ids: list[int] = []
     for player_id in view.players_to_act():
         discord_user_id = links.get(player_id)
@@ -143,6 +146,8 @@ def build_turn_ping(view: GameView, links: dict[str, str], game_number: int) -> 
         )
     else:
         text = tr("cn_ping_guess_no_clue", mentions=mentions, team=team, number=game_number)
+    if branded:
+        text = tr("cn_ping_branded", text=text)
     return text, user_ids
 
 

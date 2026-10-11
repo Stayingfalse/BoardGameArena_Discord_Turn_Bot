@@ -30,7 +30,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-bga_turn = ["schema.sql", "templates/*.html", "static/*.css", "static/*.js", "locales/*.json"]
+bga_turn = ["schema.sql", "templates/*.html", "static/*.css", "static/*.js", "static/*.png", "locales/*.json"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-aiohttp>=1.0", "ruff>=0.6"]

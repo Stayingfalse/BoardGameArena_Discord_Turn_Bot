@@ -368,3 +368,140 @@ async def test_seat_picker_marks_the_current_seat_and_offers_release():
     assert not any(option.default for option in select.options)
     assert (select.options[0].label, select.options[0].description) == ("Bob", "That's you now")
     assert any(isinstance(item, discord.ui.Button) for item in view.children)
+
+
+# ---------------------------------------------------------------------------
+# Posting as the "Codenames" webhook
+# ---------------------------------------------------------------------------
+
+class FakePermissions:
+    def __init__(self, manage_webhooks: bool) -> None:
+        self.manage_webhooks = manage_webhooks
+
+
+class FakeWebhook:
+    def __init__(self, channel: "WebhookChannel", name: str, avatar: bytes, owner_id: int) -> None:
+        self.channel = channel
+        self.name = name
+        self.avatar_bytes = avatar
+        self.user = discord.Object(id=owner_id)
+        self.token = "token"
+        self.deleted = False
+
+    async def send(self, content=discord.utils.MISSING, *, username, allowed_mentions, wait, view=None, **kwargs):
+        if self.deleted:
+            raise discord.NotFound(_FakeResponse(), "Unknown Webhook")
+        assert wait and username == "Codenames"
+        message = FakeMessage(
+            self.channel, None if content is discord.utils.MISSING else content, view,
+            allowed_mentions=allowed_mentions, via=self,
+        )
+        self.channel.messages.append(message)
+        return message
+
+    async def fetch_message(self, message_id):
+        for message in self.channel.messages:
+            if message.id == message_id and message.kwargs.get("via") is self and not message.deleted:
+                return message
+        raise discord.NotFound(_FakeResponse(), "missing")
+
+    async def delete_message(self, message_id):
+        (await self.fetch_message(message_id)).deleted = True
+
+
+class WebhookChannel(FakeChannel):
+    """A channel where the bot may (or may not) manage webhooks."""
+
+    BOT_ID = 4242
+
+    def __init__(self, channel_id: int, *, manage_webhooks: bool = True) -> None:
+        super().__init__(channel_id)
+        self.guild = type("Guild", (), {"me": object()})()
+        self.manage_webhooks = manage_webhooks
+        self.hooks: list[FakeWebhook] = []
+        self.created = 0
+
+    def permissions_for(self, member):
+        return FakePermissions(self.manage_webhooks)
+
+    async def webhooks(self):
+        return list(self.hooks)
+
+    async def create_webhook(self, *, name, avatar, reason=None):
+        self.created += 1
+        hook = FakeWebhook(self, name, avatar, self.BOT_ID)
+        self.hooks.append(hook)
+        return hook
+
+    @property
+    def bot_sent(self) -> list[FakeMessage]:
+        return [m for m in self.messages if "via" not in m.kwargs]
+
+
+def _webhook_monitor(database, channel):
+    bot = FakeBot(channel)
+    bot.user = discord.Object(id=WebhookChannel.BOT_ID)
+    return CodenamesMonitor(bot, database, update_delay=0, client_factory=FakeClient, rate_limiter=PassThroughLimiter())
+
+
+async def test_with_manage_webhooks_everything_is_posted_as_codenames(database):
+    FakeClient.instances.clear()
+    channel = WebhookChannel(CHANNEL)
+    monitor = _webhook_monitor(database, channel)
+    views = await _watch_and_link(monitor, database)
+    for view in views:
+        await _show(monitor, view)
+
+    assert channel.created == 1
+    assert channel.hooks[0].avatar_bytes.startswith(b"\x89PNG")  # our own Codenames avatar
+    assert channel.bot_sent == []  # nothing went out under the bot's own name
+    assert len(channel.cards) == 1 and len(channel.pings) == 10
+    # The sender already says "Codenames", so the text doesn't need to.
+    assert not any("**Codenames** ·" in p.content for p in channel.pings)
+    assert all(p.deleted for p in channel.pings)
+    assert "Blue wins" in _text(channel.cards[0].view)
+
+
+async def test_after_a_restart_the_webhook_is_reused_and_its_card_edited(database):
+    FakeClient.instances.clear()
+    channel = WebhookChannel(CHANNEL)
+    first = _webhook_monitor(database, channel)
+    views = await _watch_and_link(first, database)
+    in_turn = next(v for v in views if v.turn_key == "red:spymasters")
+    await _show(first, in_turn)
+
+    restarted = _webhook_monitor(database, channel)
+    await restarted.start()
+    guessing = next(v for v in views if v.turn_key == "red:operatives")
+    await _show(restarted, guessing)
+
+    assert channel.created == 1
+    assert len(channel.cards) == 1 and channel.cards[0].edits  # same card, edited through the webhook
+    assert [p.deleted for p in channel.pings] == [True, False]  # old ping removed, new one sent
+
+
+async def test_without_manage_webhooks_the_bot_posts_branded_replies(database):
+    FakeClient.instances.clear()
+    channel = WebhookChannel(CHANNEL, manage_webhooks=False)
+    monitor = _webhook_monitor(database, channel)
+    views = await _watch_and_link(monitor, database)
+    await _show(monitor, next(v for v in views if v.turn_key == "red:spymasters"))
+
+    assert channel.created == 0
+    [ping] = channel.pings
+    assert ping.content.startswith("🕵️ **Codenames** · ")
+    assert ping.kwargs["reference"].message_id == channel.cards[0].id  # a reply to the card
+
+
+async def test_a_deleted_webhook_is_set_up_again(database):
+    FakeClient.instances.clear()
+    channel = WebhookChannel(CHANNEL)
+    monitor = _webhook_monitor(database, channel)
+    views = await _watch_and_link(monitor, database)
+    channel.hooks[0].deleted = True  # an admin removed it
+    channel.hooks.clear()
+    await _show(monitor, next(v for v in views if v.turn_key == "red:spymasters"))
+
+    assert channel.created == 2
+    assert channel.bot_sent == []
+    assert len(channel.pings) == 1

@@ -279,5 +279,6 @@
   "cn_watch_ambiguous": "This channel watches several Codenames rooms; say which one with the `room` option.",
   "cn_status_summary": "📊 This server so far: {games} games played · 🔴 {red} Red wins · 🔵 {blue} Blue wins",
   "cn_claim_option_current": "That's you now",
-  "cn_claim_option_suggested": "The name you used last time"
+  "cn_claim_option_suggested": "The name you used last time",
+  "cn_ping_branded": "🕵️ **Codenames** · {text}"
 }
