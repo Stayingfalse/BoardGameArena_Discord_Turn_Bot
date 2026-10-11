@@ -160,4 +160,5 @@ CREATE TABLE IF NOT EXISTS codenames_user_names (
 );
 
 CREATE INDEX IF NOT EXISTS idx_codenames_watches_guild ON codenames_watches(guild_id);
+CREATE INDEX IF NOT EXISTS idx_codenames_games_message ON codenames_games(message_id);
 CREATE INDEX IF NOT EXISTS idx_codenames_players_discord ON codenames_players(discord_user_id);

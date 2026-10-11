@@ -51,6 +51,8 @@ class GameView:
     finish_reason: str | None
     bot_player_id: str | None = None
     spectator_ids: list[str] = field(default_factory=list)
+    # Players (not the bot) with the room open right now.
+    connected_ids: list[str] = field(default_factory=list)
 
     @property
     def turn_key(self) -> str | None:
@@ -200,6 +202,7 @@ class MatchTracker:
             finish_reason=(gameover or {}).get("reason") if isinstance(gameover, dict) else None,
             bot_player_id=self.bot_player_id,
             spectator_ids=spectators,
+            connected_ids=sorted((pid for pid in self.connected_ids if pid != self.bot_player_id), key=_id_sort_key),
         )
 
 

@@ -206,6 +206,13 @@ class CodenamesStore:
             row = self._connection.execute("SELECT * FROM codenames_games WHERE game_id = ?", (game_id,)).fetchone()
         return _row_to_game(row) if row is not None else None
 
+    def get_codenames_game_by_message(self, message_id: int) -> CodenamesGame | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM codenames_games WHERE message_id = ?", (str(message_id),)
+            ).fetchone()
+        return _row_to_game(row) if row is not None else None
+
     def get_latest_codenames_game(self, watch_id: int) -> CodenamesGame | None:
         with self._lock:
             row = self._connection.execute(

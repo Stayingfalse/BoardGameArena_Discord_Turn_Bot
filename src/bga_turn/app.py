@@ -20,6 +20,10 @@ from .database import Database
 from .i18n import tr
 from .bga.monitor import BgaMonitor
 from .bga.views import LinkSelfPersistentView
+from .codenames.commands import CodenamesCommands
+from .codenames.identity import DEFAULT_BOT_NAMES, parse_bot_names
+from .codenames.monitor import CodenamesMonitor
+from .codenames.views import ClaimSeatPersistentView
 
 
 def setup_logging() -> None:
@@ -90,6 +94,9 @@ class BgaDiscordBot(commands.Bot):
         default_delete_invite_message: bool = False,
         new_guild_delete_invite_message: bool = True,
         default_forced_channel_id: str | None = None,
+        codenames_enabled: bool = True,
+        codenames_bot_names: tuple[str, ...] = DEFAULT_BOT_NAMES,
+        codenames_idle_hours: float = 12.0,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -105,6 +112,11 @@ class BgaDiscordBot(commands.Bot):
             poll_seconds,
             default_recruiting_only=default_recruiting_only,
             default_forced_channel_id=default_forced_channel_id,
+        )
+        self.codenames_monitor = (
+            CodenamesMonitor(self, database, bot_names=codenames_bot_names, idle_hours=codenames_idle_hours)
+            if codenames_enabled
+            else None
         )
         self._default_recruiting_only = default_recruiting_only
         self._default_forced_channel_id = default_forced_channel_id
@@ -125,6 +137,13 @@ class BgaDiscordBot(commands.Bot):
         # Register a persistent view so the self-link button on existing messages
         # continues to work after a bot restart.
         self.add_view(LinkSelfPersistentView())
+        if self.codenames_monitor is not None:
+            await self.add_cog(
+                CodenamesCommands(
+                    self.database, self.codenames_monitor, default_forced_channel_id=self._default_forced_channel_id
+                )
+            )
+            self.add_view(ClaimSeatPersistentView())
 
     async def _clear_global_commands(self) -> int:
         deleted_count = 0
@@ -156,6 +175,8 @@ class BgaDiscordBot(commands.Bot):
 
         self._log_invite_url()
         self.monitor.start()
+        if self.codenames_monitor is not None:
+            await self.codenames_monitor.start()
         self._startup_completed = True
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
@@ -176,12 +197,16 @@ class BgaDiscordBot(commands.Bot):
             guild_id,
             outcome="cancelled",
         )
+        if self.codenames_monitor is not None:
+            removed_watches += await self.codenames_monitor.remove_guild(guild_id)
         await asyncio.to_thread(self.database.remove_guild_settings, guild_id)
         await asyncio.to_thread(self.database.remove_guild_scoped_users_for_guild, guild_id)
         self.logger.info("Cleaned up guild data for removed guild %s (watches=%d).", guild_id, removed_watches)
 
     async def close(self) -> None:
         self.monitor.stop()
+        if self.codenames_monitor is not None:
+            await self.codenames_monitor.stop()
         self.database.close()
         await super().close()
 
@@ -278,6 +303,9 @@ def main() -> None:
     # replaces them), unless BGA_DELETE_INVITE_MESSAGE is set explicitly.
     new_guild_delete_invite_message = env_flag("BGA_DELETE_INVITE_MESSAGE", default=True)
     default_forced_channel_id = os.getenv("BGA_FORCED_CHANNEL_ID") or None
+    codenames_enabled = env_flag("CODENAMES_ENABLED", default=True)
+    codenames_bot_names = parse_bot_names(os.getenv("CODENAMES_BOT_NAMES"))
+    codenames_idle_hours = float(os.getenv("CODENAMES_IDLE_HOURS", "12"))
     websocket_url = os.getenv("BGA_WS_URL", "wss://ws-x1.boardgamearena.com/connection/websocket")
 
     dashboard_enabled = env_flag("DASHBOARD_ENABLED")
@@ -325,6 +353,9 @@ def main() -> None:
         default_delete_invite_message=default_delete_invite_message,
         new_guild_delete_invite_message=new_guild_delete_invite_message,
         default_forced_channel_id=default_forced_channel_id,
+        codenames_enabled=codenames_enabled,
+        codenames_bot_names=codenames_bot_names,
+        codenames_idle_hours=codenames_idle_hours,
     )
     asyncio.run(
         _run_bot(
