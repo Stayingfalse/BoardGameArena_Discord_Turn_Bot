@@ -256,6 +256,7 @@ def _build_add_bot_url(client_id: str, guild_id: str | None = None) -> str:
         | (1 << 14)  # embed_links
         | (1 << 16)  # read_message_history
         | (1 << 13)  # manage_messages
+        | (1 << 6)  # add_reactions (acknowledges Codenames room links)
     )
     params: dict[str, object] = {
         "client_id": client_id,

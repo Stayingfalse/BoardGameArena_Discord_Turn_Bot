@@ -14,6 +14,8 @@ No BGA account, no password, no cookie — the bot only reads what any anonymous
 
 To get Discord mentions in turn notifications, server admins can link Discord members to their BGA accounts with `/bga link-member`. Players can also self-link by clicking the **Link your BGA & Discord** button that appears on the recruiting message.
 
+**Codenames too.** Post a [codenames.game](https://codenames.game) room link and the bot joins the room as a spectator, posts a live "Game N" card, and pings the spymaster when a clue is needed and the operatives when it's their turn to guess. That makes the site work as a turn-based game. See [Codenames](#codenames-codenamesgame).
+
 ## Quick start
 
 ### Docker (recommended)
@@ -101,6 +103,7 @@ Open that URL in your browser, choose your server, and approve. The bot will hav
    - `Embed Links`
    - `Read Message History`
    - `Manage Messages` *(needed to tidy up shared links)*
+   - `Add Reactions` *(the bot reacts 🕵️ to Codenames room links it watches; optional)*
 5. Copy the generated URL, open it in a browser, and add the bot to your server.
 
 ---
@@ -162,6 +165,11 @@ DISCORD_CLEAR_GLOBAL_COMMANDS=0
 # Set to 1 to re-enable the legacy tableinfos HTTP fallback for end-of-game detection.
 BGA_ENABLE_TABLEINFOS_FALLBACK=0
 
+# --- Codenames (codenames.game) ---
+CODENAMES_ENABLED=1             # Watch posted codenames.game room links
+CODENAMES_BOT_NAMES=            # Optional "|"-separated names the bot uses in rooms
+CODENAMES_IDLE_HOURS=12         # Stop watching a room nobody has been in for this long
+
 # --- Optional web dashboard ---
 DASHBOARD_ENABLED=0
 DASHBOARD_PORT=8080
@@ -188,6 +196,9 @@ DASHBOARD_SECRET_KEY=
 | `BGA_FORCED_CHANNEL_ID` | — | — | Force all bot notifications into one specific channel |
 | `LOG_LEVEL` | — | `INFO` | Console log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
+| `CODENAMES_ENABLED` | — | `1` | Watch posted codenames.game room links and add the `/codenames` commands |
+| `CODENAMES_BOT_NAMES` | — | built-in list | `\|`-separated names the bot picks from when it first joins a room (e.g. `🤖 Agent Turnkeeper\|🤖 Curious Cat`). Avoid brackets: the site strips them |
+| `CODENAMES_IDLE_HOURS` | — | `12` | Stop watching a room that has had nobody in it for this many hours |
 | `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
 | `DASHBOARD_HOST` | — | `0.0.0.0` | Interface the web dashboard listens on (use `127.0.0.1` behind a local reverse proxy) |
 | `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
@@ -281,9 +292,27 @@ Each BGA account can be linked to only one Discord user. Linking a name or ID th
 
 When the bot sees a player act on a watched table it automatically fills in any missing BGA name or ID for linked Discord members. You can link someone with just a name or just an ID, and the bot completes the other field over time.
 
+### Codenames (codenames.game)
+
+[codenames.game](https://codenames.game) works as a live game, but nothing tells you when it's your turn. The bot fills that gap so a game can run over hours or days.
+
+1. **Post a room link** such as `https://codenames.game/r/juzaf-hitos`. The bot reacts 🕵️, joins the room as a **spectator** and posts a **"Game 1"** card. It never joins a team and never sees the key (card colours stay hidden from spectators until they're revealed).
+2. **Say who's playing.** Each player opens the room, enters a name, then presses **🙋 I'm playing** on the card and picks that name from a private list. Or tag people with `/codenames players`: they get one invite ping and appear on the card until they claim a name. The bot remembers each person's last name and suggests it next time, and tagged players whose usual name is in the room are matched automatically.
+3. **Play.** The card shows the teams, cards left, the current clue, the last guess and whose move it is (👉). When the turn changes the bot sends a short ping as a reply to the card: the team's **spymaster** when a clue is needed, then its **operatives** with the clue. The previous ping is deleted, guesses within a turn don't ping again, and a restart never pings twice.
+4. **Play again.** When the room starts a new game, the finished card keeps its result and a new **"Game 2"** card is posted.
+
+Things to know:
+
+- The bot shows up in the room's player list with a fun name starting with 🤖 (one per room, kept for that room). Leave it off the teams.
+- Only classic Codenames is supported for now; for a Duet room the bot posts a short note in the channel and doesn't watch it.
+- The bot stops watching, with a note on the card, when the room closes or has had nobody in it for `CODENAMES_IDLE_HOURS`. Post the link again to restart.
+- Codenames links are never deleted, even where *Tidy up shared links* is on; the server's forced notification channel is used for the card.
+- Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
+- Turn pings are separate messages because Discord doesn't notify mentions in edited messages; the card itself is posted with mentions turned off.
+
 ## 3. Discord commands
 
-All commands are under the `/bga` group.
+BGA commands are under the `/bga` group; Codenames commands are under [`/codenames`](#codenames).
 
 ### `/bga link-member`
 
@@ -357,6 +386,16 @@ Examples:
 /bga settings clear_forced_channel:True
 ```
 
+### `/codenames`
+
+| Command | Who | What it does |
+|---|---|---|
+| `/codenames players player1:@a [player2 … player5] [room]` | anyone | Asks up to five members to play the room watched in this channel. They get one ping with the room link and are listed on the card until they press **I'm playing**. |
+| `/codenames status` | anyone | Privately lists the rooms watched in this server, which game each is on, and a summary of the server's games. |
+| `/codenames unwatch [room]` | whoever posted the room, or Manage Messages | Stops watching a room in this channel. |
+
+`room` takes a room link or ID and is only needed when a channel watches several rooms.
+
 ## 4. Full setup walkthrough
 
 ### Minimal — just auto-watch links
@@ -414,9 +453,9 @@ The dashboard is then accessible at `http://localhost:8080` (or your configured 
 
 - **My servers**: every server where you have **Manage Server**, plus one-click "Add bot" links for the ones without it.
 - **Overview & settings**: recruiting-only mode, link clean-up, and a picker for the channel that receives all updates.
-- **Tables**: recruiting, in-progress and recently finished tables, whose turn it is, and a "Stop watching" button.
+- **Tables**: recruiting, in-progress and recently finished tables, whose turn it is, and a "Stop watching" button; watched Codenames rooms and their finished games are listed too.
 - **Member links**: link Discord members to BGA players (including players the bot has seen at your tables but can't match yet), or remove links.
-- **Stats**: per-server charts and leaderboards. The public global stats page (and the home page) show totals and game titles only; global admins also see the cross-server player leaderboard. Public global stats are cached for one minute.
+- **Stats**: per-server charts and leaderboards, plus a Codenames section (games, wins per team, most played rooms). BGA stats never include Codenames games. The public global stats page (and the home page) show totals and game titles only; global admins also see the cross-server player leaderboard. Public global stats are cached for one minute.
 
 ### Security model
 
@@ -434,6 +473,7 @@ The bot has three layers:
 - **Discord** — slash commands, message events, and message publishing
 - **SQLite** — persistence for player links, watches, and guild settings
 - **BGA public API** — anonymous table page bootstrap and public websocket connection
+- **codenames.game** — a Socket.IO connection per watched room, as a spectator
 
 ### BGA network flow
 
@@ -444,6 +484,10 @@ The bot does not use cookies, browser sessions, or a BGA account.
 2. **Open the public websocket** (`wss://ws-x1.boardgamearena.com/connection/websocket`) — replays the BGA/Centrifugo handshake (`connect`, `subscribe bgamsg`, `subscribe /table/t<TABLE_ID>`, etc.).
 
 3. **Interpret events** — reconstructs `waiting_ids` from websocket events in priority order: `gameStateMultipleActiveUpdate`, `gameStateChange.active_player`, `yourturnack`, then limited public heuristics. Detects game-over from `tableInfosChanged` status or `tableDestroy` signals.
+
+### Codenames network flow
+
+The site runs on [boardgame.io](https://boardgame.io) behind Socket.IO. The bot makes up its own credentials for each room (the site does the same in a browser), asks the lobby for the room, follows its redirect to the game server holding it, and then receives the full state followed by small JSON patches. Every reconnect goes through the lobby again, which also picks up "play again". The protocol, worked out from a recorded game, is described in [`docs/codenames-protocol.md`](docs/codenames-protocol.md).
 
 ### Project structure
 
@@ -465,6 +509,16 @@ The bot does not use cookies, browser sessions, or a BGA account.
 | `src/bga_turn/bga/views.py` | Persistent "Link your BGA & Discord" button and modal |
 | `src/bga_turn/bga/links.py` | BGA table URL parsing |
 | `src/bga_turn/bga/models.py` | BGA table and notification dataclasses |
+| `src/bga_turn/codenames/commands.py` | `/codenames` commands and room link detection |
+| `src/bga_turn/codenames/client.py` | Socket.IO connection to one room as a spectator |
+| `src/bga_turn/codenames/state.py` | Follows a match from socket events; whose turn, scores, clue (no I/O) |
+| `src/bga_turn/codenames/monitor.py` | One client per room; cards, turn pings, play-again, closing rooms |
+| `src/bga_turn/codenames/cards.py` | Renders Codenames cards and turn pings (no I/O) |
+| `src/bga_turn/codenames/views.py` | Persistent "I'm playing" button and seat picker |
+| `src/bga_turn/codenames/store.py` | Codenames tables and stats (mixed into `Database`) |
+| `src/bga_turn/codenames/identity.py` | Per-room bot credentials and names |
+| `src/bga_turn/codenames/jsonpatch.py`, `links.py`, `models.py` | JSON Patch, room URL parsing, dataclasses |
+| `docs/codenames-protocol.md` | codenames.game socket protocol notes |
 | `src/bga_turn/schema.sql` | Packaged SQLite schema |
 | `src/bga_turn/locales/en.json` | Bot messages (see Translations) |
 | `pyproject.toml` | Package metadata and console entry point |
@@ -477,6 +531,7 @@ The bot does not use cookies, browser sessions, or a BGA account.
 - The **Message Content Intent** must be enabled in the Discord Developer Portal for automatic link detection to work.
 - Without that intent, no links are detected and no tables are auto-watched (the bot starts but does nothing until a table is manually registered through the database).
 - Displayed game names come from the BGA slug or public bootstrap and are not always perfectly formatted.
+- Codenames support relies on codenames.game's unofficial socket protocol, which can change without notice.
 
 ### Translations
 
@@ -489,4 +544,4 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite covers the dashboard's access controls (permission checks, CSRF, member scoping, channel validation) using fake Discord objects, so it needs no bot token or network access.
+The suite covers the dashboard's access controls (permission checks, CSRF, member scoping, channel validation) using fake Discord objects, so it needs no bot token or network access. Codenames tests replay an anonymised recording of a real game (`tests/fixtures/codenames_game.jsonl`) through the client, the monitor and the database.
