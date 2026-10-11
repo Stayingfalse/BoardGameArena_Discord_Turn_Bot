@@ -1,0 +1,1 @@
+"""Codenames (codenames.game) provider."""

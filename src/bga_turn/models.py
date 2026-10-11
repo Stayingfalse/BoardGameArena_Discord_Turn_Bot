@@ -57,3 +57,4 @@ class GameHistoryEntry:
     winner_names: list[str]
     final_standings: list[str]
     player_count: int | None
+    provider: str = "bga"

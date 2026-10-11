@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from .codenames.store import CodenamesStore
 from .models import GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
 
@@ -33,7 +34,7 @@ class LinkConflictError(Exception):
         self.holder = holder
 
 
-class Database:
+class Database(CodenamesStore):
     def __init__(self, db_path: Path, schema_sql: str) -> None:
         self.db_path = db_path
         self.schema_sql = schema_sql
@@ -50,6 +51,7 @@ class Database:
             self._connection.executescript(self.schema_sql)
             self._ensure_watch_subscription_columns()
             self._ensure_watch_state_columns()
+            self._ensure_game_history_columns()
             self._migrate_legacy_watches_if_needed()
             self._drop_legacy_tables_if_safe()
             self._migrate_users_to_guild_scope()
@@ -1120,7 +1122,8 @@ class Database:
                     outcome,
                     winner_names,
                     final_standings,
-                    player_count
+                    player_count,
+                    provider
                 FROM game_history
                 WHERE guild_id = ? AND outcome = 'finished'
                 ORDER BY finished_at DESC, history_id DESC
@@ -1143,6 +1146,7 @@ class Database:
                 winner_names=json_loads_list(row["winner_names"]),
                 final_standings=json_loads_list(row["final_standings"]),
                 player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+                provider=row["provider"],
             )
             for row in rows
         ]
@@ -1172,7 +1176,8 @@ class Database:
                     outcome,
                     winner_names,
                     final_standings,
-                    player_count
+                    player_count,
+                    provider
                 FROM game_history
                 WHERE guild_id = ?
                 ORDER BY finished_at DESC, history_id DESC{limit_clause}
@@ -1194,6 +1199,7 @@ class Database:
                 winner_names=json_loads_list(row["winner_names"]),
                 final_standings=json_loads_list(row["final_standings"]),
                 player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+                provider=row["provider"],
             )
             for row in rows
         ]
@@ -1325,6 +1331,10 @@ class Database:
             self._connection.execute("ALTER TABLE watch_subscriptions ADD COLUMN base_url TEXT")
         if "gameserver" not in existing_columns:
             self._connection.execute("ALTER TABLE watch_subscriptions ADD COLUMN gameserver TEXT")
+
+    def _ensure_game_history_columns(self) -> None:
+        if "provider" not in self._column_names("game_history"):
+            self._connection.execute("ALTER TABLE game_history ADD COLUMN provider TEXT NOT NULL DEFAULT 'bga'")
 
     def _ensure_watch_state_columns(self) -> None:
         existing_columns = self._column_names("watch_states")
