@@ -68,15 +68,25 @@ class SeatPickerView(discord.ui.View):
         suggested = mine or next(
             (p for p in players if remembered and (p.display_name or "").casefold() == remembered.casefold()), None
         )
+        # No option is pre-selected: Discord ignores picking the option that is
+        # already selected, which would make the suggested name unclickable.
+        # The suggestion goes first, with a hint, instead.
+        ordered = sorted(players, key=lambda p: suggested is None or p.player_id != suggested.player_id)
         options = []
-        for player in players[:_MAX_OPTIONS]:
-            taken = player.discord_user_id not in (None, user_id)
+        for player in ordered[:_MAX_OPTIONS]:
+            if player is mine:
+                description = tr("cn_claim_option_current")
+            elif player.discord_user_id not in (None, user_id):
+                description = tr("cn_claim_option_taken")
+            elif player is suggested:
+                description = tr("cn_claim_option_suggested")
+            else:
+                description = None
             options.append(
                 discord.SelectOption(
                     label=(player.display_name or player.player_id)[:100],
                     value=player.player_id,
-                    description=tr("cn_claim_option_taken") if taken else None,
-                    default=suggested is not None and player.player_id == suggested.player_id,
+                    description=description,
                 )
             )
         self.add_item(_SeatSelect(options))

@@ -333,3 +333,34 @@ def test_card_names_are_escaped():
     view = dataclasses.replace(next(_replay()), player_names={"0": "**bold** @everyone"})
     text = _text(cards.build_card(cards.CardData(room_id=ROOM, game_number=1, view=view)))
     assert "**bold**" not in text and "@everyone" not in text
+
+
+def _players(*rows):
+    from bga_turn.codenames.models import CodenamesPlayer
+
+    return [CodenamesPlayer(room_id=ROOM, player_id=pid, display_name=name, discord_user_id=uid) for pid, name, uid in rows]
+
+
+async def test_seat_picker_never_preselects_so_any_name_can_be_picked():
+    from bga_turn.codenames.views import SeatPickerView
+
+    players = _players(("0", "Alice", None), ("1", "Bob", None), ("3", "Carol", "333"))
+    # Released their seat earlier, but "Bob" is still the remembered name.
+    view = SeatPickerView(ROOM, players, "111", remembered="bob")
+    [select] = [item for item in view.children if isinstance(item, discord.ui.Select)]
+    assert not any(option.default for option in select.options)
+    assert [option.label for option in select.options] == ["Bob", "Alice", "Carol"]
+    assert select.options[0].description == "The name you used last time"
+    assert select.options[2].description == "Claimed by someone else"
+    assert not any(isinstance(item, discord.ui.Button) for item in view.children)
+
+
+async def test_seat_picker_marks_the_current_seat_and_offers_release():
+    from bga_turn.codenames.views import SeatPickerView
+
+    players = _players(("0", "Alice", None), ("1", "Bob", "111"))
+    view = SeatPickerView(ROOM, players, "111", remembered="Alice")
+    [select] = [item for item in view.children if isinstance(item, discord.ui.Select)]
+    assert not any(option.default for option in select.options)
+    assert (select.options[0].label, select.options[0].description) == ("Bob", "That's you now")
+    assert any(isinstance(item, discord.ui.Button) for item in view.children)

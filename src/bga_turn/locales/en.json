@@ -277,5 +277,7 @@
   "cn_unwatch_done": "Stopped watching Codenames room `{room}`.",
   "cn_watch_not_found": "No Codenames room is watched in this channel. Post a codenames.game room link first.",
   "cn_watch_ambiguous": "This channel watches several Codenames rooms; say which one with the `room` option.",
-  "cn_status_summary": "📊 This server so far: {games} games played · 🔴 {red} Red wins · 🔵 {blue} Blue wins"
+  "cn_status_summary": "📊 This server so far: {games} games played · 🔴 {red} Red wins · 🔵 {blue} Blue wins",
+  "cn_claim_option_current": "That's you now",
+  "cn_claim_option_suggested": "The name you used last time"
 }
