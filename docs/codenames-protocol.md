@@ -76,3 +76,18 @@ If a `patch`'s `prevStateID` doesn't match ours, re-emit `sync`.
 `joinTeam`, `leaveTeam`, `startMatch`, `giveClue`, `tipCard` (operative
 marks a card, no turn change), `guessCard`, `endGuessing`, plus framework
 `endTurn`/`endPhase`.
+
+## Play again (next game in the same room)
+
+Observed after "Play next game": the room keeps its `roomID` but gets a **new
+`matchID`** (`Y1L4zY59RZO` → `QuVMIPSqNpU`), starting at `_stateID` 0 in
+phase `lobby`.
+
+- Player IDs and names carry over, and our seat (same credentials) is kept, so
+  per-room Discord↔player links survive a rematch.
+- Teams carry over, but everyone becomes an operative of their old team;
+  spymasters are empty until people choose roles again.
+- Key watches by `roomID`; treat `matchID` as "current game in the room".
+- On `playNextMatch`, re-emit `sync` for the new match. As a fallback, a fresh
+  `sync("default", ...)` with the room's stored credentials resolves straight
+  to the current match.
