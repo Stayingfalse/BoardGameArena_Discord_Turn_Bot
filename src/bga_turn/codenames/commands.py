@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -14,6 +15,9 @@ from .links import build_room_url, extract_room_ids
 from .models import CodenamesWatch
 from .monitor import CodenamesMonitor
 
+if TYPE_CHECKING:
+    from ..bridge.service import TournamentBridge
+
 LOGGER = logging.getLogger(__name__)
 
 _MAX_ROOMS_PER_MESSAGE = 3
@@ -24,11 +28,17 @@ class CodenamesCommands(commands.Cog):
     codenames = app_commands.Group(name="codenames", description=tr("cn_command_group_description"))
 
     def __init__(
-        self, database: Database, monitor: CodenamesMonitor, *, default_forced_channel_id: str | None = None
+        self,
+        database: Database,
+        monitor: CodenamesMonitor,
+        *,
+        default_forced_channel_id: str | None = None,
+        bridge: TournamentBridge | None = None,
     ) -> None:
         self.db = AsyncDatabase(database)
         self.monitor = monitor
         self._default_forced_channel_id = default_forced_channel_id
+        self.bridge = bridge
 
     # ------------------------------------------------------------------
     # Link detection
@@ -41,16 +51,23 @@ class CodenamesCommands(commands.Cog):
         room_ids = extract_room_ids(_message_text(message))[:_MAX_ROOMS_PER_MESSAGE]
         if not room_ids:
             return
-        channel_id = await self._target_channel_id(message.guild, str(message.channel.id))
+        source_channel_id = str(message.channel.id)
+        binding = await self.bridge.binding_for(source_channel_id) if self.bridge is not None else None
+        # A tournament match thread keeps its card: results are reported per thread.
+        channel_id = (
+            source_channel_id if binding is not None else await self._target_channel_id(message.guild, source_channel_id)
+        )
         watched = False
         for room_id in room_ids:
             try:
-                await self.monitor.watch_room(
+                watch, _ = await self.monitor.watch_room(
                     room_id,
                     guild_id=str(message.guild.id),
                     channel_id=channel_id,
                     created_by_discord_user_id=str(message.author.id),
                 )
+                if binding is not None and self.bridge is not None:
+                    await self.bridge.invite_players(watch, binding)
                 watched = True
             except Exception:
                 LOGGER.exception("Could not watch Codenames room %s", room_id)

@@ -1,0 +1,17 @@
+# Joins the bot to a Docker network shared with the Codenames tournament bot, so
+# the two containers reach each other by service name (bga-bot, codenames-bot).
+#
+#   docker network create codenames-bridge
+#   docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
+#
+# The bridge API (BRIDGE_PORT, 8081) is not published on the host; the
+# tournament bot reaches it at http://bga-bot:8081 over this network.
+services:
+  bga-bot:
+    networks:
+      - default
+      - codenames-bridge
+
+networks:
+  codenames-bridge:
+    external: true

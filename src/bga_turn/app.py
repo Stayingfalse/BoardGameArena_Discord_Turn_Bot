@@ -20,6 +20,8 @@ from .database import Database
 from .i18n import tr
 from .bga.monitor import BgaMonitor
 from .bga.views import LinkSelfPersistentView
+from .bridge.api import create_bridge_app, register_bridge_routes, start_bridge_server
+from .bridge.service import TournamentBridge
 from .codenames.commands import CodenamesCommands
 from .codenames.identity import DEFAULT_BOT_NAMES, parse_bot_names
 from .codenames.monitor import CodenamesMonitor
@@ -97,6 +99,8 @@ class BgaDiscordBot(commands.Bot):
         codenames_enabled: bool = True,
         codenames_bot_names: tuple[str, ...] = DEFAULT_BOT_NAMES,
         codenames_idle_hours: float = 168.0,
+        bridge_token: str = "",
+        bridge_callback_urls: tuple[str, ...] = (),
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -116,6 +120,13 @@ class BgaDiscordBot(commands.Bot):
         self.codenames_monitor = (
             CodenamesMonitor(self, database, bot_names=codenames_bot_names, idle_hours=codenames_idle_hours)
             if codenames_enabled
+            else None
+        )
+        self.bridge = (
+            TournamentBridge(
+                database, self.codenames_monitor, token=bridge_token, callback_urls=list(bridge_callback_urls)
+            )
+            if self.codenames_monitor is not None and bridge_token
             else None
         )
         self._default_recruiting_only = default_recruiting_only
@@ -140,7 +151,10 @@ class BgaDiscordBot(commands.Bot):
         if self.codenames_monitor is not None:
             await self.add_cog(
                 CodenamesCommands(
-                    self.database, self.codenames_monitor, default_forced_channel_id=self._default_forced_channel_id
+                    self.database,
+                    self.codenames_monitor,
+                    default_forced_channel_id=self._default_forced_channel_id,
+                    bridge=self.bridge,
                 )
             )
             self.add_view(ClaimSeatPersistentView())
@@ -177,6 +191,8 @@ class BgaDiscordBot(commands.Bot):
         self.monitor.start()
         if self.codenames_monitor is not None:
             await self.codenames_monitor.start()
+        if self.bridge is not None:
+            self.bridge.start()
         self._startup_completed = True
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
@@ -205,6 +221,8 @@ class BgaDiscordBot(commands.Bot):
 
     async def close(self) -> None:
         self.monitor.stop()
+        if self.bridge is not None:
+            await self.bridge.stop()
         if self.codenames_monitor is not None:
             await self.codenames_monitor.stop()
         self.database.close()
@@ -217,6 +235,7 @@ class BgaDiscordBot(commands.Bot):
         permissions = discord.Permissions(
             view_channel=True,
             send_messages=True,
+            send_messages_in_threads=True,
             embed_links=True,
             read_message_history=True,
             manage_messages=True,
@@ -244,6 +263,8 @@ async def _run_bot(
     client_secret: str,
     dashboard_secret_key: str,
     global_admin_ids: frozenset[str],
+    bridge_host: str = "0.0.0.0",
+    bridge_port: int = 8081,
 ) -> None:
     logger = logging.getLogger(__name__)
     if dashboard_enabled:
@@ -264,6 +285,9 @@ async def _run_bot(
             secret_key=dashboard_secret_key,
             global_admin_ids=global_admin_ids,
         )
+        if bot.bridge is not None:
+            # The dashboard's public HTTPS address doubles as the bridge's fallback.
+            register_bridge_routes(app, bot.bridge, token=bot.bridge.token)
         # Bind before starting the bot so a port clash fails startup loudly.
         dashboard_runner = await start_dashboard(  # type: ignore[possibly-undefined]
             app,
@@ -271,10 +295,18 @@ async def _run_bot(
             port=dashboard_port,
         )
 
+    bridge_runner = None
+    if bot.bridge is not None:
+        bridge_runner = await start_bridge_server(
+            create_bridge_app(bot.bridge, token=bot.bridge.token), host=bridge_host, port=bridge_port
+        )
+
     try:
         async with bot:
             await bot.start(token)
     finally:
+        if bridge_runner is not None:
+            await bridge_runner.cleanup()
         if dashboard_runner is not None:
             await dashboard_runner.cleanup()
 
@@ -308,6 +340,18 @@ def main() -> None:
     codenames_enabled = env_flag("CODENAMES_ENABLED", default=True)
     codenames_bot_names = parse_bot_names(os.getenv("CODENAMES_BOT_NAMES"))
     codenames_idle_hours = float(os.getenv("CODENAMES_IDLE_HOURS", "168"))
+    bridge_token = os.getenv("BRIDGE_TOKEN", "").strip()
+    bridge_host = os.getenv("BRIDGE_HOST", "0.0.0.0")
+    bridge_port = int(os.getenv("BRIDGE_PORT", "8081"))
+    bridge_callback_urls = tuple(
+        url.strip() for url in os.getenv("BRIDGE_CALLBACK_URLS", "").split(",") if url.strip()
+    )
+    if bridge_token and not bridge_callback_urls:
+        logging.getLogger(__name__).warning(
+            "BRIDGE_TOKEN is set but BRIDGE_CALLBACK_URLS is empty: results will queue until it is set."
+        )
+    if bridge_token and not codenames_enabled:
+        logging.getLogger(__name__).warning("BRIDGE_TOKEN is set but Codenames is disabled; the bridge is off.")
     websocket_url = os.getenv("BGA_WS_URL", "wss://ws-x1.boardgamearena.com/connection/websocket")
 
     dashboard_enabled = env_flag("DASHBOARD_ENABLED")
@@ -358,6 +402,8 @@ def main() -> None:
         codenames_enabled=codenames_enabled,
         codenames_bot_names=codenames_bot_names,
         codenames_idle_hours=codenames_idle_hours,
+        bridge_token=bridge_token,
+        bridge_callback_urls=bridge_callback_urls,
     )
     asyncio.run(
         _run_bot(
@@ -371,6 +417,8 @@ def main() -> None:
             client_secret=client_secret,
             dashboard_secret_key=dashboard_secret_key,
             global_admin_ids=global_admin_ids,
+            bridge_host=bridge_host,
+            bridge_port=bridge_port,
         )
     )
 

@@ -17,7 +17,7 @@ USER bga
 
 ENV BGA_DB_PATH=/data/bga_bot.db
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 VOLUME ["/data"]
 

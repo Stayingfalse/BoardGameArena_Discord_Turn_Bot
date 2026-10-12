@@ -162,3 +162,34 @@ CREATE TABLE IF NOT EXISTS codenames_user_names (
 CREATE INDEX IF NOT EXISTS idx_codenames_watches_guild ON codenames_watches(guild_id);
 CREATE INDEX IF NOT EXISTS idx_codenames_games_message ON codenames_games(message_id);
 CREATE INDEX IF NOT EXISTS idx_codenames_players_discord ON codenames_players(discord_user_id);
+
+-- Tournament bridge: a Discord channel (a tournament match thread) that an
+-- external tournament bot has bound to one of its matches. Codenames rooms
+-- posted in that channel report each finished game back to the tournament.
+CREATE TABLE IF NOT EXISTS codenames_bindings (
+    channel_id TEXT NOT NULL PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    -- JSON list of the Discord user IDs expected to play.
+    players_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Finished-game results waiting to be delivered to the tournament bot. Kept
+-- until delivered (or given up on) so a restart or an outage loses nothing.
+CREATE TABLE IF NOT EXISTS codenames_result_outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    channel_id TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'rejected', 'abandoned')),
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_codenames_result_outbox_due ON codenames_result_outbox(status, next_attempt_at);
