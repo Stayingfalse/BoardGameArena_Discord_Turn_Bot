@@ -96,7 +96,7 @@ class BgaDiscordBot(commands.Bot):
         default_forced_channel_id: str | None = None,
         codenames_enabled: bool = True,
         codenames_bot_names: tuple[str, ...] = DEFAULT_BOT_NAMES,
-        codenames_idle_hours: float = 12.0,
+        codenames_idle_hours: float = 168.0,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
@@ -307,7 +307,7 @@ def main() -> None:
     default_forced_channel_id = os.getenv("BGA_FORCED_CHANNEL_ID") or None
     codenames_enabled = env_flag("CODENAMES_ENABLED", default=True)
     codenames_bot_names = parse_bot_names(os.getenv("CODENAMES_BOT_NAMES"))
-    codenames_idle_hours = float(os.getenv("CODENAMES_IDLE_HOURS", "12"))
+    codenames_idle_hours = float(os.getenv("CODENAMES_IDLE_HOURS", "168"))
     websocket_url = os.getenv("BGA_WS_URL", "wss://ws-x1.boardgamearena.com/connection/websocket")
 
     dashboard_enabled = env_flag("DASHBOARD_ENABLED")

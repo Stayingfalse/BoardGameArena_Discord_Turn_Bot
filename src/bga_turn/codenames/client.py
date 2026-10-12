@@ -31,7 +31,6 @@ NAMESPACE = "/cno2"  # classic Codenames; Duet is "/cnduet"
 
 # Why a room connection ended for good.
 CLOSE_STOPPED = "stopped"
-CLOSE_EXPIRED = "expired"
 CLOSE_UNSUPPORTED = "unsupported"
 CLOSE_FAILED = "failed"
 
@@ -53,6 +52,7 @@ class CodenamesRoomClient:
         lobby_url: str = LOBBY_URL,
         locale: str = "en",
         join_timeout: float = 30.0,
+        room_timeout_delay: float = 60.0,
         max_failures: int = 8,
         backoff_base: float = 2.0,
         backoff_max: float = 300.0,
@@ -63,6 +63,8 @@ class CodenamesRoomClient:
         self.lobby_url = lobby_url.rstrip("/")
         self.locale = locale
         self.join_timeout = join_timeout
+        self.room_timeout_delay = room_timeout_delay
+        self._room_timed_out = False
         self.max_failures = max_failures
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
@@ -105,12 +107,19 @@ class CodenamesRoomClient:
                     self._server_url, self._move_to = self._move_to, None
                     continue
                 self._server_url = self.lobby_url
-                failures = 0 if joined else failures + 1
-                if failures >= self.max_failures:
-                    self._close_reason = CLOSE_FAILED
-                    break
-                delay = min(self.backoff_max, self.backoff_base * 2 ** max(failures - 1, 0))
-                delay *= 0.5 + random.random()
+                if self._room_timed_out:
+                    # The server put the idle room to sleep; it still exists. Rejoin shortly,
+                    # which wakes it and resumes the game (the site's own client does the same).
+                    self._room_timed_out = False
+                    failures = 0
+                    delay = self.room_timeout_delay
+                else:
+                    failures = 0 if joined else failures + 1
+                    if failures >= self.max_failures:
+                        self._close_reason = CLOSE_FAILED
+                        break
+                    delay = min(self.backoff_max, self.backoff_base * 2 ** max(failures - 1, 0))
+                    delay *= 0.5 + random.random()
                 log.info("Codenames room %s: reconnecting in %.0fs", self.room_id, delay)
                 try:
                     await asyncio.wait_for(self._stopping.wait(), timeout=delay)
@@ -247,7 +256,11 @@ class CodenamesRoomClient:
             # "Play again": the room has a new match. Resolve it from the room.
             await self._request_sync("default", None)
         elif event == "room-timeout":
-            self._close(CLOSE_EXPIRED)
+            # Not the end of the room: the server disconnects clients from an idle
+            # room. Drop this connection and rejoin after a pause.
+            log.info("Codenames room %s: room went idle on the server, rejoining later", self.room_id)
+            self._room_timed_out = True
+            self._connection_ended.set()
         elif event == "wrongNamespace":
             # The room runs another game (Duet), which isn't supported yet.
             self._close(CLOSE_UNSUPPORTED)

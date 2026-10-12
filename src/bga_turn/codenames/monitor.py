@@ -21,7 +21,7 @@ from ..discord_io import DiscordRateLimiter
 from ..i18n import tr
 from ..utils import utc_now_iso
 from . import cards
-from .client import CLOSE_EXPIRED, CLOSE_FAILED, CLOSE_STOPPED, CLOSE_UNSUPPORTED, CodenamesRoomClient
+from .client import CLOSE_FAILED, CLOSE_STOPPED, CLOSE_UNSUPPORTED, CodenamesRoomClient
 from .identity import DEFAULT_BOT_NAMES, ensure_room_identity
 from .models import CodenamesGame, CodenamesWatch
 from .posting import VIA_BOT, VIA_WEBHOOK, BotPoster, Posters
@@ -31,7 +31,6 @@ LOGGER = logging.getLogger(__name__)
 
 CLOSE_IDLE = "idle"
 _CLOSE_NOTES = {
-    CLOSE_EXPIRED: "cn_note_room_closed",
     CLOSE_UNSUPPORTED: "cn_note_unsupported",
     CLOSE_FAILED: "cn_note_unreachable",
     CLOSE_IDLE: "cn_note_idle",
@@ -50,7 +49,7 @@ class CodenamesMonitor:
         database: Database,
         *,
         bot_names: tuple[str, ...] = DEFAULT_BOT_NAMES,
-        idle_hours: float = 12.0,
+        idle_hours: float = 168.0,
         update_delay: float = 1.5,
         client_factory: ClientFactory = CodenamesRoomClient,
         rate_limiter: DiscordRateLimiter | None = None,
@@ -69,6 +68,7 @@ class CodenamesMonitor:
         self._pending: dict[str, asyncio.Task] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._last_active: dict[str, float] = {}
+        self._last_state: dict[str, tuple[str, int | None]] = {}
         self._messages: dict[int, discord.Message] = {}
         self._signatures: dict[int, str] = {}
 
@@ -164,8 +164,12 @@ class CodenamesMonitor:
 
     def _on_view(self, room_id: str, view: GameView) -> None:
         self._views[room_id] = view
-        if view.connected_ids:
+        # A move (any state change) or someone in the room counts as activity. Turn-based
+        # games can go days between moves, so being connected alone isn't required.
+        state = (view.match_id, view.state_id)
+        if view.connected_ids or self._last_state.get(room_id) != state:
             self._last_active[room_id] = time.monotonic()
+        self._last_state[room_id] = state
         self._schedule(room_id, delay=self.update_delay)
 
     def _schedule(self, room_id: str, *, delay: float) -> None:

@@ -53,6 +53,8 @@ class GameView:
     spectator_ids: list[str] = field(default_factory=list)
     # Players (not the bot) with the room open right now.
     connected_ids: list[str] = field(default_factory=list)
+    # boardgame.io's state counter: changes with every move.
+    state_id: int | None = None
 
     @property
     def turn_key(self) -> str | None:
@@ -203,6 +205,7 @@ class MatchTracker:
             bot_player_id=self.bot_player_id,
             spectator_ids=spectators,
             connected_ids=sorted((pid for pid in self.connected_ids if pid != self.bot_player_id), key=_id_sort_key),
+            state_id=self.state_id,
         )
 
 

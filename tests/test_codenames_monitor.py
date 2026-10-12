@@ -9,7 +9,7 @@ import pytest
 from test_codenames_state import _replay
 
 from bga_turn.codenames import cards
-from bga_turn.codenames.client import CLOSE_EXPIRED
+from bga_turn.codenames.client import CLOSE_FAILED
 from bga_turn.codenames.monitor import CodenamesMonitor
 from bga_turn.codenames.views import ClaimSeatButton
 
@@ -290,10 +290,10 @@ async def test_room_closing_marks_the_card_and_stops_watching(monitor, database,
     in_turn = next(v for v in views if v.turn_key == "red:spymasters")
     await _show(monitor, in_turn)
 
-    await FakeClient.instances[0].on_closed(CLOSE_EXPIRED)
+    await FakeClient.instances[0].on_closed(CLOSE_FAILED)
 
     card = channel.cards[0]
-    assert "room has closed" in _text(card.view)
+    assert "couldn't stay connected" in _text(card.view)
     assert channel.pings[0].deleted
     assert database.list_codenames_watches(ROOM) == []
     [entry] = database.list_game_history_for_guild(GUILD)
@@ -505,3 +505,22 @@ async def test_a_deleted_webhook_is_set_up_again(database):
     assert channel.created == 2
     assert channel.bot_sent == []
     assert len(channel.pings) == 1
+
+
+async def test_idle_means_no_moves_not_nobody_online(monitor, database):
+    await monitor.watch_room(ROOM, guild_id=GUILD, channel_id=str(CHANNEL), created_by_discord_user_id="9")
+    views = list(_replay())
+    before, after = views[10], views[11]
+    assert before.state_id != after.state_id
+
+    quiet = dataclasses.replace(before, connected_ids=[])
+    monitor._on_view(ROOM, quiet)
+    monitor._last_active[ROOM] = 0.0
+    # The same state again (e.g. the bot rejoined after the server's timeout) isn't activity...
+    monitor._on_view(ROOM, quiet)
+    assert monitor._last_active[ROOM] == 0.0
+    # ...but a move is, even with nobody else connected.
+    monitor._on_view(ROOM, dataclasses.replace(after, connected_ids=[]))
+    assert monitor._last_active[ROOM] > 0.0
+    for task in monitor._pending.values():
+        task.cancel()

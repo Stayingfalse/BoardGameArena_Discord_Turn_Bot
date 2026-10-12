@@ -3,7 +3,6 @@ from __future__ import annotations
 from test_codenames_state import _events
 
 from bga_turn.codenames.client import (
-    CLOSE_EXPIRED,
     CLOSE_UNSUPPORTED,
     NAMESPACE,
     CodenamesRoomClient,
@@ -107,14 +106,48 @@ async def test_play_again_starts_a_new_match_tracker():
     assert [(v.match_id, v.phase) for v in views] == [("m1", "finished"), ("m2", "lobby")]
 
 
-async def test_room_timeout_and_duet_rooms_close_the_connection_for_good():
-    expired = _client([])
-    await expired._handle_event("room-timeout", ({"matchID": "m1"},))
-    assert expired._close_reason == CLOSE_EXPIRED and expired._stopping.is_set()
+async def test_room_timeout_is_a_pause_not_the_end_of_the_room():
+    client = _client([])
+    await client._handle_event("room-timeout", ({"matchID": "m1"},))
+    assert client._close_reason is None and not client._stopping.is_set()
+    assert client._connection_ended.is_set() and client._room_timed_out
 
+
+async def test_after_a_room_timeout_the_client_rejoins_through_the_lobby():
+    closed: list[str] = []
+
+    async def on_closed(reason):
+        closed.append(reason)
+
+    async def on_view(view):
+        pass
+
+    client = CodenamesRoomClient(
+        "test-room", credentials="c", bot_name="🤖 Curious Cat", on_view=on_view, on_closed=on_closed,
+        room_timeout_delay=0.01,
+    )
+    servers: list[str] = []
+
+    async def fake_connection():
+        servers.append(client._server_url)
+        if len(servers) == 1:
+            client._server_url = SHARD  # we were on the room's server
+            client._room_timed_out = True  # ...when it went idle
+            return True
+        client._close("stopped")
+        return True
+
+    client._run_connection = fake_connection
+    await client.run()
+    assert len(servers) == 2  # it came back instead of giving up
+    assert servers[1] == client.lobby_url
+    assert closed == ["stopped"]
+
+
+async def test_duet_rooms_close_the_connection_for_good():
     duet = _client([])
     await duet._handle_event("wrongNamespace", ("cnduet",))
-    assert duet._close_reason == CLOSE_UNSUPPORTED
+    assert duet._close_reason == CLOSE_UNSUPPORTED and duet._stopping.is_set()
 
 
 async def test_a_sync_error_drops_the_connection_to_retry():

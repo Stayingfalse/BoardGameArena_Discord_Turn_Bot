@@ -169,7 +169,7 @@ BGA_ENABLE_TABLEINFOS_FALLBACK=0
 # --- Codenames (codenames.game) ---
 CODENAMES_ENABLED=1             # Watch posted codenames.game room links
 CODENAMES_BOT_NAMES=            # Optional "|"-separated names the bot uses in rooms
-CODENAMES_IDLE_HOURS=12         # Stop watching a room nobody has been in for this long
+CODENAMES_IDLE_HOURS=168        # Stop watching a room with no moves for this long (7 days)
 
 # --- Optional web dashboard ---
 DASHBOARD_ENABLED=0
@@ -199,7 +199,7 @@ DASHBOARD_SECRET_KEY=
 | `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
 | `CODENAMES_ENABLED` | — | `1` | Watch posted codenames.game room links and add the `/codenames` commands |
 | `CODENAMES_BOT_NAMES` | — | built-in list | `\|`-separated names the bot picks from when it first joins a room (e.g. `🤖 Agent Turnkeeper\|🤖 Curious Cat`). Avoid brackets: the site strips them |
-| `CODENAMES_IDLE_HOURS` | — | `12` | Stop watching a room that has had nobody in it for this many hours |
+| `CODENAMES_IDLE_HOURS` | — | `168` | Stop watching a room where nothing has happened (no moves, nobody in it) for this many hours. Turn-based games can go days between moves, hence the 7-day default |
 | `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
 | `DASHBOARD_HOST` | — | `0.0.0.0` | Interface the web dashboard listens on (use `127.0.0.1` behind a local reverse proxy) |
 | `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
@@ -306,7 +306,7 @@ Things to know:
 
 - The bot shows up in the room's player list with a fun name starting with 🤖 (one per room, kept for that room). Leave it off the teams.
 - Only classic Codenames is supported for now; for a Duet room the bot posts a short note in the channel and doesn't watch it.
-- The bot stops watching, with a note on the card, when the room closes or has had nobody in it for `CODENAMES_IDLE_HOURS`. Post the link again to restart.
+- The server disconnects everyone from a room that's been idle for a while; the bot just rejoins a minute later, so long gaps between turns are fine. It only stops watching, with a note on the card, when nothing has happened in the room for `CODENAMES_IDLE_HOURS` (7 days by default) or it can't reach the room any more. Post the link again to restart.
 - Codenames links are never deleted, even where *Tidy up shared links* is on; the server's forced notification channel is used for the card.
 - Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
 - Turn pings are separate messages because Discord doesn't notify mentions in edited messages; the card itself is posted with mentions turned off.
