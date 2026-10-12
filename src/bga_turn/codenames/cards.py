@@ -23,6 +23,110 @@ _ROLE_KEYS = {"spymasters": "cn_role_spymasters", "operatives": "cn_role_operati
 
 
 @dataclass(frozen=True, slots=True)
+class Lineup:
+    """The seats a tournament expects for the current game."""
+
+    game: int
+    # (team, role, Discord user ID), role being "spymasters" or "operatives".
+    seats: tuple[tuple[str, str, str], ...]
+
+    @classmethod
+    def from_binding(cls, raw: dict | None) -> Lineup | None:
+        if not isinstance(raw, dict) or not isinstance(raw.get("game"), int):
+            return None
+        seats = []
+        for team in TEAMS:
+            for role, key in (("spymasters", "spymaster"), ("operatives", "operative")):
+                user_id = (raw.get(team) or {}).get(key)
+                if not user_id:
+                    return None
+                seats.append((team, role, str(user_id)))
+        return cls(game=raw["game"], seats=tuple(seats))
+
+    @property
+    def key(self) -> str:
+        return f"{self.game}:" + ",".join("/".join(seat) for seat in self.seats)
+
+
+@dataclass(frozen=True, slots=True)
+class LineupCheck:
+    team: str
+    role: str
+    user_id: str
+    # "ok", "wrong_seat" (then *actual* is (team, role)), "spectating" or "unclaimed".
+    status: str
+    actual: tuple[str, str] | None = None
+
+
+def check_lineup(view: GameView, lineup: Lineup, links: dict[str, str]) -> tuple[list[LineupCheck], list[tuple[str, str, list[str]]]]:
+    """Each expected seat's state, plus seats holding players who shouldn't be there
+    (``(team, role, seat IDs)``)."""
+    seat_of_user = {user_id: pid for pid, user_id in links.items()}
+    role_of_seat = {
+        pid: (team, role) for team, roles in view.rosters.items() for role, ids in roles.items() for pid in ids
+    }
+    checks: list[LineupCheck] = []
+    for team, role, user_id in lineup.seats:
+        pid = seat_of_user.get(user_id)
+        if pid is None:
+            checks.append(LineupCheck(team, role, user_id, "unclaimed"))
+        elif role_of_seat.get(pid) == (team, role):
+            checks.append(LineupCheck(team, role, user_id, "ok"))
+        elif pid in role_of_seat:
+            checks.append(LineupCheck(team, role, user_id, "wrong_seat", role_of_seat[pid]))
+        else:
+            checks.append(LineupCheck(team, role, user_id, "spectating"))
+    expected = {(team, role): user_id for team, role, user_id in lineup.seats}
+    extras = []
+    for team in TEAMS:
+        for role in ROLES:
+            others = [
+                pid for pid in view.rosters.get(team, {}).get(role, []) if links.get(pid) != expected.get((team, role))
+            ]
+            if others:
+                extras.append((team, role, others))
+    return checks, extras
+
+
+def lineup_ready(view: GameView, lineup: Lineup, links: dict[str, str]) -> bool:
+    checks, extras = check_lineup(view, lineup, links)
+    return not extras and all(check.status == "ok" for check in checks)
+
+
+def seat_label(team: str, role: str) -> str:
+    return f"{TEAM_EMOJI.get(team, '')} {tr(_ROLE_KEYS[role])}"
+
+
+def build_lineup_ping(lineup: Lineup) -> tuple[str, list[int]]:
+    rows = []
+    for team in TEAMS:
+        rows.append(" · ".join(f"{seat_label(t, r)} <@{u}>" for t, r, u in lineup.seats if t == team))
+    user_ids = [int(u) for _, _, u in lineup.seats if u.isdigit()]
+    return tr("cn_lineup_ping", game=lineup.game, seats="\n".join(rows)), list(dict.fromkeys(user_ids))
+
+
+def _lineup_block(view: GameView, lineup: Lineup, links: dict[str, str]) -> str:
+    checks, extras = check_lineup(view, lineup, links)
+    if not extras and all(check.status == "ok" for check in checks):
+        return tr("cn_lineup_ready", game=lineup.game)
+    icons = {"ok": "✅", "wrong_seat": "⚠️", "spectating": "⏳", "unclaimed": "⏳"}
+    lines = [tr("cn_lineup_title", game=lineup.game)]
+    for check in checks:
+        line = f"{icons[check.status]} {seat_label(check.team, check.role)}: <@{check.user_id}>"
+        if check.status == "wrong_seat" and check.actual:
+            line += " · " + tr("cn_lineup_wrong_seat", seat=seat_label(*check.actual))
+        elif check.status == "spectating":
+            line += " · " + tr("cn_lineup_spectating")
+        elif check.status == "unclaimed":
+            line += " · " + tr("cn_lineup_unclaimed")
+        lines.append(line)
+    for team, role, pids in extras:
+        names = ", ".join(_player_label(view, pid, links) for pid in pids)
+        lines.append(tr("cn_lineup_extra", seat=seat_label(team, role), names=names))
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
 class CardData:
     room_id: str
     game_number: int
@@ -33,12 +137,24 @@ class CardData:
     invited: tuple[str, ...] = ()
     # Shown when the bot stopped watching (room closed, idle, unsupported...).
     closed_note: str | None = None
+    # File name of the final-board image sent with the card, once the game is over.
+    board_image: str | None = None
+    # Seats a tournament expects for this game (only shown before the game ends).
+    lineup: Lineup | None = None
 
 
 def card_signature(data: CardData) -> str:
     """Changes whenever the rendered card would."""
     view = data.view
-    parts: list[object] = [data.room_id, data.game_number, sorted(data.links.items()), data.invited, data.closed_note]
+    parts: list[object] = [
+        data.room_id,
+        data.game_number,
+        sorted(data.links.items()),
+        data.invited,
+        data.closed_note,
+        data.board_image,
+        data.lineup,
+    ]
     if view is not None:
         parts += [
             view.match_id,
@@ -88,6 +204,13 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
             )
         items.append(discord.ui.TextDisplay("\n".join(lines)))
 
+    if data.board_image:
+        items.append(
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(f"attachment://{data.board_image}", description=tr("cn_board_image_alt"))
+            )
+        )
+
     items.append(discord.ui.Separator())
     if view is not None:
         for team in TEAMS:
@@ -98,6 +221,10 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
             items.append(discord.ui.TextDisplay(f"👀 {tr('cn_label_not_on_team')}: {names}"))
     elif data.closed_note is None:
         items.append(discord.ui.TextDisplay(tr("cn_connecting")))
+
+    if data.lineup is not None and view is not None and view.phase != "finished" and data.closed_note is None:
+        items.append(discord.ui.Separator())
+        items.append(discord.ui.TextDisplay(_lineup_block(view, data.lineup, data.links)))
 
     if data.invited and data.closed_note is None and (view is None or view.phase != "finished"):
         mentions = " ".join(f"<@{user_id}>" for user_id in data.invited)
@@ -149,6 +276,22 @@ def build_turn_ping(
     if branded:
         text = tr("cn_ping_branded", text=text)
     return text, user_ids
+
+
+def format_wait(seconds: int) -> str:
+    """'3 hours', '1 day', '2 days' (rounded down)."""
+    hours = max(1, seconds // 3600)
+    if hours < 48:
+        return tr("cn_wait_hours", count=hours) if hours != 1 else tr("cn_wait_hour")
+    return tr("cn_wait_days", count=hours // 24)
+
+
+def build_reminder_note(waited_seconds: int, deadline: int | None = None) -> str:
+    """The line put above a repeated turn ping."""
+    note = tr("cn_reminder", waited=format_wait(waited_seconds))
+    if deadline:
+        note += " " + tr("cn_reminder_deadline", deadline=f"<t:{deadline}:R>")
+    return note
 
 
 def build_ping_view(room_id: str) -> discord.ui.View:

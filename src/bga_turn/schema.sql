@@ -172,6 +172,8 @@ CREATE TABLE IF NOT EXISTS codenames_bindings (
     external_ref TEXT NOT NULL,
     -- JSON list of the Discord user IDs expected to play.
     players_json TEXT NOT NULL DEFAULT '[]',
+    -- JSON: {"player_names": {id: name}, "lineup": {...} or null}.
+    details_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

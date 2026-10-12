@@ -13,6 +13,7 @@ the card; they carry their own "Open room" button.
 
 from __future__ import annotations
 
+import io
 import logging
 import time
 from importlib.resources import files
@@ -32,6 +33,14 @@ def default_avatar() -> bytes:
     return files("bga_turn").joinpath("static", "codenames-avatar.png").read_bytes()
 
 
+def make_file(attachment: tuple[str, bytes] | None) -> list[discord.File]:
+    """A fresh ``discord.File`` per send: discord.py doesn't rewind one it already sent."""
+    if attachment is None:
+        return []
+    filename, data = attachment
+    return [discord.File(io.BytesIO(data), filename=filename)]
+
+
 class BotPoster:
     """Sends as the bot, in the channel or thread itself."""
 
@@ -40,10 +49,12 @@ class BotPoster:
     def __init__(self, channel) -> None:
         self.channel = channel
 
-    async def send(self, content: str | None = None, *, view=None, allowed_mentions, reply_to=None):
+    async def send(self, content: str | None = None, *, view=None, allowed_mentions, reply_to=None, attachment=None):
         kwargs = {"allowed_mentions": allowed_mentions}
         if view is not None:
             kwargs["view"] = view
+        if attachment is not None:
+            kwargs["files"] = make_file(attachment)
         if reply_to is not None:
             kwargs["reference"] = reply_to.to_reference(fail_if_not_exists=False)
             kwargs["mention_author"] = False
@@ -68,10 +79,12 @@ class WebhookPoster:
     def _thread_kwargs(self) -> dict:
         return {"thread": self.thread} if self.thread is not None else {}
 
-    async def send(self, content: str | None = None, *, view=None, allowed_mentions, reply_to=None):
+    async def send(self, content: str | None = None, *, view=None, allowed_mentions, reply_to=None, attachment=None):
         kwargs = self._thread_kwargs()
         if view is not None:
             kwargs["view"] = view
+        if attachment is not None:
+            kwargs["files"] = make_file(attachment)
         return await self.webhook.send(
             content if content is not None else discord.utils.MISSING,
             username=WEBHOOK_NAME,

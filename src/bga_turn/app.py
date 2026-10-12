@@ -99,6 +99,7 @@ class BgaDiscordBot(commands.Bot):
         codenames_enabled: bool = True,
         codenames_bot_names: tuple[str, ...] = DEFAULT_BOT_NAMES,
         codenames_idle_hours: float = 168.0,
+        codenames_reminder_hours: float = 24.0,
         bridge_token: str = "",
         bridge_callback_urls: tuple[str, ...] = (),
     ) -> None:
@@ -118,7 +119,13 @@ class BgaDiscordBot(commands.Bot):
             default_forced_channel_id=default_forced_channel_id,
         )
         self.codenames_monitor = (
-            CodenamesMonitor(self, database, bot_names=codenames_bot_names, idle_hours=codenames_idle_hours)
+            CodenamesMonitor(
+                self,
+                database,
+                bot_names=codenames_bot_names,
+                idle_hours=codenames_idle_hours,
+                reminder_hours=codenames_reminder_hours,
+            )
             if codenames_enabled
             else None
         )
@@ -340,6 +347,7 @@ def main() -> None:
     codenames_enabled = env_flag("CODENAMES_ENABLED", default=True)
     codenames_bot_names = parse_bot_names(os.getenv("CODENAMES_BOT_NAMES"))
     codenames_idle_hours = float(os.getenv("CODENAMES_IDLE_HOURS", "168"))
+    codenames_reminder_hours = float(os.getenv("CODENAMES_REMINDER_HOURS", "24"))
     bridge_token = os.getenv("BRIDGE_TOKEN", "").strip()
     bridge_host = os.getenv("BRIDGE_HOST", "0.0.0.0")
     bridge_port = int(os.getenv("BRIDGE_PORT", "8081"))
@@ -402,6 +410,7 @@ def main() -> None:
         codenames_enabled=codenames_enabled,
         codenames_bot_names=codenames_bot_names,
         codenames_idle_hours=codenames_idle_hours,
+        codenames_reminder_hours=codenames_reminder_hours,
         bridge_token=bridge_token,
         bridge_callback_urls=bridge_callback_urls,
     )

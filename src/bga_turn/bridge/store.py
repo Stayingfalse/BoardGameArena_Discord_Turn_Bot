@@ -20,6 +20,13 @@ class CodenamesBinding:
     guild_id: str
     external_ref: str
     players: list[str] = field(default_factory=list)
+    # Discord user ID -> the name the tournament knows them by (helps match seats).
+    player_names: dict[str, str] = field(default_factory=dict)
+    # The current game's expected seats: {"game": 2, "last_event_id": ..., "blue": {"spymaster": id,
+    # "operative": id}, "red": {...}}, or None.
+    lineup: dict | None = None
+    # Unix seconds when the tournament round ends, if it has a deadline.
+    deadline: int | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -45,22 +52,38 @@ class BridgeStore:
     # Bindings
     # ------------------------------------------------------------------
 
+    def _ensure_codenames_binding_columns(self) -> None:
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(codenames_bindings)")}
+        if "details_json" not in columns:
+            self._connection.execute("ALTER TABLE codenames_bindings ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'")
+
     def upsert_codenames_binding(
-        self, channel_id: str, *, guild_id: str, external_ref: str, players: list[str]
+        self,
+        channel_id: str,
+        *,
+        guild_id: str,
+        external_ref: str,
+        players: list[str],
+        player_names: dict[str, str] | None = None,
+        lineup: dict | None = None,
+        deadline: int | None = None,
     ) -> CodenamesBinding:
         now = utc_now_iso()
+        details = json_dumps({"player_names": player_names or {}, "lineup": lineup, "deadline": deadline})
         with self._lock:
             self._connection.execute(
                 """
-                INSERT INTO codenames_bindings (channel_id, guild_id, external_ref, players_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO codenames_bindings
+                    (channel_id, guild_id, external_ref, players_json, details_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(channel_id) DO UPDATE SET
                     guild_id = excluded.guild_id,
                     external_ref = excluded.external_ref,
                     players_json = excluded.players_json,
+                    details_json = excluded.details_json,
                     updated_at = excluded.updated_at
                 """,
-                (channel_id, guild_id, external_ref, json_dumps(players), now, now),
+                (channel_id, guild_id, external_ref, json_dumps(players), details, now, now),
             )
             self._connection.commit()
             binding = self.get_codenames_binding(channel_id)
@@ -138,6 +161,15 @@ class BridgeStore:
             )
             self._connection.commit()
 
+    def latest_bridge_event_id(self, channel_id: str) -> str | None:
+        """The last finished game reported from *channel_id*, or ``None``."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT event_id FROM codenames_result_outbox WHERE channel_id = ? ORDER BY outbox_id DESC LIMIT 1",
+                (channel_id,),
+            ).fetchone()
+        return row["event_id"] if row is not None else None
+
     def list_bridge_results(self, channel_id: str) -> list[OutboxEntry]:
         with self._lock:
             rows = self._connection.execute(
@@ -147,11 +179,22 @@ class BridgeStore:
 
 
 def _row_to_binding(row: sqlite3.Row) -> CodenamesBinding:
+    try:
+        details = json.loads(row["details_json"] or "{}")
+    except json.JSONDecodeError:
+        details = {}
+    if not isinstance(details, dict):
+        details = {}
+    names = details.get("player_names")
+    lineup = details.get("lineup")
     return CodenamesBinding(
         channel_id=row["channel_id"],
         guild_id=row["guild_id"],
         external_ref=row["external_ref"],
         players=json_loads_list(row["players_json"]),
+        player_names={str(k): str(v) for k, v in names.items()} if isinstance(names, dict) else {},
+        lineup=lineup if isinstance(lineup, dict) else None,
+        deadline=details.get("deadline") if isinstance(details.get("deadline"), int) else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

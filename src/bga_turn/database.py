@@ -53,6 +53,7 @@ class Database(CodenamesStore, BridgeStore):
             self._ensure_watch_subscription_columns()
             self._ensure_watch_state_columns()
             self._ensure_game_history_columns()
+            self._ensure_codenames_binding_columns()
             self._migrate_legacy_watches_if_needed()
             self._drop_legacy_tables_if_safe()
             self._migrate_users_to_guild_scope()

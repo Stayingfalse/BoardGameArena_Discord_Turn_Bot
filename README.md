@@ -200,6 +200,7 @@ DASHBOARD_SECRET_KEY=
 | `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
 | `CODENAMES_ENABLED` | — | `1` | Watch posted codenames.game room links and add the `/codenames` commands |
 | `CODENAMES_BOT_NAMES` | — | built-in list | `\|`-separated names the bot picks from when it first joins a room (e.g. `🤖 Agent Turnkeeper\|🤖 Curious Cat`). Avoid brackets: the site strips them |
+| `CODENAMES_REMINDER_HOURS` | — | `24` | Ping the players again when a turn has waited this many hours, then every this many hours. `0` turns reminders off |
 | `CODENAMES_IDLE_HOURS` | — | `168` | Stop watching a room where nothing has happened (no moves, nobody in it) for this many hours. Turn-based games can go days between moves, hence the 7-day default |
 | `BRIDGE_TOKEN` | — | — | Shared secret with the [Codenames tournament bot](docs/tournament-bridge.md); setting it turns the bridge on |
 | `BRIDGE_HOST` / `BRIDGE_PORT` | — | `0.0.0.0` / `8081` | Where the tournament bridge API listens |
@@ -304,12 +305,14 @@ When the bot sees a player act on a watched table it automatically fills in any 
 1. **Post a room link** such as `https://codenames.game/r/juzaf-hitos`. The bot reacts 🕵️, joins the room as a **spectator** and posts a **"Game 1"** card. It never joins a team and never sees the key (card colours stay hidden from spectators until they're revealed).
 2. **Say who's playing.** Each player opens the room, enters a name, then presses **🙋 I'm playing** on the card and picks that name from a private list. Or tag people with `/codenames players`: they get one invite ping and appear on the card until they claim a name. The bot remembers each person's last name and suggests it next time, and tagged players whose usual name is in the room are matched automatically.
 3. **Play.** The card shows the teams, cards left, the current clue, the last guess and whose move it is (👉). When the turn changes the bot sends a short ping as a reply to the card: the team's **spymaster** when a clue is needed, then its **operatives** with the clue. The previous ping is deleted, guesses within a turn don't ping again, and a restart never pings twice.
-4. **Play again.** When the room starts a new game, the finished card keeps its result and a new **"Game 2"** card is posted.
+4. **See the board.** When a game ends, the card gets a picture of the final board. It shows every card in its colour (guessed cards solid and numbered in the order they were picked, unguessed ones outlined), the teams, every clue with the guesses made on it, and how many agents each team found.
+5. **Play again.** When the room starts a new game, the finished card keeps its result and picture and a new **"Game 2"** card is posted.
 
 Things to know:
 
 - The bot shows up in the room's player list with a fun name starting with 🤖 (one per room, kept for that room). Leave it off the teams.
 - Only classic Codenames is supported for now; for a Duet room the bot posts a short note in the channel and doesn't watch it.
+- If a turn waits more than `CODENAMES_REMINDER_HOURS` (a day by default), the players are pinged again with how long it has been waiting, then once a day after that.
 - The server disconnects everyone from a room that's been idle for a while; the bot just rejoins a minute later, so long gaps between turns are fine. It only stops watching, with a note on the card, when nothing has happened in the room for `CODENAMES_IDLE_HOURS` (7 days by default) or it can't reach the room any more. Post the link again to restart.
 - Codenames links are never deleted, even where *Tidy up shared links* is on; the server's forced notification channel is used for the card.
 - Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
@@ -318,7 +321,7 @@ Things to know:
 
 ### Codenames tournaments
 
-The bot can feed results to the [Codenames Tournament bot](https://github.com/Stayingfalse/CodwellTornement). The tournament binds each match thread to its match. Players post their room link in the thread, and every finished game is reported back and scored automatically, with a confirm button when the seats don't match the line-up. Set `BRIDGE_TOKEN` and `BRIDGE_CALLBACK_URLS`. Setup and the API are in [docs/tournament-bridge.md](docs/tournament-bridge.md).
+The bot can feed results to the [Codenames Tournament bot](https://github.com/Stayingfalse/CodwellTornement). The tournament binds each match thread to its match. Players post their room link in the thread. The card shows each game's expected seats (✅ or ⚠️ as people sit down) and matches seats to players by name. Every finished game is reported back with its full clue history and scored automatically, with a confirm button when the seats don't match the line-up. Set `BRIDGE_TOKEN` and `BRIDGE_CALLBACK_URLS`. Setup and the API are in [docs/tournament-bridge.md](docs/tournament-bridge.md).
 
 ## 3. Discord commands
 
