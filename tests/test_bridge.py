@@ -107,6 +107,17 @@ async def test_a_finished_game_in_a_bound_channel_is_queued_with_the_result(data
     assert [s["discord_user_id"] for s in seats["red"]["operatives"]] == [DISCORD["0"]]
     assert [s["discord_user_id"] for s in seats["blue"]["spymasters"]] == [DISCORD["3"]]
     assert [s["discord_user_id"] for s in seats["blue"]["operatives"]] == [DISCORD["4"]]
+    # The whole clue history, with who gave and guessed what, for tournament stats.
+    first, second = payload["turns"][:2]
+    assert (first["team"], first["word"], first["number"]) == ("red", "CLUE 1", "4")
+    assert first["giver"]["discord_user_id"] == DISCORD["1"]
+    assert [(g["word"], g["discord_user_id"]) for g in first["guesses"]] == [
+        ("BATTERY", DISCORD["0"]), ("LITTER", DISCORD["0"]), ("SEED", DISCORD["0"]), ("WING", DISCORD["0"])
+    ]
+    assert [g["color"] for g in first["guesses"]] == ["red", "red", "red", "neutral"]
+    assert second["giver"]["discord_user_id"] == DISCORD["3"]
+    assert payload["turns"][-1]["guesses"][0]["color"] == "black"
+    assert len(payload["board"]) == 25 and payload["starting_team"] == "red"
 
 
 async def test_a_replayed_final_state_is_queued_once(database, channel):

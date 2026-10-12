@@ -22,6 +22,7 @@ _BRIDGE_KEY = web.AppKey("tournament_bridge", TournamentBridge)
 _TOKEN_KEY = web.AppKey("tournament_bridge_token", str)
 _MAX_PLAYERS = 10
 _MAX_REF_LENGTH = 100
+_MAX_NAME_LENGTH = 100
 
 
 def register_bridge_routes(app: web.Application, bridge: TournamentBridge, *, token: str) -> None:
@@ -117,14 +118,54 @@ async def _put_binding(request: web.Request) -> web.Response:
     ):
         return _error(400, f"players must be a list of at most {_MAX_PLAYERS} Discord user IDs")
 
+    player_names = body.get("player_names") or {}
+    if not isinstance(player_names, dict) or len(player_names) > _MAX_PLAYERS or not all(
+        str(k).isdecimal() and isinstance(v, str) and len(v) <= _MAX_NAME_LENGTH for k, v in player_names.items()
+    ):
+        return _error(400, f"player_names must map up to {_MAX_PLAYERS} Discord user IDs to names")
+    lineup = body.get("lineup")
+    if lineup is not None:
+        lineup = _parse_lineup(lineup)
+        if lineup is None:
+            return _error(
+                400,
+                'lineup must be {"game": int, "last_event_id": str|null, '
+                '"blue": {"spymaster": id, "operative": id}, "red": {...}} or null',
+            )
+
     bridge = request.app[_BRIDGE_KEY]
     binding = await bridge.bind(
         channel_id,
         guild_id=guild_id,
         external_ref=external_ref.strip(),
         players=list(dict.fromkeys(str(p) for p in players)),
+        player_names={str(k): v for k, v in player_names.items()},
+        lineup=lineup,
     )
     return web.json_response(binding_json(binding))
+
+
+def _parse_lineup(raw) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    game = raw.get("game")
+    last_event_id = raw.get("last_event_id")
+    if not isinstance(game, int) or game < 1:
+        return None
+    if last_event_id is not None and (not isinstance(last_event_id, str) or len(last_event_id) > 200):
+        return None
+    lineup: dict = {"game": game, "last_event_id": last_event_id}
+    for team in ("blue", "red"):
+        seats = raw.get(team)
+        if not isinstance(seats, dict):
+            return None
+        lineup[team] = {}
+        for role in ("spymaster", "operative"):
+            user_id = seats.get(role)
+            if not isinstance(user_id, (str, int)) or not str(user_id).isdecimal():
+                return None
+            lineup[team][role] = str(user_id)
+    return lineup
 
 
 async def _delete_binding(request: web.Request) -> web.Response:

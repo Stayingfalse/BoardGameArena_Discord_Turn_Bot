@@ -23,6 +23,7 @@ class Clue:
     number: str
     team: str | None
     giver_name: str | None
+    giver_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,7 @@ class Guess:
     card_color: str | None
     team: str | None
     player_name: str | None
+    player_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +161,7 @@ class MatchTracker:
                     number=str(args[0].get("number", "")),
                     team=giver.get("team") or metadata.get("playerTeam"),
                     giver_name=giver.get("name") or metadata.get("playerName"),
+                    giver_id=_seat_id(giver.get("playerID", giver.get("id")), payload.get("playerID")),
                 )
                 self._turns.append(ClueTurn(self._clue))
             elif move == "guessCard" and args:
@@ -168,6 +171,7 @@ class MatchTracker:
                     card_color=metadata.get("cardColor"),
                     team=guesser.get("team") or metadata.get("playerTeam"),
                     player_name=guesser.get("name") or metadata.get("playerName"),
+                    player_id=_seat_id(guesser.get("playerID", guesser.get("id")), payload.get("playerID")),
                 )
                 if self._turns:
                     self._turns[-1].guesses.append(self._last_guess)
@@ -244,6 +248,13 @@ class MatchTracker:
             ),
             turns=tuple(ClueTurn(turn.clue, list(turn.guesses)) for turn in self._turns),
         )
+
+
+def _seat_id(*candidates: Any) -> str | None:
+    for candidate in candidates:
+        if candidate is not None and str(candidate) != "":
+            return str(candidate)
+    return None
 
 
 def _id_sort_key(player_id: str) -> tuple[int, str]:

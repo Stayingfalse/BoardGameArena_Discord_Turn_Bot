@@ -42,8 +42,18 @@ _PING_KEY = "ping_message_id"
 _PING_VIA_KEY = "ping_via"
 _CARD_VIA_KEY = "card_via"
 _BOARD_KEY = "board"
+_LINEUP_PING_KEY = "lineup_ping_message_id"
+_LINEUP_PING_VIA_KEY = "lineup_ping_via"
+_LINEUP_SENT_KEY = "lineup_pinged"
 
 ClientFactory = Callable[..., CodenamesRoomClient]
+
+
+def normalise_name(name: str | None) -> str:
+    """Lower-case letters and digits only: "🤖 Alice B." and "alice_b" both become "aliceb"."""
+    return "".join(ch for ch in (name or "").casefold() if ch.isalnum())
+
+
 # Told once per finished game: the watch, the game, the final view and seat -> Discord user links.
 GameFinishedListener = Callable[[CodenamesWatch, CodenamesGame, GameView, dict[str, str]], Awaitable[None]]
 
@@ -78,6 +88,7 @@ class CodenamesMonitor:
         self._messages: dict[int, discord.Message] = {}
         self._signatures: dict[int, str] = {}
         self.game_finished_listeners: list[GameFinishedListener] = []
+        self._member_name_cache: dict[tuple[str, str], tuple[list[str], float]] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -217,30 +228,93 @@ class CodenamesMonitor:
             links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
             for watch in await self.db.list_codenames_watches(room_id):
                 try:
-                    await self._update_watch(watch, view, game_number, links)
+                    lineup = await self._current_lineup(watch)
+                    await self._update_watch(watch, view, game_number, links, lineup=lineup)
                 except Exception:
                     LOGGER.exception("Codenames room %s: update failed for watch %s", room_id, watch.watch_id)
 
     async def _auto_claim_invited(self, watch: CodenamesWatch, players) -> None:
-        """Invited members whose remembered name matches an unclaimed seat get it."""
+        """Give invited members the seat that is clearly theirs.
+
+        First by the name they used last time (exact), then by their Discord or
+        tournament names, ignoring case, spaces, punctuation and emoji. A seat is
+        only claimed when exactly one member matches it and it matches only them.
+        """
         linked = {p.discord_user_id for p in players if p.discord_user_id}
-        for user_id in await self.db.list_codenames_watch_members(watch.watch_id):
-            if user_id in linked:
-                continue
+        waiting = [u for u in await self.db.list_codenames_watch_members(watch.watch_id) if u not in linked]
+        free = [p for p in players if not p.discord_user_id and p.display_name]
+        if not waiting or not free:
+            return
+
+        claims: dict[str, str] = {}  # seat -> Discord user
+        for user_id in waiting:
             remembered = await self.db.get_codenames_remembered_name(user_id)
             if not remembered:
                 continue
-            matches = [
-                p for p in players
-                if not p.discord_user_id and (p.display_name or "").casefold() == remembered.casefold()
-            ]
-            if len(matches) == 1:
-                await self.db.claim_codenames_player(watch.room_id, matches[0].player_id, user_id)
-                matches[0].discord_user_id = user_id
-                linked.add(user_id)
+            matches = [p for p in free if (p.display_name or "").casefold() == remembered.casefold()]
+            if len(matches) == 1 and matches[0].player_id not in claims:
+                claims[matches[0].player_id] = user_id
+
+        binding = await self.db.get_codenames_binding(watch.channel_id)
+        candidates: dict[str, set[str]] = {}  # seat -> users whose names match it
+        for user_id in waiting:
+            if user_id in claims.values():
+                continue
+            names = {normalise_name(n) for n in await self._member_names(watch.guild_id, user_id)}
+            if binding is not None and binding.player_names.get(user_id):
+                names.add(normalise_name(binding.player_names[user_id]))
+            names.discard("")
+            seats = [p.player_id for p in free if p.player_id not in claims and normalise_name(p.display_name) in names]
+            if len(seats) == 1:
+                candidates.setdefault(seats[0], set()).add(user_id)
+        for seat, users in candidates.items():
+            if len(users) == 1:
+                claims[seat] = next(iter(users))
+
+        for seat, user_id in claims.items():
+            await self.db.claim_codenames_player(watch.room_id, seat, user_id)
+
+    async def _member_names(self, guild_id: str, user_id: str) -> list[str]:
+        """A member's server nickname, display name and username (cached for an hour)."""
+        cached = self._member_name_cache.get((guild_id, user_id))
+        if cached is not None and time.monotonic() - cached[1] < 3600:
+            return cached[0]
+        names: list[str] = []
+        get_guild = getattr(self.bot, "get_guild", None)
+        guild = get_guild(int(guild_id)) if get_guild is not None and guild_id.isdigit() else None
+        if guild is not None and user_id.isdigit():
+            member = guild.get_member(int(user_id))
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(user_id))
+                except discord.DiscordException:
+                    member = None
+            if member is not None:
+                for attr in ("nick", "display_name", "global_name", "name"):
+                    value = getattr(member, attr, None)
+                    if value and value not in names:
+                        names.append(value)
+        self._member_name_cache[(guild_id, user_id)] = (names, time.monotonic())
+        return names
+
+    async def _current_lineup(self, watch: CodenamesWatch) -> cards.Lineup | None:
+        """The seats a tournament expects in this channel, if it has caught up with every
+        result reported from here (otherwise its line-up is for a game already played)."""
+        binding = await self.db.get_codenames_binding(watch.channel_id)
+        if binding is None or not binding.lineup:
+            return None
+        if binding.lineup.get("last_event_id") != await self.db.latest_bridge_event_id(watch.channel_id):
+            return None
+        return cards.Lineup.from_binding(binding.lineup)
 
     async def _update_watch(
-        self, watch: CodenamesWatch, view: GameView, game_number: int, links: dict[str, str]
+        self,
+        watch: CodenamesWatch,
+        view: GameView,
+        game_number: int,
+        links: dict[str, str],
+        *,
+        lineup: cards.Lineup | None = None,
     ) -> None:
         previous = await self.db.get_latest_codenames_game(watch.watch_id)
         game, created = await self.db.get_or_create_codenames_game(watch.watch_id, view.match_id, game_number)
@@ -257,7 +331,12 @@ class CodenamesMonitor:
             if user_id not in links.values()
         )
         data = cards.CardData(
-            room_id=watch.room_id, game_number=game.game_number, view=view, links=links, invited=invited
+            room_id=watch.room_id,
+            game_number=game.game_number,
+            view=view,
+            links=links,
+            invited=invited,
+            lineup=lineup if view.phase != "finished" else None,
         )
 
         if game.lifecycle_state == "lobby" and view.phase in ("in_progress", "finished"):
@@ -276,6 +355,8 @@ class CodenamesMonitor:
         message = await self._send_or_edit_card(channel, game, data)
         if message is None:
             return
+
+        await self._update_lineup_ping(watch, game, view, lineup, links, channel, message)
 
         if view.phase == "finished":
             await self._delete_ping(watch, game)
@@ -410,18 +491,58 @@ class CodenamesMonitor:
     async def _retire_game(self, watch: CodenamesWatch, game: CodenamesGame) -> None:
         """The room moved on to a new match before this one finished."""
         await self._delete_ping(watch, game)
+        await self._delete_ping(watch, game, key=_LINEUP_PING_KEY, via_key=_LINEUP_PING_VIA_KEY)
         if game.lifecycle_state == "finished":
             return
         await self._close_card(watch, game, tr("cn_note_superseded"))
 
-    async def _delete_ping(self, watch: CodenamesWatch, game: CodenamesGame) -> None:
-        ping_id = game.state.get(_PING_KEY)
+    async def _update_lineup_ping(
+        self,
+        watch: CodenamesWatch,
+        game: CodenamesGame,
+        view: GameView,
+        lineup: cards.Lineup | None,
+        links: dict[str, str],
+        channel,
+        card: discord.Message,
+    ) -> None:
+        """Before a tournament game starts, tell its players once where to sit."""
+        if view.phase != "lobby":
+            await self._delete_ping(watch, game, key=_LINEUP_PING_KEY, via_key=_LINEUP_PING_VIA_KEY)
+            return
+        if lineup is None or game.state.get(_LINEUP_SENT_KEY) == lineup.key or cards.lineup_ready(view, lineup, links):
+            return
+        await self._delete_ping(watch, game, key=_LINEUP_PING_KEY, via_key=_LINEUP_PING_VIA_KEY)
+        text, user_ids = cards.build_lineup_ping(lineup)
+        sent, poster = await self._send(
+            "send_codenames_lineup",
+            watch.room_id,
+            channel,
+            await self.posters.for_sending(channel),
+            text,
+            view=cards.build_ping_view(watch.room_id),
+            allowed_mentions=discord.AllowedMentions(
+                users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
+            ),
+            reply_to=card,
+        )
+        state = dict(game.state)
+        state[_LINEUP_PING_KEY] = sent.id if sent is not None else None
+        state[_LINEUP_PING_VIA_KEY] = poster.via
+        state[_LINEUP_SENT_KEY] = lineup.key
+        await self.db.update_codenames_game(game.game_id, state=state)
+        game.state = state
+
+    async def _delete_ping(
+        self, watch: CodenamesWatch, game: CodenamesGame, *, key: str = _PING_KEY, via_key: str = _PING_VIA_KEY
+    ) -> None:
+        ping_id = game.state.get(key)
         if not ping_id:
             return
         channel = await self._channel(watch)
         if channel is not None:
             # A webhook ping whose webhook is gone can still be deleted by the bot (Manage Messages).
-            poster = await self.posters.for_message(channel, game.state.get(_PING_VIA_KEY, VIA_BOT)) or BotPoster(channel)
+            poster = await self.posters.for_message(channel, game.state.get(via_key, VIA_BOT)) or BotPoster(channel)
             try:
                 await self._call(
                     "delete_codenames_ping", watch.room_id, lambda: poster.delete(int(ping_id)), channel, kind="delete"
@@ -431,7 +552,7 @@ class CodenamesMonitor:
             except discord.DiscordException as exc:
                 LOGGER.warning("Codenames room %s: could not delete ping: %s", watch.room_id, exc)
         state = dict(game.state)
-        state[_PING_KEY] = None
+        state[key] = None
         await self.db.update_codenames_game(game.game_id, state=state)
         game.state = state
 

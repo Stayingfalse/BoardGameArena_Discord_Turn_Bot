@@ -84,10 +84,24 @@ class TournamentBridge:
     # Bindings
     # ------------------------------------------------------------------
 
-    async def bind(self, channel_id: str, *, guild_id: str, external_ref: str, players: list[str]) -> CodenamesBinding:
+    async def bind(
+        self,
+        channel_id: str,
+        *,
+        guild_id: str,
+        external_ref: str,
+        players: list[str],
+        player_names: dict[str, str] | None = None,
+        lineup: dict | None = None,
+    ) -> CodenamesBinding:
         """Bind *channel_id* to a tournament match; rooms already watched there pick it up too."""
         binding = await self.db.upsert_codenames_binding(
-            channel_id, guild_id=guild_id, external_ref=external_ref, players=players
+            channel_id,
+            guild_id=guild_id,
+            external_ref=external_ref,
+            players=players,
+            player_names=player_names,
+            lineup=lineup,
         )
         for watch in await self.watches_in(channel_id, guild_id):
             await self.invite_players(watch, binding)
@@ -112,7 +126,8 @@ class TournamentBridge:
         """List the match's players on the room's card so they can claim their seats."""
         if binding.players:
             await self.db.add_codenames_watch_members(watch.watch_id, binding.players)
-            await self.monitor.refresh_room(watch.room_id)
+        # Redraw even without new players: the line-up may have moved on to the next game.
+        await self.monitor.refresh_room(watch.room_id)
 
     async def describe(self, binding: CodenamesBinding) -> dict:
         rooms = []
@@ -225,6 +240,8 @@ def binding_json(binding: CodenamesBinding) -> dict:
         "guild_id": binding.guild_id,
         "external_ref": binding.external_ref,
         "players": binding.players,
+        "player_names": binding.player_names,
+        "lineup": binding.lineup,
         "created_at": binding.created_at,
         "updated_at": binding.updated_at,
     }
@@ -250,6 +267,24 @@ def build_result_payload(
         }
         for team in TEAMS
     }
+    colors = {card.word.casefold(): card.color for card in view.board}
+
+    def person(player_id: str | None, name: str | None) -> dict:
+        return {"player_id": player_id, "name": name, "discord_user_id": links.get(player_id) if player_id else None}
+
+    turns = [
+        {
+            "team": turn.clue.team,
+            "word": turn.clue.word,
+            "number": turn.clue.number,
+            "giver": person(turn.clue.giver_id, turn.clue.giver_name),
+            "guesses": [
+                {"word": guess.word, "color": colors.get(guess.word.casefold()), **person(guess.player_id, guess.player_name)}
+                for guess in turn.guesses
+            ],
+        }
+        for turn in view.turns
+    ]
     return {
         "event": EVENT_GAME_FINISHED,
         "event_id": f"{watch.room_id}:{view.match_id}",
@@ -266,5 +301,8 @@ def build_result_payload(
         "remaining": dict(view.remaining),
         "loser_remaining": view.remaining.get(loser, 0) if loser else None,
         "seats": seats,
+        "starting_team": view.starting_team,
+        "turns": turns,
+        "board": [{"word": c.word, "color": c.color, "revealed": c.revealed} for c in view.board],
         "finished_at": utc_now_iso(),
     }
