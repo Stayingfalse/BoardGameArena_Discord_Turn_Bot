@@ -35,7 +35,15 @@ Codenames watcher.
    - **Seats don't match, or a seat isn't linked to a Discord user:** the
      result is posted in the thread with **Log as Game N** / **Dismiss**
      buttons for a player or admin.
-4. When the match ends, the tournament removes the binding, and this bot stops
+4. While the match runs:
+   - **Reminders:** a turn that has waited `CODENAMES_REMINDER_HOURS` (24 by
+     default) is pinged again. Within 48 hours of the round's `deadline`,
+     reminders come every 6 hours and say when the round ends.
+   - **No idle timeout:** tournament threads are never dropped for being idle;
+     the tournament ends the watch.
+   - **Live status:** the tournament polls the binding every 2 minutes to show
+     each match's live status on its dashboard and to nudge stalled matches.
+5. When the match ends, the tournament removes the binding, and this bot stops
    watching the thread's room.
 
 Results are kept in a database outbox until the tournament accepts them, so a
@@ -100,11 +108,12 @@ All requests carry `Authorization: Bearer <BRIDGE_TOKEN>`. All bodies are JSON.
 |---|---|---|
 | `GET /api/bridge/health` | — | `{"ok": true}` |
 | `PUT /api/bridge/codenames/bindings/{channel_id}` | `{"guild_id", "external_ref", "players": [discord ids], "player_names": {id: name}, "lineup": {...} \| null}` | The binding. Idempotent: the tournament re-sends it whenever it changes. |
-| `GET /api/bridge/codenames/bindings/{channel_id}` | — | The binding, the rooms watched in the thread, and each result's delivery status. |
+| `GET /api/bridge/codenames/bindings/{channel_id}` | — | The binding, each watched room's live status (below), and each result's delivery status. |
 | `DELETE /api/bridge/codenames/bindings/{channel_id}[?keep_watching=1]` | — | `{"removed": bool}`. Also stops watching the thread's rooms unless `keep_watching`. |
 
 `external_ref` is at most 100 characters; `players` is at most 10 IDs.
-`player_names` and `lineup` are optional:
+`player_names`, `lineup` and `deadline` (unix seconds when the round ends) are
+optional:
 
 ```json
 "player_names": {"333": "Carol"},
@@ -119,6 +128,19 @@ All requests carry `Authorization: Bearer <BRIDGE_TOKEN>`. All bodies are JSON.
 `last_event_id` is the last result the tournament processed from this thread
 (`null` before the first). The line-up is only shown while it equals the last
 result this bot reported from the thread.
+
+Each entry in `rooms` from `GET` looks like this:
+
+```json
+{"room_id": "juzaf-hitos", "room_url": "https://codenames.game/r/juzaf-hitos", "connected": true,
+ "game_number": 2, "phase": "in_progress", "active_team": "red", "active_role": "operatives",
+ "waiting_on": [{"name": "Alice", "discord_user_id": "222"}],
+ "turn_started_at": "2026-10-12T10:00:00+00:00", "clue": {"word": "OCEAN", "number": "2"},
+ "remaining": {"red": 4, "blue": 6}, "players_in_room": 3}
+```
+
+`phase` is `lobby`, `in_progress` or `finished`. The turn fields are `null`
+or empty unless a game is in progress.
 
 ### Tournament bot
 

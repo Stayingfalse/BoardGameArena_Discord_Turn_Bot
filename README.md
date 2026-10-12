@@ -200,6 +200,7 @@ DASHBOARD_SECRET_KEY=
 | `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
 | `CODENAMES_ENABLED` | — | `1` | Watch posted codenames.game room links and add the `/codenames` commands |
 | `CODENAMES_BOT_NAMES` | — | built-in list | `\|`-separated names the bot picks from when it first joins a room (e.g. `🤖 Agent Turnkeeper\|🤖 Curious Cat`). Avoid brackets: the site strips them |
+| `CODENAMES_REMINDER_HOURS` | — | `24` | Ping the players again when a turn has waited this many hours, then every this many hours. `0` turns reminders off |
 | `CODENAMES_IDLE_HOURS` | — | `168` | Stop watching a room where nothing has happened (no moves, nobody in it) for this many hours. Turn-based games can go days between moves, hence the 7-day default |
 | `BRIDGE_TOKEN` | — | — | Shared secret with the [Codenames tournament bot](docs/tournament-bridge.md); setting it turns the bridge on |
 | `BRIDGE_HOST` / `BRIDGE_PORT` | — | `0.0.0.0` / `8081` | Where the tournament bridge API listens |
@@ -311,6 +312,7 @@ Things to know:
 
 - The bot shows up in the room's player list with a fun name starting with 🤖 (one per room, kept for that room). Leave it off the teams.
 - Only classic Codenames is supported for now; for a Duet room the bot posts a short note in the channel and doesn't watch it.
+- If a turn waits more than `CODENAMES_REMINDER_HOURS` (a day by default), the players are pinged again with how long it has been waiting, then once a day after that.
 - The server disconnects everyone from a room that's been idle for a while; the bot just rejoins a minute later, so long gaps between turns are fine. It only stops watching, with a note on the card, when nothing has happened in the room for `CODENAMES_IDLE_HOURS` (7 days by default) or it can't reach the room any more. Post the link again to restart.
 - Codenames links are never deleted, even where *Tidy up shared links* is on; the server's forced notification channel is used for the card.
 - Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
