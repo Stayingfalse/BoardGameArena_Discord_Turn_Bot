@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import discord
 
@@ -40,6 +40,8 @@ _PING_VIA_KEY = "ping_via"
 _CARD_VIA_KEY = "card_via"
 
 ClientFactory = Callable[..., CodenamesRoomClient]
+# Told once per finished game: the watch, the game, the final view and seat -> Discord user links.
+GameFinishedListener = Callable[[CodenamesWatch, CodenamesGame, GameView, dict[str, str]], Awaitable[None]]
 
 
 class CodenamesMonitor:
@@ -71,6 +73,7 @@ class CodenamesMonitor:
         self._last_state: dict[str, tuple[str, int | None]] = {}
         self._messages: dict[int, discord.Message] = {}
         self._signatures: dict[int, str] = {}
+        self.game_finished_listeners: list[GameFinishedListener] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -267,12 +270,14 @@ class CodenamesMonitor:
             await self._delete_ping(watch, game)
             if game.lifecycle_state != "finished":
                 players_on_teams = {pid for roles in view.rosters.values() for ids in roles.values() for pid in ids}
-                await self.db.finish_codenames_game(
+                finished = await self.db.finish_codenames_game(
                     game.game_id,
                     winner_team=view.winner_team,
                     finish_reason=view.finish_reason,
                     player_count=len(players_on_teams) or None,
                 )
+                if finished:
+                    await self._notify_game_finished(watch, game, view, links)
             return
 
         if view.turn_key != game.turn_key:
@@ -304,6 +309,15 @@ class CodenamesMonitor:
             state[_PING_VIA_KEY] = poster.via
             await self.db.update_codenames_game(game.game_id, turn_key=view.turn_key, state=state)
             game.turn_key, game.state = view.turn_key, state
+
+    async def _notify_game_finished(
+        self, watch: CodenamesWatch, game: CodenamesGame, view: GameView, links: dict[str, str]
+    ) -> None:
+        for listener in self.game_finished_listeners:
+            try:
+                await listener(watch, game, view, links)
+            except Exception:
+                LOGGER.exception("Codenames room %s: game-finished listener failed", watch.room_id)
 
     async def _send_or_edit_card(
         self, channel: discord.abc.Messageable, game: CodenamesGame, data: cards.CardData

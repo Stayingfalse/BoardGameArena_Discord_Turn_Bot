@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from .bridge.store import BridgeStore
 from .codenames.store import CodenamesStore
 from .models import GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
@@ -34,7 +35,7 @@ class LinkConflictError(Exception):
         self.holder = holder
 
 
-class Database(CodenamesStore):
+class Database(CodenamesStore, BridgeStore):
     def __init__(self, db_path: Path, schema_sql: str) -> None:
         self.db_path = db_path
         self.schema_sql = schema_sql

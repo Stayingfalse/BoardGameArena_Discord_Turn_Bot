@@ -100,6 +100,7 @@ Open that URL in your browser, choose your server, and approve. The bot will hav
 4. Under **Bot Permissions**, select:
    - `View Channels`
    - `Send Messages`
+   - `Send Messages in Threads` *(Codenames rooms posted in threads, e.g. tournament match threads)*
    - `Embed Links`
    - `Read Message History`
    - `Manage Messages` *(needed to tidy up shared links)*
@@ -200,6 +201,9 @@ DASHBOARD_SECRET_KEY=
 | `CODENAMES_ENABLED` | — | `1` | Watch posted codenames.game room links and add the `/codenames` commands |
 | `CODENAMES_BOT_NAMES` | — | built-in list | `\|`-separated names the bot picks from when it first joins a room (e.g. `🤖 Agent Turnkeeper\|🤖 Curious Cat`). Avoid brackets: the site strips them |
 | `CODENAMES_IDLE_HOURS` | — | `168` | Stop watching a room where nothing has happened (no moves, nobody in it) for this many hours. Turn-based games can go days between moves, hence the 7-day default |
+| `BRIDGE_TOKEN` | — | — | Shared secret with the [Codenames tournament bot](docs/tournament-bridge.md); setting it turns the bridge on |
+| `BRIDGE_HOST` / `BRIDGE_PORT` | — | `0.0.0.0` / `8081` | Where the tournament bridge API listens |
+| `BRIDGE_CALLBACK_URLS` | — | — | Comma-separated result URLs on the tournament bot, tried in order (internal first, public HTTPS fallback) |
 | `DASHBOARD_ENABLED` | — | `0` | Enable the optional web dashboard on `DASHBOARD_PORT` |
 | `DASHBOARD_HOST` | — | `0.0.0.0` | Interface the web dashboard listens on (use `127.0.0.1` behind a local reverse proxy) |
 | `DASHBOARD_PORT` | — | `8080` | Port for the web dashboard |
@@ -311,6 +315,10 @@ Things to know:
 - Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
 - Turn pings are separate messages because Discord doesn't notify mentions in edited messages; the card itself is posted with mentions turned off.
 - With the **Manage Webhooks** permission, cards and pings are posted by a "Codenames" webhook the bot creates in the channel (with its own avatar), so they don't appear under the bot's name. The buttons still work. Without it, the bot posts them itself and pings start with "🕵️ Codenames". Webhook messages can't be replies, so in that mode pings aren't attached to the card; they have their own **Open room** button.
+
+### Codenames tournaments
+
+The bot can feed results to the [Codenames Tournament bot](https://github.com/Stayingfalse/CodwellTornement). The tournament binds each match thread to its match. Players post their room link in the thread, and every finished game is reported back and scored automatically, with a confirm button when the seats don't match the line-up. Set `BRIDGE_TOKEN` and `BRIDGE_CALLBACK_URLS`. Setup and the API are in [docs/tournament-bridge.md](docs/tournament-bridge.md).
 
 ## 3. Discord commands
 
