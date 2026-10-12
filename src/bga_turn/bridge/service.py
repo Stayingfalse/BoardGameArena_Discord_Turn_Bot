@@ -14,6 +14,7 @@ import asyncio
 import logging
 import random
 import time
+from datetime import datetime, timezone
 
 import aiohttp
 
@@ -93,6 +94,7 @@ class TournamentBridge:
         players: list[str],
         player_names: dict[str, str] | None = None,
         lineup: dict | None = None,
+        deadline: int | None = None,
     ) -> CodenamesBinding:
         """Bind *channel_id* to a tournament match; rooms already watched there pick it up too."""
         binding = await self.db.upsert_codenames_binding(
@@ -102,6 +104,7 @@ class TournamentBridge:
             players=players,
             player_names=player_names,
             lineup=lineup,
+            deadline=deadline,
         )
         for watch in await self.watches_in(channel_id, guild_id):
             await self.invite_players(watch, binding)
@@ -130,22 +133,47 @@ class TournamentBridge:
         await self.monitor.refresh_room(watch.room_id)
 
     async def describe(self, binding: CodenamesBinding) -> dict:
-        rooms = []
-        for watch in await self.watches_in(binding.channel_id, binding.guild_id):
-            game = await self.db.get_latest_codenames_game(watch.watch_id)
-            rooms.append(
-                {
-                    "room_id": watch.room_id,
-                    "room_url": build_room_url(watch.room_id),
-                    "game_number": game.game_number if game else None,
-                    "phase": game.lifecycle_state if game else None,
-                }
-            )
+        """The binding plus what is happening in each of the thread's rooms right now."""
+        rooms = [await self._room_status(watch) for watch in await self.watches_in(binding.channel_id, binding.guild_id)]
         results = [
             {"event_id": entry.event_id, "status": entry.status, "attempts": entry.attempts}
             for entry in await self.db.list_bridge_results(binding.channel_id)
         ]
         return {**binding_json(binding), "rooms": rooms, "results": results}
+
+    async def _room_status(self, watch: CodenamesWatch) -> dict:
+        game = await self.db.get_latest_codenames_game(watch.watch_id)
+        view = self.monitor.latest_view(watch.room_id)
+        if view is not None and game is not None and view.match_id != game.match_id:
+            view = None  # the room has moved on and this watch hasn't caught up yet
+        status: dict = {
+            "room_id": watch.room_id,
+            "room_url": build_room_url(watch.room_id),
+            "connected": self.monitor.is_watching(watch.room_id),
+            "game_number": game.game_number if game else None,
+            "phase": view.phase if view is not None else (game.lifecycle_state if game else None),
+            "active_team": None,
+            "active_role": None,
+            "waiting_on": [],
+            "turn_started_at": None,
+            "clue": None,
+            "remaining": dict(view.remaining) if view is not None else None,
+            "players_in_room": len(view.connected_ids) if view is not None else 0,
+        }
+        if view is not None and view.phase == "in_progress":
+            players = await self.db.list_codenames_players(watch.room_id)
+            links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+            status["active_team"] = view.active_team
+            status["active_role"] = view.active_role
+            status["waiting_on"] = [
+                {"name": view.player_name(pid), "discord_user_id": links.get(pid)} for pid in view.players_to_act()
+            ]
+            started = (game.state or {}).get("turn_started_at") if game else None
+            if isinstance(started, (int, float)):
+                status["turn_started_at"] = datetime.fromtimestamp(started, timezone.utc).isoformat()
+            if view.clue is not None:
+                status["clue"] = {"word": view.clue.word, "number": view.clue.number}
+        return status
 
     # ------------------------------------------------------------------
     # Results
@@ -242,6 +270,7 @@ def binding_json(binding: CodenamesBinding) -> dict:
         "players": binding.players,
         "player_names": binding.player_names,
         "lineup": binding.lineup,
+        "deadline": binding.deadline,
         "created_at": binding.created_at,
         "updated_at": binding.updated_at,
     }

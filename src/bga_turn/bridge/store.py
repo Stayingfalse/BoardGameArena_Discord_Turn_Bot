@@ -25,6 +25,8 @@ class CodenamesBinding:
     # The current game's expected seats: {"game": 2, "last_event_id": ..., "blue": {"spymaster": id,
     # "operative": id}, "red": {...}}, or None.
     lineup: dict | None = None
+    # Unix seconds when the tournament round ends, if it has a deadline.
+    deadline: int | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -64,9 +66,10 @@ class BridgeStore:
         players: list[str],
         player_names: dict[str, str] | None = None,
         lineup: dict | None = None,
+        deadline: int | None = None,
     ) -> CodenamesBinding:
         now = utc_now_iso()
-        details = json_dumps({"player_names": player_names or {}, "lineup": lineup})
+        details = json_dumps({"player_names": player_names or {}, "lineup": lineup, "deadline": deadline})
         with self._lock:
             self._connection.execute(
                 """
@@ -191,6 +194,7 @@ def _row_to_binding(row: sqlite3.Row) -> CodenamesBinding:
         players=json_loads_list(row["players_json"]),
         player_names={str(k): str(v) for k, v in names.items()} if isinstance(names, dict) else {},
         lineup=lineup if isinstance(lineup, dict) else None,
+        deadline=details.get("deadline") if isinstance(details.get("deadline"), int) else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

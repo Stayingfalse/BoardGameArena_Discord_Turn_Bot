@@ -278,6 +278,22 @@ def build_turn_ping(
     return text, user_ids
 
 
+def format_wait(seconds: int) -> str:
+    """'3 hours', '1 day', '2 days' (rounded down)."""
+    hours = max(1, seconds // 3600)
+    if hours < 48:
+        return tr("cn_wait_hours", count=hours) if hours != 1 else tr("cn_wait_hour")
+    return tr("cn_wait_days", count=hours // 24)
+
+
+def build_reminder_note(waited_seconds: int, deadline: int | None = None) -> str:
+    """The line put above a repeated turn ping."""
+    note = tr("cn_reminder", waited=format_wait(waited_seconds))
+    if deadline:
+        note += " " + tr("cn_reminder_deadline", deadline=f"<t:{deadline}:R>")
+    return note
+
+
 def build_ping_view(room_id: str) -> discord.ui.View:
     """An "Open room" link under a turn ping, so players needn't scroll back to the card."""
     view = discord.ui.View(timeout=None)

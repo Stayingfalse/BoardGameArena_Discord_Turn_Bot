@@ -133,6 +133,10 @@ async def _put_binding(request: web.Request) -> web.Response:
                 '"blue": {"spymaster": id, "operative": id}, "red": {...}} or null',
             )
 
+    deadline = body.get("deadline")
+    if deadline is not None and (not isinstance(deadline, int) or isinstance(deadline, bool) or deadline <= 0):
+        return _error(400, "deadline must be a unix timestamp in seconds, or null")
+
     bridge = request.app[_BRIDGE_KEY]
     binding = await bridge.bind(
         channel_id,
@@ -141,6 +145,7 @@ async def _put_binding(request: web.Request) -> web.Response:
         players=list(dict.fromkeys(str(p) for p in players)),
         player_names={str(k): v for k, v in player_names.items()},
         lineup=lineup,
+        deadline=deadline,
     )
     return web.json_response(binding_json(binding))
 

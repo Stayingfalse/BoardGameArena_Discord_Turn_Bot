@@ -45,6 +45,8 @@ _BOARD_KEY = "board"
 _LINEUP_PING_KEY = "lineup_ping_message_id"
 _LINEUP_PING_VIA_KEY = "lineup_ping_via"
 _LINEUP_SENT_KEY = "lineup_pinged"
+_TURN_STARTED_KEY = "turn_started_at"  # unix seconds
+_REMINDED_KEY = "reminded_at"  # unix seconds
 
 ClientFactory = Callable[..., CodenamesRoomClient]
 
@@ -70,8 +72,19 @@ class CodenamesMonitor:
         client_factory: ClientFactory = CodenamesRoomClient,
         rate_limiter: DiscordRateLimiter | None = None,
         posters: Posters | None = None,
+        reminder_hours: float = 24.0,
+        deadline_window_hours: float = 48.0,
+        deadline_reminder_hours: float = 6.0,
+        reminder_check_seconds: float = 300.0,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.bot = bot
+        self.reminder_seconds = reminder_hours * 3600
+        self.deadline_window_seconds = deadline_window_hours * 3600
+        self.deadline_reminder_seconds = deadline_reminder_hours * 3600
+        self.reminder_check_seconds = reminder_check_seconds
+        self._clock = clock
+        self._reminder_task: asyncio.Task | None = None
         self.db = AsyncDatabase(database)
         self.bot_names = bot_names
         self.idle_seconds = idle_hours * 3600
@@ -98,8 +111,14 @@ class CodenamesMonitor:
         """Reconnect to every watched room (after a restart)."""
         for room_id in sorted({watch.room_id for watch in await self.db.list_codenames_watches()}):
             await self._ensure_client(room_id)
+        if self.reminder_seconds > 0 and (self._reminder_task is None or self._reminder_task.done()):
+            self._reminder_task = asyncio.create_task(self._reminder_loop(), name="codenames-reminders")
 
     async def stop(self) -> None:
+        if self._reminder_task is not None:
+            self._reminder_task.cancel()
+            await asyncio.gather(self._reminder_task, return_exceptions=True)
+            self._reminder_task = None
         for task in self._pending.values():
             task.cancel()
         clients = list(self._clients.values())
@@ -212,7 +231,8 @@ class CodenamesMonitor:
         if view is None:
             return
         async with self._locks.setdefault(room_id, asyncio.Lock()):
-            if time.monotonic() - self._last_active.get(room_id, time.monotonic()) > self.idle_seconds:
+            idle = time.monotonic() - self._last_active.get(room_id, time.monotonic()) > self.idle_seconds
+            if idle and not await self._room_in_tournament(room_id):
                 client = self._clients.get(room_id)
                 if client is not None:
                     await client.stop()  # on_closed is told "stopped"; close as idle here
@@ -297,6 +317,13 @@ class CodenamesMonitor:
         self._member_name_cache[(guild_id, user_id)] = (names, time.monotonic())
         return names
 
+    async def _room_in_tournament(self, room_id: str) -> bool:
+        """Tournament matches can run for weeks; the tournament ends their watch itself."""
+        for watch in await self.db.list_codenames_watches(room_id):
+            if await self.db.get_codenames_binding(watch.channel_id) is not None:
+                return True
+        return False
+
     async def _current_lineup(self, watch: CodenamesWatch) -> cards.Lineup | None:
         """The seats a tournament expects in this channel, if it has caught up with every
         result reported from here (otherwise its line-up is for a game already played)."""
@@ -373,34 +400,116 @@ class CodenamesMonitor:
             return
 
         if view.turn_key != game.turn_key:
-            await self._delete_ping(watch, game)
-            poster = await self.posters.for_sending(channel)
-            ping = (
-                cards.build_turn_ping(view, links, game.game_number, branded=poster.via == VIA_BOT)
-                if view.turn_key
-                else None
-            )
-            ping_id = None
-            if ping is not None:
-                text, user_ids = ping
-                sent, poster = await self._send(
-                    "send_codenames_ping",
-                    watch.room_id,
-                    channel,
-                    poster,
-                    text,
-                    view=cards.build_ping_view(watch.room_id),
-                    allowed_mentions=discord.AllowedMentions(
-                        users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
-                    ),
-                    reply_to=message,
-                )
-                ping_id = sent.id if sent is not None else None
-            state = dict(game.state)
-            state[_PING_KEY] = ping_id
-            state[_PING_VIA_KEY] = poster.via
+            state = await self._send_turn_ping(watch, game, view, links, channel, message)
+            state[_TURN_STARTED_KEY] = int(self._clock())
+            state.pop(_REMINDED_KEY, None)
             await self.db.update_codenames_game(game.game_id, turn_key=view.turn_key, state=state)
             game.turn_key, game.state = view.turn_key, state
+
+    async def _send_turn_ping(
+        self,
+        watch: CodenamesWatch,
+        game: CodenamesGame,
+        view: GameView,
+        links: dict[str, str],
+        channel,
+        card: discord.Message | None,
+        *,
+        reminder: str | None = None,
+    ) -> dict:
+        """Replace the game's turn ping with a new one (deleting the old one so the
+        mention notifies again). Returns the game's new state, not yet saved."""
+        await self._delete_ping(watch, game)
+        poster = await self.posters.for_sending(channel)
+        ping = (
+            cards.build_turn_ping(view, links, game.game_number, branded=poster.via == VIA_BOT)
+            if view.turn_key
+            else None
+        )
+        ping_id = None
+        if ping is not None:
+            text, user_ids = ping
+            if reminder:
+                text = f"{reminder}\n{text}"
+            sent, poster = await self._send(
+                "send_codenames_ping",
+                watch.room_id,
+                channel,
+                poster,
+                text,
+                view=cards.build_ping_view(watch.room_id),
+                allowed_mentions=discord.AllowedMentions(
+                    users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
+                ),
+                reply_to=card,
+            )
+            ping_id = sent.id if sent is not None else None
+        state = dict(game.state)
+        state[_PING_KEY] = ping_id
+        state[_PING_VIA_KEY] = poster.via
+        return state
+
+    # ------------------------------------------------------------------
+    # Reminders
+    # ------------------------------------------------------------------
+
+    async def _reminder_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.reminder_check_seconds)
+            try:
+                await self.send_due_reminders()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Codenames reminders failed")
+
+    def _reminder_interval(self, deadline: int | None, now: float) -> float:
+        """How long a turn may wait between pings; shorter close to a tournament deadline."""
+        interval = self.reminder_seconds
+        if deadline and 0 < deadline - now <= self.deadline_window_seconds:
+            interval = min(interval, self.deadline_reminder_seconds)
+        return interval
+
+    async def send_due_reminders(self, now: float | None = None) -> int:
+        """Ping again the players a turn has been waiting on for too long. Returns how many were sent."""
+        if self.reminder_seconds <= 0:
+            return 0
+        now = self._clock() if now is None else now
+        sent = 0
+        for room_id, view in list(self._views.items()):
+            if view.phase != "in_progress" or not view.turn_key:
+                continue
+            async with self._locks.setdefault(room_id, asyncio.Lock()):
+                players = await self.db.list_codenames_players(room_id)
+                links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+                for watch in await self.db.list_codenames_watches(room_id):
+                    game = await self.db.get_latest_codenames_game(watch.watch_id)
+                    if game is None or game.match_id != view.match_id or game.turn_key != view.turn_key:
+                        continue
+                    started = game.state.get(_TURN_STARTED_KEY)
+                    if not isinstance(started, (int, float)):
+                        # A turn from before reminders existed: start counting now.
+                        state = dict(game.state)
+                        state[_TURN_STARTED_KEY] = int(now)
+                        await self.db.update_codenames_game(game.game_id, state=state)
+                        continue
+                    binding = await self.db.get_codenames_binding(watch.channel_id)
+                    deadline = binding.deadline if binding is not None else None
+                    last = game.state.get(_REMINDED_KEY) or started
+                    if now - last < self._reminder_interval(deadline, now):
+                        continue
+                    channel = await self._channel(watch)
+                    if channel is None:
+                        continue
+                    card = await self._card_message(channel, game)
+                    note = cards.build_reminder_note(
+                        int(now - started), deadline if deadline and deadline > now else None
+                    )
+                    state = await self._send_turn_ping(watch, game, view, links, channel, card, reminder=note)
+                    state[_REMINDED_KEY] = int(now)
+                    await self.db.update_codenames_game(game.game_id, state=state)
+                    sent += 1
+        return sent
 
     async def _notify_game_finished(
         self, watch: CodenamesWatch, game: CodenamesGame, view: GameView, links: dict[str, str]
