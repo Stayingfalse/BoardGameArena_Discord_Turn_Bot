@@ -304,7 +304,8 @@ When the bot sees a player act on a watched table it automatically fills in any 
 1. **Post a room link** such as `https://codenames.game/r/juzaf-hitos`. The bot reacts 🕵️, joins the room as a **spectator** and posts a **"Game 1"** card. It never joins a team and never sees the key (card colours stay hidden from spectators until they're revealed).
 2. **Say who's playing.** Each player opens the room, enters a name, then presses **🙋 I'm playing** on the card and picks that name from a private list. Or tag people with `/codenames players`: they get one invite ping and appear on the card until they claim a name. The bot remembers each person's last name and suggests it next time, and tagged players whose usual name is in the room are matched automatically.
 3. **Play.** The card shows the teams, cards left, the current clue, the last guess and whose move it is (👉). When the turn changes the bot sends a short ping as a reply to the card: the team's **spymaster** when a clue is needed, then its **operatives** with the clue. The previous ping is deleted, guesses within a turn don't ping again, and a restart never pings twice.
-4. **Play again.** When the room starts a new game, the finished card keeps its result and a new **"Game 2"** card is posted.
+4. **See the board.** When a game ends, the card gets a picture of the final board. It shows every card in its colour (guessed cards solid and numbered in the order they were picked, unguessed ones outlined), the teams, every clue with the guesses made on it, and how many agents each team found.
+5. **Play again.** When the room starts a new game, the finished card keeps its result and picture and a new **"Game 2"** card is posted.
 
 Things to know:
 

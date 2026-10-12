@@ -10,6 +10,7 @@ is deleted so the channel doesn't fill up).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -21,10 +22,12 @@ from ..discord_io import DiscordRateLimiter
 from ..i18n import tr
 from ..utils import utc_now_iso
 from . import cards
+from .board_image import FILENAME as BOARD_FILENAME
+from .board_image import BoardSnapshot, render_board_png
 from .client import CLOSE_FAILED, CLOSE_STOPPED, CLOSE_UNSUPPORTED, CodenamesRoomClient
 from .identity import DEFAULT_BOT_NAMES, ensure_room_identity
 from .models import CodenamesGame, CodenamesWatch
-from .posting import VIA_BOT, VIA_WEBHOOK, BotPoster, Posters
+from .posting import VIA_BOT, VIA_WEBHOOK, BotPoster, Posters, make_file
 from .state import GameView
 
 LOGGER = logging.getLogger(__name__)
@@ -38,6 +41,7 @@ _CLOSE_NOTES = {
 _PING_KEY = "ping_message_id"
 _PING_VIA_KEY = "ping_via"
 _CARD_VIA_KEY = "card_via"
+_BOARD_KEY = "board"
 
 ClientFactory = Callable[..., CodenamesRoomClient]
 # Told once per finished game: the watch, the game, the final view and seat -> Discord user links.
@@ -262,6 +266,13 @@ class CodenamesMonitor:
             )
             game.lifecycle_state = "in_progress"
 
+        if view.phase == "finished" and view.board and _BOARD_KEY not in game.state:
+            # Keep the final board with the game so its image survives restarts and "play again".
+            state = dict(game.state)
+            state[_BOARD_KEY] = BoardSnapshot.from_view(view, game.game_number).to_dict()
+            await self.db.update_codenames_game(game.game_id, state=state)
+            game.state = state
+
         message = await self._send_or_edit_card(channel, game, data)
         if message is None:
             return
@@ -322,17 +333,23 @@ class CodenamesMonitor:
     async def _send_or_edit_card(
         self, channel: discord.abc.Messageable, game: CodenamesGame, data: cards.CardData
     ) -> discord.Message | None:
+        if game.state.get(_BOARD_KEY) and data.board_image is None:
+            data = dataclasses.replace(data, board_image=BOARD_FILENAME)
         signature = cards.card_signature(data)
         message = await self._card_message(channel, game)
         if message is not None and self._signatures.get(game.game_id) == signature:
             return message
+        attachment = await self._board_attachment(game) if data.board_image else None
+        if attachment is None and data.board_image:
+            data = dataclasses.replace(data, board_image=None)  # never point the card at a missing file
         layout = cards.build_card(data)
+        edit_kwargs = (lambda: {"attachments": make_file(attachment)}) if attachment is not None else dict
         if message is not None:
             try:
                 edited = await self._call(
                     "edit_codenames_card",
                     data.room_id,
-                    lambda: message.edit(view=layout, allowed_mentions=discord.AllowedMentions.none()),
+                    lambda: message.edit(view=layout, allowed_mentions=discord.AllowedMentions.none(), **edit_kwargs()),
                     channel,
                     kind="edit",
                     created_at=message.created_at,
@@ -350,6 +367,7 @@ class CodenamesMonitor:
                 await self.posters.for_sending(channel),
                 view=layout,
                 allowed_mentions=discord.AllowedMentions.none(),
+                attachment=attachment,
             )
             if message is None:
                 return None
@@ -360,6 +378,15 @@ class CodenamesMonitor:
         self._messages[game.game_id] = message
         self._signatures[game.game_id] = signature
         return message
+
+    async def _board_attachment(self, game: CodenamesGame) -> tuple[str, bytes] | None:
+        try:
+            snapshot = BoardSnapshot.from_dict(game.state[_BOARD_KEY])
+            png = await asyncio.to_thread(render_board_png, snapshot)
+        except Exception:
+            LOGGER.exception("Codenames game %s: could not draw the board", game.game_id)
+            return None
+        return BOARD_FILENAME, png
 
     async def _card_message(self, channel: discord.abc.Messageable, game: CodenamesGame) -> discord.Message | None:
         cached = self._messages.get(game.game_id)

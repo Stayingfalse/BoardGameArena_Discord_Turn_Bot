@@ -236,6 +236,7 @@
   "cn_status_over": "🏁 Game over",
   "cn_reason_assassin": "☠️ {team} found the assassin.",
   "cn_score": "Cards left: {red} · {blue}",
+  "cn_board_image_alt": "The final board: every card with its colour, the clues and the guesses",
   "cn_last_guess": "Last guess: {player} picked **{word}** {card}",
   "cn_invited": "📨 Asked to play: {mentions}. Join the room, then press **I'm playing** to pick your name.",
   "cn_button_open_room": "Open room",

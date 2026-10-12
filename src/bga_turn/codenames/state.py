@@ -33,6 +33,22 @@ class Guess:
     player_name: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class BoardCard:
+    word: str
+    # "red", "blue", "neutral" or "black"; ``None`` while hidden from spectators.
+    color: str | None
+    revealed: bool
+
+
+@dataclass(slots=True)
+class ClueTurn:
+    """One clue and the guesses made on it, in order."""
+
+    clue: Clue
+    guesses: list[Guess] = field(default_factory=list)
+
+
 @dataclass(slots=True)
 class GameView:
     match_id: str
@@ -55,6 +71,11 @@ class GameView:
     connected_ids: list[str] = field(default_factory=list)
     # boardgame.io's state counter: changes with every move.
     state_id: int | None = None
+    # The 25 cards in grid order. When the game ends the server shows
+    # spectators the whole key, so every card has its colour then.
+    board: tuple[BoardCard, ...] = ()
+    # Every clue of the match so far, with its guesses.
+    turns: tuple[ClueTurn, ...] = ()
 
     @property
     def turn_key(self) -> str | None:
@@ -84,6 +105,7 @@ class MatchTracker:
         self.connected_ids: set[str] = set()
         self._clue: Clue | None = None
         self._last_guess: Guess | None = None
+        self._turns: list[ClueTurn] = []
 
     @property
     def state_id(self) -> int | None:
@@ -94,6 +116,7 @@ class MatchTracker:
         self.state = copy.deepcopy(payload.get("state") or {})
         self._clue = None
         self._last_guess = None
+        self._turns = []
         self._read_log(payload.get("log") or [])
         self.apply_match_data(payload.get("filteredMetadata") or [])
 
@@ -137,6 +160,7 @@ class MatchTracker:
                     team=giver.get("team") or metadata.get("playerTeam"),
                     giver_name=giver.get("name") or metadata.get("playerName"),
                 )
+                self._turns.append(ClueTurn(self._clue))
             elif move == "guessCard" and args:
                 guesser = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
                 self._last_guess = Guess(
@@ -145,9 +169,12 @@ class MatchTracker:
                     team=guesser.get("team") or metadata.get("playerTeam"),
                     player_name=guesser.get("name") or metadata.get("playerName"),
                 )
+                if self._turns:
+                    self._turns[-1].guesses.append(self._last_guess)
             elif move == "startMatch":
                 self._clue = None
                 self._last_guess = None
+                self._turns = []
 
     def view(self) -> GameView | None:
         if self.state is None:
@@ -206,6 +233,16 @@ class MatchTracker:
             spectator_ids=spectators,
             connected_ids=sorted((pid for pid in self.connected_ids if pid != self.bot_player_id), key=_id_sort_key),
             state_id=self.state_id,
+            board=tuple(
+                BoardCard(
+                    word=str(card.get("word", "")),
+                    color=card.get("color"),
+                    revealed=bool(card.get("revealed")),
+                )
+                for card in g.get("grid") or []
+                if isinstance(card, dict)
+            ),
+            turns=tuple(ClueTurn(turn.clue, list(turn.guesses)) for turn in self._turns),
         )
 
 

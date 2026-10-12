@@ -33,9 +33,11 @@ class FakeMessage:
         self.edits: list = []
         self.deleted = False
 
-    async def edit(self, *, view=None, allowed_mentions=None):
+    async def edit(self, *, view=None, allowed_mentions=None, attachments=None):
         self.view = view
         self.edits.append(view)
+        if attachments is not None:
+            self.kwargs["files"] = attachments
         return self
 
     async def delete(self):

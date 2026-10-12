@@ -33,12 +33,16 @@ class CardData:
     invited: tuple[str, ...] = ()
     # Shown when the bot stopped watching (room closed, idle, unsupported...).
     closed_note: str | None = None
+    # File name of the final-board image sent with the card, once the game is over.
+    board_image: str | None = None
 
 
 def card_signature(data: CardData) -> str:
     """Changes whenever the rendered card would."""
     view = data.view
-    parts: list[object] = [data.room_id, data.game_number, sorted(data.links.items()), data.invited, data.closed_note]
+    parts: list[object] = [
+        data.room_id, data.game_number, sorted(data.links.items()), data.invited, data.closed_note, data.board_image
+    ]
     if view is not None:
         parts += [
             view.match_id,
@@ -87,6 +91,13 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
                 )
             )
         items.append(discord.ui.TextDisplay("\n".join(lines)))
+
+    if data.board_image:
+        items.append(
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(f"attachment://{data.board_image}", description=tr("cn_board_image_alt"))
+            )
+        )
 
     items.append(discord.ui.Separator())
     if view is not None:
