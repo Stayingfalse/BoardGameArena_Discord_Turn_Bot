@@ -10,12 +10,13 @@ import discord
 from discord.ext import tasks
 
 from . import cards
-from .bga_client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaServerError, BgaTableUnavailableError
-from .database import AsyncDatabase, Database
-from .discord_io import DiscordRateLimiter
-from .i18n import tr
-from .models import BgaTableSnapshot, LinkedUser, WatchSubscription
-from .utils import BASE_URL, build_table_url
+from .client import BgaClient, BgaClientError, BgaNotPublicError, BgaRateLimitError, BgaServerError, BgaTableUnavailableError
+from ..database import AsyncDatabase, Database
+from ..discord_io import DiscordRateLimiter
+from ..i18n import tr
+from ..models import LinkedUser, WatchSubscription
+from .models import BgaTableSnapshot
+from .links import BASE_URL, build_table_url
 
 LOGGER = logging.getLogger(__name__)
 

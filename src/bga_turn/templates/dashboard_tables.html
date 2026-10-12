@@ -96,6 +96,32 @@
   {% endif %}
 </section>
 
+{% if codenames_cards %}
+<section class="section">
+  <div class="section-head"><h2>Codenames rooms</h2><span class="count">{{ codenames_cards | length }}</span></div>
+  <div class="list">
+    {% for room in codenames_cards %}
+    <div class="list-item">
+      <div class="who">
+        <strong>🕵️ Codenames{% if room.game_number %} · Game {{ room.game_number }}{% endif %}</strong>
+        <div class="tcard-sub">
+          <a href="{{ room.room_url }}" target="_blank" rel="noopener noreferrer">Room {{ room.room_id }} ↗</a>
+          <span>{{ room.channel }}</span>
+          <span>Posted by {{ room.created_by }}</span>
+        </div>
+      </div>
+      <div class="small">
+        {% if room.state == "in_progress" %}<span class="badge badge-live">Playing</span>
+        {% elif room.state == "finished" %}<span class="badge badge-muted">Finished · waiting for a rematch</span>
+        {% elif room.state == "lobby" %}<span class="badge">Picking teams</span>
+        {% else %}<span class="badge badge-muted">Connecting</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="section">
   <div class="section-head"><h2>Recently finished</h2><span class="count">{{ finished_cards | length }}</span></div>
   {% if finished_cards %}
@@ -105,7 +131,7 @@
       <div class="who">
         <strong>{{ table.game_name }}</strong>
         <div class="tcard-sub">
-          <a href="{{ table.table_url }}" target="_blank" rel="noopener noreferrer">Table {{ table.table_id }} ↗</a>
+          <a href="{{ table.table_url }}" target="_blank" rel="noopener noreferrer">{{ table.link_label }} ↗</a>
           <span>{{ table.channel }}</span>
           <time datetime="{{ table.finished_at }}" title="{{ table.finished_at | abstime }}">{{ table.finished_at | reltime }}</time>
         </div>

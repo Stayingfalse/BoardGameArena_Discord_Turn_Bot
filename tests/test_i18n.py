@@ -25,12 +25,12 @@ def _placeholders(template: str) -> set[str]:
 
 
 def _source() -> str:
-    return "".join(path.read_text(encoding="utf-8-sig") for path in SRC.glob("*.py"))
+    return "".join(path.read_text(encoding="utf-8-sig") for path in SRC.rglob("*.py"))
 
 
 def _literal_tr_keys() -> set[str]:
     keys: set[str] = set()
-    for path in SRC.glob("*.py"):
+    for path in SRC.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
             if (
                 isinstance(node, ast.Call)

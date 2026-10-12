@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from bga_turn.utils import extract_table_links, parse_public_table_url
+from bga_turn.bga.links import extract_table_links, parse_public_table_url
 
 TABLE = "891538070"
 TABLE_URL = f"https://boardgamearena.com/table?table={TABLE}"

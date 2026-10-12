@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from .codenames.store import CodenamesStore
 from .models import GameHistoryEntry, GuildSettings, LinkedUser, WatchSubscription
 from .utils import json_dumps, json_loads_dict, json_loads_list, utc_now_iso
 
@@ -33,7 +34,7 @@ class LinkConflictError(Exception):
         self.holder = holder
 
 
-class Database:
+class Database(CodenamesStore):
     def __init__(self, db_path: Path, schema_sql: str) -> None:
         self.db_path = db_path
         self.schema_sql = schema_sql
@@ -50,6 +51,7 @@ class Database:
             self._connection.executescript(self.schema_sql)
             self._ensure_watch_subscription_columns()
             self._ensure_watch_state_columns()
+            self._ensure_game_history_columns()
             self._migrate_legacy_watches_if_needed()
             self._drop_legacy_tables_if_safe()
             self._migrate_users_to_guild_scope()
@@ -473,7 +475,7 @@ class Database:
             return {"total": 0, "recruiting": 0}
         return {"total": int(row["total"] or 0), "recruiting": int(row["recruiting"] or 0)}
 
-    def get_guild_extended_stats(self, guild_id: str) -> dict[str, object]:
+    def get_guild_extended_stats(self, guild_id: str, *, provider: str = "bga") -> dict[str, object]:
         """Return comprehensive historical and live stats for one guild."""
         with self._lock:
             live_row = self._connection.execute(
@@ -514,9 +516,9 @@ class Database:
                     COUNT(DISTINCT channel_id) AS tracked_channels,
                     COUNT(DISTINCT created_by_discord_user_id) AS recruiter_count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchone()
 
             members_row = self._connection.execute(
@@ -527,57 +529,57 @@ class Database:
                 """
                 SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 GROUP BY game_name
                 ORDER BY count DESC
                 LIMIT 20
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             games_over_time_rows = self._connection.execute(
                 """
                 SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                   AND finished_at >= date('now', '-90 days')
                 GROUP BY substr(finished_at, 1, 10)
                 ORDER BY day
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             player_rows = self._connection.execute(
                 """
                 SELECT winner_names, final_standings
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             recruiter_rows = self._connection.execute(
                 """
                 SELECT created_by_discord_user_id, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 GROUP BY created_by_discord_user_id
                 ORDER BY count DESC, created_by_discord_user_id
                 LIMIT 10
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
 
             channel_rows = self._connection.execute(
                 """
                 SELECT channel_id, COUNT(*) AS count
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND provider = ?
                 GROUP BY channel_id
                 ORDER BY count DESC, channel_id
                 LIMIT 10
                 """,
-                (guild_id,),
+                (guild_id, provider),
             ).fetchall()
         return self._build_extended_stats(
             live_row=live_row,
@@ -590,7 +592,7 @@ class Database:
             channel_rows=channel_rows,
         )
 
-    def get_global_extended_stats(self) -> dict[str, object]:
+    def get_global_extended_stats(self, *, provider: str = "bga") -> dict[str, object]:
         """Return comprehensive historical and live stats across all guilds."""
         with self._lock:
             live_row = self._connection.execute(
@@ -629,7 +631,9 @@ class Database:
                     COUNT(DISTINCT channel_id) AS tracked_channels,
                     COUNT(DISTINCT created_by_discord_user_id) AS recruiter_count
                 FROM game_history
-                """
+                WHERE provider = ?
+                """,
+                (provider,),
             ).fetchone()
 
             members_row = self._connection.execute(
@@ -649,44 +653,51 @@ class Database:
                 """
                 SELECT COALESCE(game_name, 'Unknown') AS name, COUNT(*) AS count
                 FROM game_history
+                WHERE provider = ?
                 GROUP BY game_name
                 ORDER BY count DESC
                 LIMIT 20
-                """
+                """,
+                (provider,),
             ).fetchall()
 
             games_over_time_rows = self._connection.execute(
                 """
                 SELECT substr(finished_at, 1, 10) AS day, COUNT(*) AS count
                 FROM game_history
-                WHERE finished_at >= date('now', '-90 days')
+                WHERE provider = ? AND finished_at >= date('now', '-90 days')
                 GROUP BY substr(finished_at, 1, 10)
                 ORDER BY day
-                """
+                """,
+                (provider,),
             ).fetchall()
 
             player_rows = self._connection.execute(
-                "SELECT winner_names, final_standings FROM game_history"
+                "SELECT winner_names, final_standings FROM game_history WHERE provider = ?", (provider,)
             ).fetchall()
 
             recruiter_rows = self._connection.execute(
                 """
                 SELECT created_by_discord_user_id, COUNT(*) AS count
                 FROM game_history
+                WHERE provider = ?
                 GROUP BY created_by_discord_user_id
                 ORDER BY count DESC, created_by_discord_user_id
                 LIMIT 10
-                """
+                """,
+                (provider,),
             ).fetchall()
 
             channel_rows = self._connection.execute(
                 """
                 SELECT channel_id, COUNT(*) AS count
                 FROM game_history
+                WHERE provider = ?
                 GROUP BY channel_id
                 ORDER BY count DESC, channel_id
                 LIMIT 10
-                """
+                """,
+                (provider,),
             ).fetchall()
 
         return self._build_extended_stats(
@@ -1102,7 +1113,9 @@ class Database:
             ).fetchall()
         return [self._row_to_watch_subscription(row) for row in rows]
 
-    def list_recent_game_history_for_guild(self, guild_id: str, *, limit: int = 10) -> list[GameHistoryEntry]:
+    def list_recent_game_history_for_guild(
+        self, guild_id: str, *, limit: int = 10, provider: str | None = None
+    ) -> list[GameHistoryEntry]:
         effective_limit = max(1, min(100, int(limit)))
         with self._lock:
             rows = self._connection.execute(
@@ -1120,13 +1133,14 @@ class Database:
                     outcome,
                     winner_names,
                     final_standings,
-                    player_count
+                    player_count,
+                    provider
                 FROM game_history
-                WHERE guild_id = ? AND outcome = 'finished'
+                WHERE guild_id = ? AND outcome = 'finished' AND (? IS NULL OR provider = ?)
                 ORDER BY finished_at DESC, history_id DESC
                 LIMIT ?
                 """,
-                (guild_id, effective_limit),
+                (guild_id, provider, provider, effective_limit),
             ).fetchall()
         return [
             GameHistoryEntry(
@@ -1143,19 +1157,22 @@ class Database:
                 winner_names=json_loads_list(row["winner_names"]),
                 final_standings=json_loads_list(row["final_standings"]),
                 player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+                provider=row["provider"],
             )
             for row in rows
         ]
 
-    def list_game_history_for_guild(self, guild_id: str, *, limit: int | None = None) -> list[GameHistoryEntry]:
+    def list_game_history_for_guild(
+        self, guild_id: str, *, limit: int | None = None, provider: str | None = None
+    ) -> list[GameHistoryEntry]:
         limit_clause = ""
         params: tuple[object, ...]
         if limit is None:
-            params = (guild_id,)
+            params = (guild_id, provider, provider)
         else:
             effective_limit = max(1, min(5000, int(limit)))
             limit_clause = " LIMIT ?"
-            params = (guild_id, effective_limit)
+            params = (guild_id, provider, provider, effective_limit)
         with self._lock:
             rows = self._connection.execute(
                 f"""
@@ -1172,9 +1189,10 @@ class Database:
                     outcome,
                     winner_names,
                     final_standings,
-                    player_count
+                    player_count,
+                    provider
                 FROM game_history
-                WHERE guild_id = ?
+                WHERE guild_id = ? AND (? IS NULL OR provider = ?)
                 ORDER BY finished_at DESC, history_id DESC{limit_clause}
                 """,
                 params,
@@ -1194,6 +1212,7 @@ class Database:
                 winner_names=json_loads_list(row["winner_names"]),
                 final_standings=json_loads_list(row["final_standings"]),
                 player_count=int(row["player_count"]) if row["player_count"] is not None else None,
+                provider=row["provider"],
             )
             for row in rows
         ]
@@ -1325,6 +1344,10 @@ class Database:
             self._connection.execute("ALTER TABLE watch_subscriptions ADD COLUMN base_url TEXT")
         if "gameserver" not in existing_columns:
             self._connection.execute("ALTER TABLE watch_subscriptions ADD COLUMN gameserver TEXT")
+
+    def _ensure_game_history_columns(self) -> None:
+        if "provider" not in self._column_names("game_history"):
+            self._connection.execute("ALTER TABLE game_history ADD COLUMN provider TEXT NOT NULL DEFAULT 'bga'")
 
     def _ensure_watch_state_columns(self) -> None:
         existing_columns = self._column_names("watch_states")

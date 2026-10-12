@@ -49,7 +49,9 @@ from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .database import LinkConflictError, redact_global_stats
-from .utils import build_table_url, format_game_name
+from .utils import format_game_name
+from .bga.links import build_table_url
+from .codenames.links import build_room_url
 
 if TYPE_CHECKING:
     from .app import BgaDiscordBot
@@ -254,6 +256,8 @@ def _build_add_bot_url(client_id: str, guild_id: str | None = None) -> str:
         | (1 << 14)  # embed_links
         | (1 << 16)  # read_message_history
         | (1 << 13)  # manage_messages
+        | (1 << 6)  # add_reactions (acknowledges Codenames room links)
+        | (1 << 29)  # manage_webhooks (posts Codenames updates as "Codenames")
     )
     params: dict[str, object] = {
         "client_id": client_id,
@@ -503,7 +507,9 @@ async def _global_stats_for(request: web.Request, session: dict[str, object] | N
     async with app["global_stats_lock"]:
         if cache["stats"] is None or float(cache["expires_at"]) <= time.monotonic():
             database: Database = app["database"]
-            cache["stats"] = await asyncio.to_thread(database.get_global_extended_stats)
+            stats = await asyncio.to_thread(database.get_global_extended_stats)
+            stats["codenames"] = await asyncio.to_thread(database.get_codenames_stats)
+            cache["stats"] = stats
             cache["expires_at"] = time.monotonic() + _GLOBAL_STATS_CACHE_SECONDS
         stats: dict[str, object] = cache["stats"]
     return stats if _is_global_admin(session, app) else redact_global_stats(stats)
@@ -838,6 +844,9 @@ async def _dashboard_guild_settings_post(request: web.Request, ctx: GuildContext
     raise web.HTTPFound(location=f"/dashboard/{ctx.guild_id}?saved=1")
 
 
+_CODENAMES_TEAMS = {"red": "🔴 Red team", "blue": "🔵 Blue team"}
+
+
 @guild_route
 async def _dashboard_guild_tables(request: web.Request, ctx: GuildContext) -> web.Response:
     database: Database = request.app["database"]
@@ -850,9 +859,11 @@ async def _dashboard_guild_tables(request: web.Request, ctx: GuildContext) -> we
         limit=_RECENT_FINISHED_LIMIT,
     )
 
+    codenames_watches = await asyncio.to_thread(database.list_codenames_watches_for_guild, ctx.guild_id)
     creator_ids = sorted(
         {item.created_by_discord_user_id for item in subscriptions}
         | {item.created_by_discord_user_id for item in recent_finished}
+        | {item.created_by_discord_user_id for item in codenames_watches}
     )
     try:
         creators = await _resolve_guild_members(discord_guild, creator_ids)
@@ -904,17 +915,36 @@ async def _dashboard_guild_tables(request: web.Request, ctx: GuildContext) -> we
     finished_cards = [
         {
             "table_id": item.table_id,
-            "table_url": build_table_url(item.table_id),
-            "game_name": format_game_name(item.game_name),
+            "table_url": build_room_url(item.table_id) if item.provider == "codenames" else build_table_url(item.table_id),
+            "link_label": f"Room {item.table_id}" if item.provider == "codenames" else f"Table {item.table_id}",
+            "game_name": (item.game_name or "Codenames") if item.provider == "codenames" else format_game_name(item.game_name),
             "channel": _resolve_channel_label(discord_guild, item.channel_id),
             "created_by": _creator_name(item.created_by_discord_user_id),
             "outcome": item.outcome,
-            "winner_names": item.winner_names,
+            "winner_names": (
+                [_CODENAMES_TEAMS.get(name, name) for name in item.winner_names]
+                if item.provider == "codenames"
+                else item.winner_names
+            ),
             "final_standings": item.final_standings,
             "finished_at": item.finished_at,
         }
         for item in recent_finished
     ]
+
+    codenames_cards = []
+    for watch in codenames_watches:
+        game = await asyncio.to_thread(database.get_latest_codenames_game, watch.watch_id)
+        codenames_cards.append(
+            {
+                "room_id": watch.room_id,
+                "room_url": build_room_url(watch.room_id),
+                "channel": _resolve_channel_label(discord_guild, watch.channel_id),
+                "created_by": _creator_name(watch.created_by_discord_user_id),
+                "game_number": game.game_number if game is not None else None,
+                "state": game.lifecycle_state if game is not None else None,
+            }
+        )
 
     return _html(
         _render_template(
@@ -926,6 +956,7 @@ async def _dashboard_guild_tables(request: web.Request, ctx: GuildContext) -> we
             recruiting_cards=recruiting_cards,
             in_progress_cards=in_progress_cards,
             finished_cards=finished_cards,
+            codenames_cards=codenames_cards,
             **_guild_page_context(ctx, "tables"),
         )
     )
@@ -958,7 +989,9 @@ async def _dashboard_guild_members(request: web.Request, ctx: GuildContext) -> w
 
     linked_users = await asyncio.to_thread(database.list_linked_users)
     subscriptions = await asyncio.to_thread(database.list_watch_subscriptions_for_guild, ctx.guild_id)
-    history_rows = await asyncio.to_thread(database.list_game_history_for_guild, ctx.guild_id, limit=1000)
+    history_rows = await asyncio.to_thread(
+        database.list_game_history_for_guild, ctx.guild_id, limit=1000, provider="bga"
+    )
 
     members_error = False
     try:
@@ -1122,6 +1155,7 @@ async def _dashboard_guild_members_unlink_post(request: web.Request, ctx: GuildC
 async def _dashboard_guild_stats(request: web.Request, ctx: GuildContext) -> web.Response:
     database: Database = request.app["database"]
     stats = await asyncio.to_thread(database.get_guild_extended_stats, ctx.guild_id)
+    stats["codenames"] = await asyncio.to_thread(database.get_codenames_stats, ctx.guild_id)
     return _html(
         _render_template(
             request,

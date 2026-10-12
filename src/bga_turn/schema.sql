@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS game_history (
     outcome TEXT NOT NULL CHECK (outcome IN ('finished', 'cancelled', 'unwatched')),
     winner_names TEXT NOT NULL DEFAULT '[]',
     final_standings TEXT NOT NULL DEFAULT '[]',
-    player_count INTEGER
+    player_count INTEGER,
+    provider TEXT NOT NULL DEFAULT 'bga'
 );
 
 CREATE TABLE IF NOT EXISTS dashboard_sessions (
@@ -82,3 +83,82 @@ CREATE TABLE IF NOT EXISTS dashboard_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_watch_subscriptions_table_id ON watch_subscriptions(table_id);
+
+-- Codenames (codenames.game). Rooms have no accounts, so the bot joins each
+-- room with its own credentials and a display name, kept per room so it gets
+-- the same seat back after a restart. A room runs one match at a time; "play
+-- again" starts a new match in the same room, which is the next "Game N".
+CREATE TABLE IF NOT EXISTS codenames_rooms (
+    room_id TEXT NOT NULL PRIMARY KEY,
+    bot_credentials TEXT NOT NULL,
+    bot_name TEXT NOT NULL,
+    bot_player_id TEXT,
+    current_match_id TEXT,
+    game_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS codenames_watches (
+    watch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    created_by_discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(room_id, guild_id, channel_id),
+    FOREIGN KEY (room_id) REFERENCES codenames_rooms(room_id) ON DELETE CASCADE
+);
+
+-- One Discord message per match per watch.
+CREATE TABLE IF NOT EXISTS codenames_games (
+    game_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    watch_id INTEGER NOT NULL,
+    match_id TEXT NOT NULL,
+    game_number INTEGER NOT NULL,
+    message_id TEXT,
+    lifecycle_state TEXT NOT NULL DEFAULT 'lobby' CHECK (lifecycle_state IN ('lobby', 'in_progress', 'finished')),
+    -- "<team>:<role>" of the last turn we pinged, so a restart never pings twice.
+    turn_key TEXT,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    winner_team TEXT,
+    finish_reason TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(watch_id, match_id),
+    FOREIGN KEY (watch_id) REFERENCES codenames_watches(watch_id) ON DELETE CASCADE
+);
+
+-- In-room seats. Seat IDs are stable for the room (they survive renames and
+-- "play again"), so a Discord link is kept on the seat, not the name.
+CREATE TABLE IF NOT EXISTS codenames_players (
+    room_id TEXT NOT NULL,
+    player_id TEXT NOT NULL,
+    display_name TEXT,
+    discord_user_id TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (room_id, player_id),
+    FOREIGN KEY (room_id) REFERENCES codenames_rooms(room_id) ON DELETE CASCADE
+);
+
+-- Discord members tagged as expected players for a watched room.
+CREATE TABLE IF NOT EXISTS codenames_watch_members (
+    watch_id INTEGER NOT NULL,
+    discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (watch_id, discord_user_id),
+    FOREIGN KEY (watch_id) REFERENCES codenames_watches(watch_id) ON DELETE CASCADE
+);
+
+-- The display name each Discord user last claimed, offered as a suggestion.
+CREATE TABLE IF NOT EXISTS codenames_user_names (
+    discord_user_id TEXT NOT NULL PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_codenames_watches_guild ON codenames_watches(guild_id);
+CREATE INDEX IF NOT EXISTS idx_codenames_games_message ON codenames_games(message_id);
+CREATE INDEX IF NOT EXISTS idx_codenames_players_discord ON codenames_players(discord_user_id);

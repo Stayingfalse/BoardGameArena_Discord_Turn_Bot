@@ -32,14 +32,15 @@
 </head>
 <body>
   <h1>Privacy Policy</h1>
-  <p class="meta">BGA Turn Bot &middot; Last updated: 2026/10/10</p>
+  <p class="meta">BGA Turn Bot &middot; Last updated: 2026/10/11</p>
 
-  <p>This Privacy Policy explains what data <strong>BGA Turn Bot</strong> (the "Bot") reads and stores, why, who can see it, and how to remove it. The Bot is a self-hosted Discord bot that watches public Board Game Arena (BGA) tables and posts table and turn updates in Discord. It is run by an independent operator (contact details below), who controls the data described here.</p>
+  <p>This Privacy Policy explains what data <strong>BGA Turn Bot</strong> (the "Bot") reads and stores, why, who can see it, and how to remove it. The Bot is a self-hosted Discord bot that watches public Board Game Arena (BGA) tables and <a href="https://codenames.game">codenames.game</a> rooms and posts game and turn updates in Discord. It is run by an independent operator (contact details below), who controls the data described here.</p>
 
   <h2>1. What the Bot reads</h2>
   <ul>
     <li><strong>Messages in channels it can see.</strong> The Bot reads new and edited messages to spot BGA table links. It does <strong>not</strong> store message text: it only keeps the table ID it found. If a server enables "tidy up shared links", the Bot deletes the message containing the link once its own table message has replaced it.</li>
     <li><strong>Public BGA pages.</strong> The Bot reads public table pages in spectator mode, without a BGA account, cookies or credentials.</li>
+    <li><strong>Codenames rooms.</strong> The Bot also spots codenames.game room links (keeping only the room ID) and joins those rooms as a spectator. Like every visitor, it then appears in the room's player list, under a name starting with 🤖, and receives what any spectator sees: the names people chose in the room, the teams, clues and revealed cards. It never joins a team and does not see the hidden card colours.</li>
   </ul>
 
   <h2>2. Data we store</h2>
@@ -49,6 +50,7 @@
     <li><strong>BGA account links</strong>: the public BGA player name and/or ID linked to a Discord member, either by the member themselves (the "Link your BGA &amp; Discord" button) or by a server admin. Links are global: a link made in one server applies in every server that uses the same Bot.</li>
     <li><strong>Watched tables</strong>: table IDs and URLs, the game, the public names and IDs of the players at the table, seats, whose turn it is, and the Bot's message for that table.</li>
     <li><strong>Game history</strong>: when a watched table ends or stops being watched, a record is kept of the game, server, channel, who shared the link, when it started and ended, how it ended, and the winners and final standings (public BGA player names and scores). This history is used for statistics.</li>
+    <li><strong>Codenames rooms</strong>: room IDs, the credentials and name the Bot uses in each room, the names people chose in the room, which Discord member claimed which name (with the "I'm playing" button), members asked to play with <code>/codenames players</code>, each member's last claimed name (offered as a suggestion next time), and the state of each game and the Bot's messages for it. Finished Codenames games are kept in the game history with the winning team.</li>
     <li><strong>Server settings</strong> chosen by server admins.</li>
     <li><strong>Dashboard logins</strong> (only if the operator enables the web dashboard): when you log in with Discord, your user ID, username, avatar and the list of servers you belong to (with your permissions there). Login sessions expire after one day or when you log out, and use a single session cookie.</li>
     <li><strong>Logs</strong>: the operator's server logs record Bot activity, including which Discord user ran which command.</li>
@@ -56,10 +58,11 @@
   <p>The Bot does not collect email addresses, passwords, payment information or BGA login credentials.</p>
 
   <h2>3. How the data is used and who can see it</h2>
-  <p>The data is used only to run the Bot: posting and updating table messages, mentioning linked players when it is their turn, and showing statistics. It is not used for advertising or profiling.</p>
+  <p>The data is used only to run the Bot: posting and updating table and game messages, mentioning linked players when it is their turn, and showing statistics. It is not used for advertising or profiling.</p>
   <ul>
     <li><strong>Within a server</strong>, members can see table messages and that server's statistics (<code>/bga stats</code>), which include BGA player names, games played, wins and who shared tables. Server admins can also see these, and the server's member links, on the dashboard.</li>
-    <li><strong>Across servers</strong>, global statistics (the dashboard's public pages and <code>/bga stats global</code>) show only totals and game titles. They do not show player names, Discord users or channels.</li>
+    <li><strong>Codenames game messages</strong> show the names chosen in the room, which Discord member claimed each name, and the members asked to play; anyone who can read the channel sees them. The dashboard and <code>/codenames status</code> show the server's watched rooms and Codenames totals.</li>
+    <li><strong>Across servers</strong>, global statistics (the dashboard's public pages and <code>/bga stats global</code>) show only totals and game titles. They do not show player names, Discord users, channels or Codenames room links.</li>
     <li>The operator, and any global admins they appoint, can see all stored data.</li>
   </ul>
 
@@ -70,12 +73,13 @@
   <ul>
     <li><strong>Your BGA link</strong>: click "Link your BGA &amp; Discord" on any table message and choose <em>Unlink</em>. Server admins can also remove it with <code>/bga unlink-member</code> or on the dashboard.</li>
     <li><strong>Watched tables</strong> are removed automatically when the game ends, and server admins can stop watching a table from the dashboard.</li>
-    <li><strong>When the Bot is removed from a server</strong>, the Bot stops watching that server's tables and deletes its settings. Game history, including those tables, is kept for statistics until the operator deletes it.</li>
+    <li><strong>Codenames</strong>: press "I'm playing" on a game message and choose <em>I'm not playing</em> to remove your claim on a name. A room stops being watched when nothing has happened in it for a while (7 days by default), when the Bot can no longer reach it, or with <code>/codenames unwatch</code>; its game messages are then no longer updated. The names seen in a room and the Bot's credentials for it are kept so the Bot can recognise the room if it is posted again; contact the operator to have them deleted.</li>
+    <li><strong>When the Bot is removed from a server</strong>, the Bot stops watching that server's tables and Codenames rooms and deletes its settings. Game history, including those tables, is kept for statistics until the operator deletes it.</li>
     <li>For any other deletion request, including game history, contact the operator.</li>
   </ul>
 
   <h2>6. Third-party services</h2>
-  <p>The Bot operates on Discord and reads public data from Board Game Arena; it is not affiliated with either. Your use of Discord is governed by Discord's <a href="https://discord.com/privacy">Privacy Policy</a>, and your use of Board Game Arena by its own privacy terms. If the dashboard is enabled, pages with charts load a chart library from the jsDelivr CDN, and avatars and server icons are loaded from Discord's CDN, so those services see your browser's request.</p>
+  <p>The Bot operates on Discord, reads public data from Board Game Arena and joins codenames.game rooms as a spectator; it is not affiliated with any of them. Your use of Discord is governed by Discord's <a href="https://discord.com/privacy">Privacy Policy</a>, and your use of Board Game Arena and codenames.game by their own privacy terms. If the dashboard is enabled, pages with charts load a chart library from the jsDelivr CDN, and avatars and server icons are loaded from Discord's CDN, so those services see your browser's request.</p>
 
   <h2>7. Children</h2>
   <p>The Bot is intended to be used within Discord, which requires users to be at least 13 years old (or the minimum age of digital consent in their country). The Bot is not directed at children below that age.</p>
