@@ -13,9 +13,19 @@ Codenames watcher.
    anywhere else. Because the thread is bound:
    - the room card stays in the thread, even if the server has a forced
      notification channel;
-   - the four players are listed on the card as invited, so they can press
-     **🙋 I'm playing**. Anyone who claimed a name before gets their seat
-     matched automatically.
+   - the four players are listed on the card as invited. Each one's seat is
+     matched automatically by the name they used before, or by their Discord
+     or tournament name (ignoring case, spaces, punctuation and emoji), as
+     long as exactly one seat matches. Anyone left over presses
+     **🙋 I'm playing**;
+   - the card shows the **line-up for the current game**: each expected seat
+     with ✅, "sitting as …" or "hasn't pressed I'm playing", plus anyone in a
+     seat they shouldn't be in. In the lobby the players get one ping saying
+     where to sit. Each time the line-up changes (after every game) there's a
+     new ping, and it's deleted once the game starts. The tournament only
+     sends a line-up after it has processed the last result from the thread,
+     and this bot ignores a line-up older than its last report, so a stale one
+     is never shown.
 3. Every game that finishes in the room (one room for the whole match: use
    **Play next game** between games) is queued and POSTed to the tournament.
    The tournament checks the seats against the line-up for the match's
@@ -89,11 +99,26 @@ All requests carry `Authorization: Bearer <BRIDGE_TOKEN>`. All bodies are JSON.
 | Method & path | Body | Result |
 |---|---|---|
 | `GET /api/bridge/health` | — | `{"ok": true}` |
-| `PUT /api/bridge/codenames/bindings/{channel_id}` | `{"guild_id", "external_ref", "players": [discord ids]}` | The binding. Idempotent: the tournament re-sends it whenever it changes. |
+| `PUT /api/bridge/codenames/bindings/{channel_id}` | `{"guild_id", "external_ref", "players": [discord ids], "player_names": {id: name}, "lineup": {...} \| null}` | The binding. Idempotent: the tournament re-sends it whenever it changes. |
 | `GET /api/bridge/codenames/bindings/{channel_id}` | — | The binding, the rooms watched in the thread, and each result's delivery status. |
 | `DELETE /api/bridge/codenames/bindings/{channel_id}[?keep_watching=1]` | — | `{"removed": bool}`. Also stops watching the thread's rooms unless `keep_watching`. |
 
 `external_ref` is at most 100 characters; `players` is at most 10 IDs.
+`player_names` and `lineup` are optional:
+
+```json
+"player_names": {"333": "Carol"},
+"lineup": {
+  "game": 2,
+  "last_event_id": "juzaf-hitos:Y1L4zY59RZO",
+  "blue": {"spymaster": "444", "operative": "333"},
+  "red":  {"spymaster": "222", "operative": "111"}
+}
+```
+
+`last_event_id` is the last result the tournament processed from this thread
+(`null` before the first). The line-up is only shown while it equals the last
+result this bot reported from the thread.
 
 ### Tournament bot
 
@@ -116,6 +141,17 @@ header:
   },
   "finished_at": "2026-10-12T20:15:00+00:00"
 }
+```
+
+The payload also has `starting_team`, `board` (25 × `{"word", "color",
+"revealed"}`), and `turns`: every clue in order, with its giver and guesses.
+
+```json
+"turns": [
+  {"team": "red", "word": "ANIMAL", "number": "3",
+   "giver": {"player_id": "1", "name": "Bob", "discord_user_id": "111"},
+   "guesses": [{"word": "DOG", "color": "red", "player_id": "0", "name": "Alice", "discord_user_id": "222"}]}
+]
 ```
 
 `discord_user_id` is `null` for a seat nobody has claimed. `game_number` counts

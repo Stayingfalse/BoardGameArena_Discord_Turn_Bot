@@ -319,7 +319,7 @@ Things to know:
 
 ### Codenames tournaments
 
-The bot can feed results to the [Codenames Tournament bot](https://github.com/Stayingfalse/CodwellTornement). The tournament binds each match thread to its match. Players post their room link in the thread, and every finished game is reported back and scored automatically, with a confirm button when the seats don't match the line-up. Set `BRIDGE_TOKEN` and `BRIDGE_CALLBACK_URLS`. Setup and the API are in [docs/tournament-bridge.md](docs/tournament-bridge.md).
+The bot can feed results to the [Codenames Tournament bot](https://github.com/Stayingfalse/CodwellTornement). The tournament binds each match thread to its match. Players post their room link in the thread. The card shows each game's expected seats (✅ or ⚠️ as people sit down) and matches seats to players by name. Every finished game is reported back with its full clue history and scored automatically, with a confirm button when the seats don't match the line-up. Set `BRIDGE_TOKEN` and `BRIDGE_CALLBACK_URLS`. Setup and the API are in [docs/tournament-bridge.md](docs/tournament-bridge.md).
 
 ## 3. Discord commands
 
