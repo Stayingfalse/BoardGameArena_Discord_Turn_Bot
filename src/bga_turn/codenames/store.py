@@ -113,6 +113,19 @@ class CodenamesStore:
             row = self._connection.execute("SELECT * FROM codenames_watches WHERE watch_id = ?", (watch_id,)).fetchone()
         return _row_to_watch(row) if row is not None else None
 
+    def _ensure_codenames_watch_columns(self) -> None:
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(codenames_watches)")}
+        if "ping_thread_id" not in columns:
+            self._connection.execute("ALTER TABLE codenames_watches ADD COLUMN ping_thread_id TEXT")
+
+    def set_codenames_ping_thread(self, watch_id: int, thread_id: str | None) -> None:
+        """Remember (or forget, with ``None``) the thread a watch's turn pings go to."""
+        with self._lock:
+            self._connection.execute(
+                "UPDATE codenames_watches SET ping_thread_id = ? WHERE watch_id = ?", (thread_id, watch_id)
+            )
+            self._connection.commit()
+
     def list_codenames_watches(self, room_id: str | None = None) -> list[CodenamesWatch]:
         with self._lock:
             if room_id is None:
@@ -499,6 +512,7 @@ def _row_to_watch(row: sqlite3.Row) -> CodenamesWatch:
         channel_id=row["channel_id"],
         created_by_discord_user_id=row["created_by_discord_user_id"],
         created_at=row["created_at"],
+        ping_thread_id=row["ping_thread_id"] if "ping_thread_id" in row.keys() else None,
     )
 
 

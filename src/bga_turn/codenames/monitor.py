@@ -4,7 +4,8 @@ One :class:`~.client.CodenamesRoomClient` per watched room, however many
 channels watch it. Every state change from the room is debounced, then each
 watching channel's card for the current match ("Game N") is sent or edited,
 and the players whose turn it is get a short ping message (the previous ping
-is deleted so the channel doesn't fill up).
+is deleted so the channel doesn't fill up). In an ordinary channel the pings go
+to a thread for the room when the bot may create one (see :mod:`.ping_threads`).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from .board_image import BoardSnapshot, render_board_png
 from .client import CLOSE_FAILED, CLOSE_STOPPED, CLOSE_UNSUPPORTED, CodenamesRoomClient
 from .identity import DEFAULT_BOT_NAMES, ensure_room_identity
 from .models import CodenamesGame, CodenamesWatch
+from .ping_threads import PRIVATE, ping_thread_kind, ping_thread_name
 from .posting import VIA_BOT, VIA_WEBHOOK, BotPoster, Posters, make_file
 from .state import GameView
 
@@ -45,6 +47,10 @@ _BOARD_KEY = "board"
 _LINEUP_PING_KEY = "lineup_ping_message_id"
 _LINEUP_PING_VIA_KEY = "lineup_ping_via"
 _LINEUP_SENT_KEY = "lineup_pinged"
+# Channel (or thread) each ping was sent to: "<ping key>_channel".
+_CHANNEL_SUFFIX = "_channel"
+# After failing to open a ping thread in a channel, wait this long before trying again.
+_PING_THREAD_RETRY_SECONDS = 600
 _TURN_STARTED_KEY = "turn_started_at"  # unix seconds
 _REMINDED_KEY = "reminded_at"  # unix seconds
 
@@ -76,9 +82,13 @@ class CodenamesMonitor:
         deadline_window_hours: float = 48.0,
         deadline_reminder_hours: float = 6.0,
         reminder_check_seconds: float = 300.0,
+        ping_threads: bool = True,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.bot = bot
+        self.ping_threads = ping_threads
+        self._ping_thread_failed_at: dict[int, float] = {}  # watch_id -> monotonic time
+        self._ping_thread_members: dict[int, set[int]] = {}  # private thread id -> user ids added
         self.reminder_seconds = reminder_hours * 3600
         self.deadline_window_seconds = deadline_window_hours * 3600
         self.deadline_reminder_seconds = deadline_reminder_hours * 3600
@@ -364,6 +374,7 @@ class CodenamesMonitor:
             links=links,
             invited=invited,
             lineup=lineup if view.phase != "finished" else None,
+            pings_channel_id=watch.ping_thread_id,
         )
 
         if game.lifecycle_state == "lobby" and view.phase in ("in_progress", "finished"):
@@ -420,33 +431,32 @@ class CodenamesMonitor:
         """Replace the game's turn ping with a new one (deleting the old one so the
         mention notifies again). Returns the game's new state, not yet saved."""
         await self._delete_ping(watch, game)
-        poster = await self.posters.for_sending(channel)
-        ping = (
-            cards.build_turn_ping(view, links, game.game_number, branded=poster.via == VIA_BOT)
-            if view.turn_key
-            else None
-        )
+        ping = cards.build_turn_ping(view, links, game.game_number) if view.turn_key else None
+        target = await self._ping_target(watch, channel, ping[1] if ping is not None else ())
+        poster = await self.posters.for_sending(target)
         ping_id = None
         if ping is not None:
-            text, user_ids = ping
+            text, user_ids = cards.build_turn_ping(view, links, game.game_number, branded=poster.via == VIA_BOT)
             if reminder:
                 text = f"{reminder}\n{text}"
             sent, poster = await self._send(
                 "send_codenames_ping",
                 watch.room_id,
-                channel,
+                target,
                 poster,
                 text,
                 view=cards.build_ping_view(watch.room_id),
                 allowed_mentions=discord.AllowedMentions(
                     users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
                 ),
-                reply_to=card,
+                # A reply can't point at a message in another channel.
+                reply_to=card if target is channel else None,
             )
             ping_id = sent.id if sent is not None else None
         state = dict(game.state)
         state[_PING_KEY] = ping_id
         state[_PING_VIA_KEY] = poster.via
+        state[_PING_KEY + _CHANNEL_SUFFIX] = str(target.id)
         return state
 
     # ------------------------------------------------------------------
@@ -623,21 +633,23 @@ class CodenamesMonitor:
             return
         await self._delete_ping(watch, game, key=_LINEUP_PING_KEY, via_key=_LINEUP_PING_VIA_KEY)
         text, user_ids = cards.build_lineup_ping(lineup)
+        target = await self._ping_target(watch, channel, user_ids)
         sent, poster = await self._send(
             "send_codenames_lineup",
             watch.room_id,
-            channel,
-            await self.posters.for_sending(channel),
+            target,
+            await self.posters.for_sending(target),
             text,
             view=cards.build_ping_view(watch.room_id),
             allowed_mentions=discord.AllowedMentions(
                 users=[discord.Object(id=uid) for uid in user_ids], everyone=False, roles=False
             ),
-            reply_to=card,
+            reply_to=card if target is channel else None,
         )
         state = dict(game.state)
         state[_LINEUP_PING_KEY] = sent.id if sent is not None else None
         state[_LINEUP_PING_VIA_KEY] = poster.via
+        state[_LINEUP_PING_KEY + _CHANNEL_SUFFIX] = str(target.id)
         state[_LINEUP_SENT_KEY] = lineup.key
         await self.db.update_codenames_game(game.game_id, state=state)
         game.state = state
@@ -648,7 +660,8 @@ class CodenamesMonitor:
         ping_id = game.state.get(key)
         if not ping_id:
             return
-        channel = await self._channel(watch)
+        sent_in = game.state.get(key + _CHANNEL_SUFFIX)
+        channel = await self._channel_by_id(sent_in, watch.room_id) if sent_in else await self._channel(watch)
         if channel is not None:
             # A webhook ping whose webhook is gone can still be deleted by the bot (Manage Messages).
             poster = await self.posters.for_message(channel, game.state.get(via_key, VIA_BOT)) or BotPoster(channel)
@@ -727,6 +740,94 @@ class CodenamesMonitor:
                 return None
         return channel if callable(getattr(channel, "send", None)) else None
 
+    async def _channel_by_id(self, channel_id: str, room_id: str):
+        if not str(channel_id).isdecimal():
+            return None
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except discord.DiscordException as exc:
+                LOGGER.info("Codenames room %s: channel %s unavailable: %s", room_id, channel_id, exc)
+                return None
+        return channel if callable(getattr(channel, "send", None)) else None
+
+    async def _ping_target(self, watch: CodenamesWatch, channel, user_ids=()):
+        """Where *watch*'s next ping goes: its ping thread when it has (or can open) one,
+        else *channel*. Adds the pinged users to a private thread so they can see it."""
+        thread = await self._ping_thread(watch, channel) if self.ping_threads else None
+        if thread is None:
+            return channel
+        if thread.type == discord.ChannelType.private_thread:
+            added = self._ping_thread_members.setdefault(thread.id, set())
+            for user_id in user_ids:
+                if user_id in added:
+                    continue
+                try:
+                    await self._call(
+                        "add_codenames_thread_member",
+                        watch.room_id,
+                        lambda uid=user_id: thread.add_user(discord.Object(id=uid)),
+                        thread,
+                        kind="edit",
+                    )
+                    added.add(user_id)
+                except discord.DiscordException as exc:
+                    LOGGER.warning("Codenames room %s: could not add %s to the ping thread: %s", watch.room_id, user_id, exc)
+        return thread
+
+    async def _ping_thread(self, watch: CodenamesWatch, channel) -> discord.Thread | None:
+        """The watch's ping thread, opening one if the bot may (``None``: ping in the channel)."""
+        if watch.ping_thread_id:
+            thread = await self._channel_by_id(watch.ping_thread_id, watch.room_id)
+            if isinstance(thread, discord.Thread):
+                return thread
+            # Deleted (or no longer visible): forget it, and open a new one below.
+            await self.db.set_codenames_ping_thread(watch.watch_id, None)
+            watch.ping_thread_id = None
+        kind = ping_thread_kind(channel, getattr(getattr(channel, "guild", None), "me", None))
+        if kind is None:
+            return None
+        failed_at = self._ping_thread_failed_at.get(watch.watch_id)
+        if failed_at is not None and time.monotonic() - failed_at < _PING_THREAD_RETRY_SECONDS:
+            return None
+        try:
+            thread = await self._call(
+                "create_codenames_ping_thread",
+                watch.room_id,
+                lambda: channel.create_thread(
+                    name=ping_thread_name(watch.room_id),
+                    type=discord.ChannelType.private_thread if kind == PRIVATE else discord.ChannelType.public_thread,
+                    auto_archive_duration=10080,
+                    reason="Codenames turn pings, so the channel stays quiet",
+                ),
+                channel,
+            )
+        except discord.DiscordException as exc:
+            LOGGER.warning("Codenames room %s: could not open a ping thread in %s: %s", watch.room_id, channel.id, exc)
+            thread = None
+        if thread is None:
+            self._ping_thread_failed_at[watch.watch_id] = time.monotonic()
+            return None
+        self._ping_thread_failed_at.pop(watch.watch_id, None)
+        await self.db.set_codenames_ping_thread(watch.watch_id, str(thread.id))
+        watch.ping_thread_id = str(thread.id)
+        LOGGER.info("Codenames room %s: turn pings go to %s thread %s", watch.room_id, kind, thread.id)
+        try:
+            await self._call(
+                "send_codenames_thread_intro",
+                watch.room_id,
+                lambda: thread.send(
+                    tr("cn_ping_thread_intro", room=watch.room_id, channel=f"<#{channel.id}>"),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                ),
+                thread,
+            )
+        except discord.DiscordException as exc:
+            LOGGER.info("Codenames room %s: could not post the ping thread intro: %s", watch.room_id, exc)
+        await self.refresh_room(watch.room_id)  # the card now says where the pings are
+        return thread
+
     async def _send(self, operation: str, room_id: str, channel, poster, content=None, **kwargs):
         """Send with *poster*; if its webhook was deleted, set it up again or fall back to the bot.
         Returns ``(message or None, the poster that sent it)``."""
@@ -735,6 +836,13 @@ class CodenamesMonitor:
         except discord.NotFound:
             if poster.via != VIA_WEBHOOK:
                 raise
+        except discord.HTTPException as exc:
+            # E.g. a thread the webhook may not post in: send it as the bot instead.
+            if poster.via != VIA_WEBHOOK:
+                raise
+            LOGGER.info("Codenames room %s: webhook could not post in %s (%s); sending as the bot", room_id, channel.id, exc)
+            poster = BotPoster(channel)
+            return await self._call(operation, room_id, lambda: poster.send(content, **kwargs), channel), poster
         self.posters.forget(channel)
         poster = await self.posters.for_sending(channel)
         return await self._call(operation, room_id, lambda: poster.send(content, **kwargs), channel), poster

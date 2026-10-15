@@ -141,6 +141,8 @@ class CardData:
     board_image: str | None = None
     # Seats a tournament expects for this game (only shown before the game ends).
     lineup: Lineup | None = None
+    # Thread the turn pings go to, when not this channel.
+    pings_channel_id: str | None = None
 
 
 def card_signature(data: CardData) -> str:
@@ -154,6 +156,7 @@ def card_signature(data: CardData) -> str:
         data.closed_note,
         data.board_image,
         data.lineup,
+        data.pings_channel_id,
     ]
     if view is not None:
         parts += [
@@ -229,6 +232,9 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
     if data.invited and data.closed_note is None and (view is None or view.phase != "finished"):
         mentions = " ".join(f"<@{user_id}>" for user_id in data.invited)
         items.append(discord.ui.TextDisplay(tr("cn_invited", mentions=mentions)))
+
+    if data.pings_channel_id and data.closed_note is None and (view is None or view.phase != "finished"):
+        items.append(discord.ui.TextDisplay(tr("cn_pings_in_thread", thread=f"<#{data.pings_channel_id}>")))
 
     if data.closed_note:
         items.append(discord.ui.Separator())

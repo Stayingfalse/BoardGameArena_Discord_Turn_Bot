@@ -100,7 +100,8 @@ Open that URL in your browser, choose your server, and approve. The bot will hav
 4. Under **Bot Permissions**, select:
    - `View Channels`
    - `Send Messages`
-   - `Send Messages in Threads` *(Codenames rooms posted in threads, e.g. tournament match threads)*
+   - `Send Messages in Threads` *(Codenames rooms posted in threads, e.g. tournament match threads, and Codenames ping threads)*
+   - `Create Private Threads` and/or `Create Public Threads` *(Codenames turn pings go to a thread instead of the channel; optional)*
    - `Embed Links`
    - `Read Message History`
    - `Manage Messages` *(needed to tidy up shared links)*
@@ -171,6 +172,7 @@ BGA_ENABLE_TABLEINFOS_FALLBACK=0
 CODENAMES_ENABLED=1             # Watch posted codenames.game room links
 CODENAMES_BOT_NAMES=            # Optional "|"-separated names the bot uses in rooms
 CODENAMES_IDLE_HOURS=168        # Stop watching a room with no moves for this long (7 days)
+CODENAMES_PING_THREADS=1        # Turn pings go to a thread for the room (private if allowed) in ordinary channels
 
 # --- Optional web dashboard ---
 DASHBOARD_ENABLED=0
@@ -200,6 +202,7 @@ DASHBOARD_SECRET_KEY=
 | `BOT_LANG` | — | `en` | Bot message language: the name of a file in `src/bga_turn/locales/` (only `en` ships today) |
 | `CODENAMES_ENABLED` | — | `1` | Watch posted codenames.game room links and add the `/codenames` commands |
 | `CODENAMES_BOT_NAMES` | — | built-in list | `\|`-separated names the bot picks from when it first joins a room (e.g. `🤖 Agent Turnkeeper\|🤖 Curious Cat`). Avoid brackets: the site strips them |
+| `CODENAMES_PING_THREADS` | — | `1` | In ordinary channels, send Codenames turn pings to a private (or public) thread for the room when the bot may create one. `0` keeps them in the channel |
 | `CODENAMES_REMINDER_HOURS` | — | `24` | Ping the players again when a turn has waited this many hours, then every this many hours. `0` turns reminders off |
 | `CODENAMES_IDLE_HOURS` | — | `168` | Stop watching a room where nothing has happened (no moves, nobody in it) for this many hours. Turn-based games can go days between moves, hence the 7-day default |
 | `BRIDGE_TOKEN` | — | — | Shared secret with the [Codenames tournament bot](docs/tournament-bridge.md); setting it turns the bridge on |
@@ -304,7 +307,7 @@ When the bot sees a player act on a watched table it automatically fills in any 
 
 1. **Post a room link** such as `https://codenames.game/r/juzaf-hitos`. The bot reacts 🕵️, joins the room as a **spectator** and posts a **"Game 1"** card. It never joins a team and never sees the key (card colours stay hidden from spectators until they're revealed).
 2. **Say who's playing.** Each player opens the room, enters a name, then presses **🙋 I'm playing** on the card and picks that name from a private list. Or tag people with `/codenames players`: they get one invite ping and appear on the card until they claim a name. The bot remembers each person's last name and suggests it next time, and tagged players whose usual name is in the room are matched automatically. If someone still can't manage it, an admin can set who is who with `/codenames seats`.
-3. **Play.** The card shows the teams, cards left, the current clue, the last guess and whose move it is (👉). When the turn changes the bot sends a short ping as a reply to the card: the team's **spymaster** when a clue is needed, then its **operatives** with the clue. The previous ping is deleted, guesses within a turn don't ping again, and a restart never pings twice.
+3. **Play.** The card shows the teams, cards left, the current clue, the last guess and whose move it is (👉). When the turn changes the bot sends a short ping: the team's **spymaster** when a clue is needed, then its **operatives** with the clue. The previous ping is deleted, guesses within a turn don't ping again, and a restart never pings twice. In an ordinary channel the pings go to a thread for the room (see below), so people who aren't playing aren't disturbed; in a thread they're a reply to the card.
 4. **See the board.** When a game ends, the card gets a picture of the final board. It shows every card in its colour (guessed cards solid and numbered in the order they were picked, unguessed ones outlined), the teams, every clue with the guesses made on it, and how many agents each team found.
 5. **Play again.** When the room starts a new game, the finished card keeps its result and picture and a new **"Game 2"** card is posted.
 
@@ -317,6 +320,7 @@ Things to know:
 - Codenames links are never deleted, even where *Tidy up shared links* is on; the server's forced notification channel is used for the card.
 - Seats on the site have no accounts, so a Discord link belongs to a seat in one room. It survives renames and rematches in that room.
 - Turn pings are separate messages because Discord doesn't notify mentions in edited messages; the card itself is posted with mentions turned off.
+- **Ping threads.** When a room is watched in an ordinary text channel, the live card stays in the channel for everyone to follow. Turn pings, reminders and tournament line-up pings go to a thread named after the room. It is **private** when the bot has *Create Private Threads*; each player is added as they're pinged, so only the players see the pings. It is **public** when the bot only has *Create Public Threads*. The card links to the thread, and the thread is reused for every game in the room. Without either permission, or with `CODENAMES_PING_THREADS=0`, pings stay in the channel as before. Rooms watched in a thread, such as tournament match threads, always ping in that thread. Both thread modes also need *Send Messages in Threads*.
 - With the **Manage Webhooks** permission, cards and pings are posted by a "Codenames" webhook the bot creates in the channel (with its own avatar), so they don't appear under the bot's name. The buttons still work. Without it, the bot posts them itself and pings start with "🕵️ Codenames". Webhook messages can't be replies, so in that mode pings aren't attached to the card; they have their own **Open room** button.
 
 ### Codenames tournaments

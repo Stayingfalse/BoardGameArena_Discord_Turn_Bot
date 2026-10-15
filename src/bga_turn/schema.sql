@@ -106,6 +106,8 @@ CREATE TABLE IF NOT EXISTS codenames_watches (
     channel_id TEXT NOT NULL,
     created_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    -- Thread the turn pings go to when the card is in an ordinary channel (NULL: the channel itself).
+    ping_thread_id TEXT,
     UNIQUE(room_id, guild_id, channel_id),
     FOREIGN KEY (room_id) REFERENCES codenames_rooms(room_id) ON DELETE CASCADE
 );
