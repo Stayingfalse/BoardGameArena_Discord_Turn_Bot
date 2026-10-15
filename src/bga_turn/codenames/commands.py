@@ -14,6 +14,7 @@ from ..i18n import tr
 from .links import build_room_url, extract_room_ids
 from .models import CodenamesWatch
 from .monitor import CodenamesMonitor
+from .views import build_seat_assign_view, can_assign_seats
 
 if TYPE_CHECKING:
     from ..bridge.service import TournamentBridge
@@ -119,6 +120,27 @@ class CodenamesCommands(commands.Cog):
             allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=int(u)) for u in user_ids]),
         )
         await self.monitor.refresh_room(watch.room_id)
+
+    # ------------------------------------------------------------------
+    # /codenames seats
+    # ------------------------------------------------------------------
+
+    @codenames.command(name="seats", description=tr("cn_command_seats_description"))
+    @app_commands.describe(room=tr("cn_param_room_description"))
+    async def seats(self, interaction: discord.Interaction, room: str | None = None) -> None:
+        """Admins: say which name in the room each invited player is, for players who can't
+        (or won't) press **I'm playing** themselves."""
+        if interaction.guild_id is not None and not can_assign_seats(interaction):
+            await interaction.response.send_message(tr("cn_seats_not_allowed"), ephemeral=True)
+            return
+        watch = await self._resolve_watch(interaction, room)
+        if watch is None:
+            return
+        view = await build_seat_assign_view(self.db, watch.room_id, watch.watch_id, interaction.guild)
+        if view is None:
+            await interaction.response.send_message(tr("cn_seats_room_empty"), ephemeral=True)
+            return
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     # ------------------------------------------------------------------
     # /codenames status

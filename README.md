@@ -303,7 +303,7 @@ When the bot sees a player act on a watched table it automatically fills in any 
 [codenames.game](https://codenames.game) works as a live game, but nothing tells you when it's your turn. The bot fills that gap so a game can run over hours or days.
 
 1. **Post a room link** such as `https://codenames.game/r/juzaf-hitos`. The bot reacts 🕵️, joins the room as a **spectator** and posts a **"Game 1"** card. It never joins a team and never sees the key (card colours stay hidden from spectators until they're revealed).
-2. **Say who's playing.** Each player opens the room, enters a name, then presses **🙋 I'm playing** on the card and picks that name from a private list. Or tag people with `/codenames players`: they get one invite ping and appear on the card until they claim a name. The bot remembers each person's last name and suggests it next time, and tagged players whose usual name is in the room are matched automatically.
+2. **Say who's playing.** Each player opens the room, enters a name, then presses **🙋 I'm playing** on the card and picks that name from a private list. Or tag people with `/codenames players`: they get one invite ping and appear on the card until they claim a name. The bot remembers each person's last name and suggests it next time, and tagged players whose usual name is in the room are matched automatically. If someone still can't manage it, an admin can set who is who with `/codenames seats`.
 3. **Play.** The card shows the teams, cards left, the current clue, the last guess and whose move it is (👉). When the turn changes the bot sends a short ping as a reply to the card: the team's **spymaster** when a clue is needed, then its **operatives** with the clue. The previous ping is deleted, guesses within a turn don't ping again, and a restart never pings twice.
 4. **See the board.** When a game ends, the card gets a picture of the final board. It shows every card in its colour (guessed cards solid and numbered in the order they were picked, unguessed ones outlined), the teams, every clue with the guesses made on it, and how many agents each team found.
 5. **Play again.** When the room starts a new game, the finished card keeps its result and picture and a new **"Game 2"** card is posted.
@@ -404,6 +404,7 @@ Examples:
 | Command | Who | What it does |
 |---|---|---|
 | `/codenames players player1:@a [player2 … player5] [room]` | anyone | Asks up to five members to play the room watched in this channel. They get one ping with the room link and are listed on the card until they press **I'm playing**. |
+| `/codenames seats [room]` | Manage Server or Manage Messages | Privately shows each invited player (and anyone already linked to a name) with a dropdown of every name in the room. Picking a name links that player as if they had pressed **I'm playing**, taking the name from anyone who claimed it by mistake. **Not playing** unlinks them. Use it when someone can't work out the button. |
 | `/codenames status` | anyone | Privately lists the rooms watched in this server, which game each is on, and a summary of the server's games. |
 | `/codenames unwatch [room]` | whoever posted the room, or Manage Messages | Stops watching a room in this channel. |
 

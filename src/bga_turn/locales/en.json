@@ -292,5 +292,21 @@
   "cn_status_summary": "📊 This server so far: {games} games played · 🔴 {red} Red wins · 🔵 {blue} Blue wins",
   "cn_claim_option_current": "That's you now",
   "cn_claim_option_suggested": "The name you used last time",
-  "cn_ping_branded": "🕵️ **Codenames** · {text}"
+  "cn_ping_branded": "🕵️ **Codenames** · {text}",
+  "cn_command_seats_description": "Admins: say which name in the room each invited player is",
+  "cn_seats_not_allowed": "Only server admins (Manage Server or Manage Messages) can set who is who.",
+  "cn_seats_room_empty": "Nobody has entered the room yet. Ask the players to open the room and type their names, then try again.",
+  "cn_seats_title": "### 🕵️ Who is who in `{room}`\nPick each player's name in the room. This links them for pings and results, just like pressing **I'm playing**.",
+  "cn_seats_nobody_invited": "-# Nobody has been invited to this room yet, and no seats are linked. Use `/codenames players` to invite people first.",
+  "cn_seats_row_linked": "{user} is **{name}**",
+  "cn_seats_row_unlinked": "{user} — *not linked yet*",
+  "cn_seats_more": "-# …and {count} more. Fix these first, then run the command again.",
+  "cn_seats_footer": "-# Players can still change their own seat with **I'm playing** on the room card.",
+  "cn_seats_placeholder": "Which name is {name}?",
+  "cn_seats_option_this_person": "Linked to this player now",
+  "cn_seats_option_held_by": "Linked to {name}",
+  "cn_seats_option_not_playing": "Not playing",
+  "cn_seats_done_linked": "✅ {user} is now **{name}**.",
+  "cn_seats_done_replaced": "(It was linked to {user}, who is now unlinked.)",
+  "cn_seats_done_released": "✅ {user} is no longer linked to a name in this room."
 }

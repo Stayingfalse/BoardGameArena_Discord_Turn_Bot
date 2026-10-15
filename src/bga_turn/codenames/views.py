@@ -1,6 +1,9 @@
-"""The "I'm playing" button on Codenames cards and the seat picker it opens."""
+"""The "I'm playing" button on Codenames cards, the seat picker it opens, and
+the admin seat card from ``/codenames seats``."""
 
 from __future__ import annotations
+
+import logging
 
 import discord
 
@@ -8,6 +11,8 @@ from ..database import AsyncDatabase
 from ..i18n import tr
 from .models import CodenamesPlayer
 from .store import CodenamesSeatTakenError
+
+LOGGER = logging.getLogger(__name__)
 
 _MAX_OPTIONS = 25  # Discord's limit for a select menu
 
@@ -122,4 +127,123 @@ class _ReleaseButton(discord.ui.Button["SeatPickerView"]):
         room_id = self.view.room_id
         await _db(interaction).release_codenames_player(room_id, str(interaction.user.id))
         await interaction.response.edit_message(content=tr("cn_claim_released"), view=None)
+        await _refresh_room(interaction, room_id)
+
+
+# ----------------------------------------------------------------------
+# /codenames seats — an admin says who is who in the room
+# ----------------------------------------------------------------------
+
+_NOT_PLAYING = "__not_playing__"
+_MAX_ASSIGN_ROWS = 10  # 3 components per person (text, row, select) + 5 others; Discord allows 40
+
+
+def can_assign_seats(interaction: discord.Interaction) -> bool:
+    permissions = interaction.permissions
+    return bool(permissions.administrator or permissions.manage_guild or permissions.manage_messages)
+
+
+async def build_seat_assign_view(
+    db: AsyncDatabase, room_id: str, watch_id: int, guild: discord.Guild | None, *, note: str | None = None
+) -> SeatAssignView | None:
+    """The admin seat card for a room, or ``None`` if nobody has entered the room yet."""
+    room = await db.get_codenames_room(room_id)
+    bot_seat = room.bot_player_id if room is not None else None
+    seats = [p for p in await db.list_codenames_players(room_id) if p.player_id != bot_seat and p.display_name]
+    if not seats:
+        return None
+    invited = await db.list_codenames_watch_members(watch_id)
+    # Invited players first, then anyone else already linked to a seat (so a wrong claim can be fixed).
+    people = list(dict.fromkeys([*invited, *(p.discord_user_id for p in seats if p.discord_user_id)]))
+    return SeatAssignView(room_id, watch_id, seats, people, guild, note=note)
+
+
+def _member_name(guild: discord.Guild | None, user_id: str) -> str:
+    member = guild.get_member(int(user_id)) if guild is not None and user_id.isdecimal() else None
+    return member.display_name if member is not None else f"user {user_id}"
+
+
+def notice_view(text: str) -> discord.ui.LayoutView:
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(discord.ui.Container(discord.ui.TextDisplay(text)))
+    return view
+
+
+class SeatAssignView(discord.ui.LayoutView):
+    """One row per person: who they are now, and a dropdown of every name in the room."""
+
+    def __init__(
+        self,
+        room_id: str,
+        watch_id: int,
+        seats: list[CodenamesPlayer],
+        people: list[str],
+        guild: discord.Guild | None,
+        *,
+        note: str | None = None,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.room_id = room_id
+        self.watch_id = watch_id
+        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
+        container.add_item(discord.ui.TextDisplay(tr("cn_seats_title", room=room_id)))
+        if note:
+            container.add_item(discord.ui.TextDisplay(note))
+        if not people:
+            container.add_item(discord.ui.TextDisplay(tr("cn_seats_nobody_invited")))
+        for user_id in people[:_MAX_ASSIGN_ROWS]:
+            current = next((p for p in seats if p.discord_user_id == user_id), None)
+            name = discord.utils.escape_markdown(current.display_name) if current and current.display_name else None
+            line = tr("cn_seats_row_linked", user=f"<@{user_id}>", name=name) if name else tr("cn_seats_row_unlinked", user=f"<@{user_id}>")
+            container.add_item(discord.ui.TextDisplay(line))
+            container.add_item(discord.ui.ActionRow(_AssignSelect(user_id, seats, guild)))
+        if len(people) > _MAX_ASSIGN_ROWS:
+            container.add_item(discord.ui.TextDisplay(tr("cn_seats_more", count=len(people) - _MAX_ASSIGN_ROWS)))
+        container.add_item(discord.ui.TextDisplay(tr("cn_seats_footer")))
+        self.add_item(container)
+
+
+class _AssignSelect(discord.ui.Select["SeatAssignView"]):
+    def __init__(self, user_id: str, seats: list[CodenamesPlayer], guild: discord.Guild | None) -> None:
+        self.user_id = user_id
+        options = []
+        for seat in seats[: _MAX_OPTIONS - 1]:
+            if seat.discord_user_id == user_id:
+                description = tr("cn_seats_option_this_person")
+            elif seat.discord_user_id:
+                description = tr("cn_seats_option_held_by", name=_member_name(guild, seat.discord_user_id)[:80])
+            else:
+                description = None
+            options.append(
+                discord.SelectOption(
+                    label=(seat.display_name or seat.player_id)[:100], value=seat.player_id, description=description
+                )
+            )
+        options.append(discord.SelectOption(label=tr("cn_seats_option_not_playing"), value=_NOT_PLAYING, emoji="🚫"))
+        super().__init__(placeholder=tr("cn_seats_placeholder", name=_member_name(guild, user_id)[:80]), options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        if not can_assign_seats(interaction):
+            await interaction.response.send_message(tr("cn_seats_not_allowed"), ephemeral=True)
+            return
+        db = _db(interaction)
+        room_id = self.view.room_id
+        user = f"<@{self.user_id}>"
+        if self.values[0] == _NOT_PLAYING:
+            await db.release_codenames_player(room_id, self.user_id)
+            note = tr("cn_seats_done_released", user=user)
+        else:
+            before = {p.player_id: p.discord_user_id for p in await db.list_codenames_players(room_id)}
+            previous = before.get(self.values[0])
+            player = await db.claim_codenames_player(room_id, self.values[0], self.user_id, override=True)
+            name = discord.utils.escape_markdown(player.display_name or player.player_id)
+            note = tr("cn_seats_done_linked", user=user, name=name)
+            if previous and previous != self.user_id:
+                note += " " + tr("cn_seats_done_replaced", user=f"<@{previous}>")
+        LOGGER.info(
+            "Codenames seat set by %s in room %s: %s -> %s", interaction.user.id, room_id, self.user_id, self.values[0]
+        )
+        view = await build_seat_assign_view(db, room_id, self.view.watch_id, interaction.guild, note=note)
+        await interaction.response.edit_message(view=view or notice_view(tr("cn_seats_room_empty")))
         await _refresh_room(interaction, room_id)
