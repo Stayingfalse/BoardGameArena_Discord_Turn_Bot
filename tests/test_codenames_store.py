@@ -222,3 +222,38 @@ async def test_a_room_gets_one_identity_that_is_reused(database):
     assert (again.bot_credentials, again.bot_name) == (first.bot_credentials, first.bot_name)
     other = await ensure_room_identity(db, "other-room")
     assert other.bot_credentials != first.bot_credentials
+
+
+def test_upgrading_adds_the_ping_thread_column_and_keeps_watches(tmp_path):
+    db_path = tmp_path / "old.db"
+    connection = sqlite3.connect(db_path)
+    # codenames_watches as it was before ping threads.
+    connection.executescript(
+        """
+        CREATE TABLE codenames_rooms (
+            room_id TEXT PRIMARY KEY, bot_credentials TEXT NOT NULL, bot_name TEXT NOT NULL,
+            bot_player_id TEXT, current_match_id TEXT, game_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE codenames_watches (
+            watch_id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, guild_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL, created_by_discord_user_id TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(room_id, guild_id, channel_id)
+        );
+        INSERT INTO codenames_rooms VALUES ('juzaf-hitos', 'x', '🤖 Cat', NULL, NULL, 0, 'now', 'now');
+        INSERT INTO codenames_watches (room_id, guild_id, channel_id, created_by_discord_user_id, created_at)
+        VALUES ('juzaf-hitos', '500', '600', '700', 'now');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    database = Database(db_path=db_path, schema_sql=files("bga_turn").joinpath("schema.sql").read_text("utf-8"))
+    database.initialize()
+    try:
+        [watch] = database.list_codenames_watches("juzaf-hitos")
+        assert watch.ping_thread_id is None
+        database.set_codenames_ping_thread(watch.watch_id, "7000")
+        assert database.get_codenames_watch(watch.watch_id).ping_thread_id == "7000"
+    finally:
+        database.close()

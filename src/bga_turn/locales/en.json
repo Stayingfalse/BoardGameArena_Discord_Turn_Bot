@@ -308,5 +308,7 @@
   "cn_seats_option_not_playing": "Not playing",
   "cn_seats_done_linked": "✅ {user} is now **{name}**.",
   "cn_seats_done_replaced": "(It was linked to {user}, who is now unlinked.)",
-  "cn_seats_done_released": "✅ {user} is no longer linked to a name in this room."
+  "cn_seats_done_released": "✅ {user} is no longer linked to a name in this room.",
+  "cn_pings_in_thread": "-# 🔔 Turn pings for this room go to {thread}, so this channel stays quiet.",
+  "cn_ping_thread_intro": "🔔 Turn pings for Codenames room `{room}` go here, so {channel} stays quiet for everyone else. The live card stays in {channel}."
 }

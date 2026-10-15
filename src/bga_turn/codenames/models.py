@@ -23,6 +23,8 @@ class CodenamesWatch:
     channel_id: str
     created_by_discord_user_id: str
     created_at: str
+    # Thread the turn pings go to, when the card is in an ordinary channel.
+    ping_thread_id: str | None = None
 
 
 @dataclass(slots=True)
