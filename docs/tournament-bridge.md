@@ -17,7 +17,8 @@ Codenames watcher.
      matched automatically by the name they used before, or by their Discord
      or tournament name (ignoring case, spaces, punctuation and emoji), as
      long as exactly one seat matches. Anyone left over presses
-     **🙋 I'm playing**;
+     **🙋 I'm playing**, or an admin runs `/codenames seats` in the thread and
+     picks each player's name for them;
    - the card shows the **line-up for the current game**: each expected seat
      with ✅, "sitting as …" or "hasn't pressed I'm playing", plus anyone in a
      seat they shouldn't be in. In the lobby the players get one ping saying
