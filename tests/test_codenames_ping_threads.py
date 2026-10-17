@@ -20,6 +20,7 @@ from test_codenames_monitor import (
 from test_codenames_state import _replay
 
 from bga_turn.codenames import cards
+from bga_turn.i18n import tr
 from bga_turn.codenames.monitor import CodenamesMonitor
 from bga_turn.codenames.ping_threads import PRIVATE, PUBLIC, ping_thread_kind
 
@@ -160,8 +161,15 @@ async def test_pings_go_to_a_private_thread_and_the_card_stays_in_the_channel(da
     assert ROOM in thread.messages[0].content  # intro first, pinging nobody
     # Pings can't reply to a card in another channel.
     assert all("reference" not in p.kwargs for p in pings)
-    # Each pinged player is added to the private thread once.
-    assert thread.added == [111, 222, 333]
+    # Every seated player is added to the private thread, once, before anyone is pinged.
+    assert sorted(thread.added) == [111, 222, 333, 444]
+    # The thread keeps a copy of the card, updated along with the one in the channel.
+    [copy] = thread.cards
+    assert thread.messages.index(copy) < thread.messages.index(pings[0])
+    assert copy.edits and _text(copy.view) == _text(channel.cards[0].view).replace(
+        "\n" + tr("cn_pings_in_thread", thread=f"<#{thread.id}>"), ""
+    )
+    assert f"<#{thread.id}>" not in _text(copy.view)
     # The previous ping is deleted from the thread, not looked for in the channel.
     assert [p.deleted for p in pings] == [True, True, False]
     # The card says where the pings are.
@@ -176,6 +184,34 @@ async def test_public_thread_when_private_is_not_allowed(database):
     assert thread.type == discord.ChannelType.public_thread
     assert thread.added == []  # anyone can see a public thread
     assert channel.pings == []
+    assert len(thread.cards) == 1
+
+
+async def test_the_thread_opens_for_invited_players_before_the_game(database):
+    channel = FakeTextChannel(CHANNEL, PRIVATE_OK)
+    monitor = _monitor(database, channel)
+    await monitor.watch_room(ROOM, guild_id=GUILD, channel_id=str(CHANNEL), created_by_discord_user_id="999")
+    database.add_codenames_watch_members(database.list_codenames_watches(ROOM)[0].watch_id, ["111", "555"])
+    await _show(monitor, list(_replay())[0])
+    [thread] = channel.created_threads
+    assert sorted(thread.added) == [111, 555]
+    assert len(thread.cards) == 1 and thread.pings[0].content.startswith("🔔")  # intro, no pings yet
+
+
+async def test_nobody_to_add_means_no_thread_yet(database):
+    channel = FakeTextChannel(CHANNEL, PRIVATE_OK)
+    monitor = _monitor(database, channel)
+    await monitor.watch_room(ROOM, guild_id=GUILD, channel_id=str(CHANNEL), created_by_discord_user_id="999")
+    await _show(monitor, list(_replay())[0])
+    assert channel.created_threads == [] and len(channel.cards) == 1
+
+
+async def test_the_claim_button_works_on_the_copy_in_the_thread(database):
+    channel = FakeTextChannel(CHANNEL, PRIVATE_OK)
+    await _play(_monitor(database, channel), database, until_turns=1)
+    [copy] = channel.created_threads[0].cards
+    game = database.get_codenames_game_by_message(copy.id)
+    assert game is not None and game.game_id == database.get_codenames_game_by_message(channel.cards[0].id).game_id
 
 
 async def test_without_thread_permissions_nothing_changes(database):
@@ -210,6 +246,7 @@ async def test_the_thread_is_reused_after_a_restart(database):
     await _show(restarted, second_turn)
     assert len(channel.created_threads) == 1
     assert channel.pings == []
+    assert len(channel.created_threads[0].cards) == 1  # the copy is edited, not posted again
 
 
 def test_card_mentions_the_ping_thread_only_while_the_game_is_on():

@@ -43,6 +43,9 @@ _CLOSE_NOTES = {
 _PING_KEY = "ping_message_id"
 _PING_VIA_KEY = "ping_via"
 _CARD_VIA_KEY = "card_via"
+# The copy of the card kept in the ping thread, so the players can follow the game there.
+THREAD_CARD_KEY = "thread_card_message_id"
+_THREAD_CARD_VIA_KEY = "thread_card_via"
 _BOARD_KEY = "board"
 _LINEUP_PING_KEY = "lineup_ping_message_id"
 _LINEUP_PING_VIA_KEY = "lineup_ping_via"
@@ -108,8 +111,9 @@ class CodenamesMonitor:
         self._locks: dict[str, asyncio.Lock] = {}
         self._last_active: dict[str, float] = {}
         self._last_state: dict[str, tuple[str, int | None]] = {}
-        self._messages: dict[int, discord.Message] = {}
-        self._signatures: dict[int, str] = {}
+        # Keyed by (game_id, is the copy in the ping thread).
+        self._messages: dict[tuple[int, bool], discord.Message] = {}
+        self._signatures: dict[tuple[int, bool], str] = {}
         self.game_finished_listeners: list[GameFinishedListener] = []
         self._member_name_cache: dict[tuple[str, str], tuple[list[str], float]] = {}
 
@@ -367,6 +371,13 @@ class CodenamesMonitor:
             for user_id in await self.db.list_codenames_watch_members(watch.watch_id)
             if user_id not in links.values()
         )
+        thread = None
+        if self.ping_threads:
+            players = (*links.values(), *invited)
+            # Open the thread as soon as there is someone to put in it, and add them all now.
+            if watch.ping_thread_id or (players and view.phase != "finished"):
+                thread = await self._ping_target(watch, channel, players, refresh=False)
+                thread = thread if thread is not channel else None
         data = cards.CardData(
             room_id=watch.room_id,
             game_number=game.game_number,
@@ -393,6 +404,8 @@ class CodenamesMonitor:
         message = await self._send_or_edit_card(channel, game, data)
         if message is None:
             return
+        if thread is not None:
+            await self._update_thread_card(watch, thread, game, dataclasses.replace(data, pings_channel_id=None))
 
         await self._update_lineup_ping(watch, game, view, lineup, links, channel, message)
 
@@ -531,13 +544,15 @@ class CodenamesMonitor:
                 LOGGER.exception("Codenames room %s: game-finished listener failed", watch.room_id)
 
     async def _send_or_edit_card(
-        self, channel: discord.abc.Messageable, game: CodenamesGame, data: cards.CardData
+        self, channel: discord.abc.Messageable, game: CodenamesGame, data: cards.CardData, *, copy: bool = False
     ) -> discord.Message | None:
+        """Post or update the game's card in *channel*; with *copy*, the copy in the ping thread."""
         if game.state.get(_BOARD_KEY) and data.board_image is None:
             data = dataclasses.replace(data, board_image=BOARD_FILENAME)
         signature = cards.card_signature(data)
-        message = await self._card_message(channel, game)
-        if message is not None and self._signatures.get(game.game_id) == signature:
+        key = (game.game_id, copy)
+        message = await self._card_message(channel, game, copy=copy)
+        if message is not None and self._signatures.get(key) == signature:
             return message
         attachment = await self._board_attachment(game) if data.board_image else None
         if attachment is None and data.board_image:
@@ -572,11 +587,17 @@ class CodenamesMonitor:
             if message is None:
                 return None
             state = dict(game.state)
-            state[_CARD_VIA_KEY] = poster.via
-            await self.db.update_codenames_game(game.game_id, message_id=message.id, state=state)
-            game.message_id, game.state = message.id, state
-        self._messages[game.game_id] = message
-        self._signatures[game.game_id] = signature
+            if copy:
+                state[THREAD_CARD_KEY] = str(message.id)
+                state[_THREAD_CARD_VIA_KEY] = poster.via
+                await self.db.update_codenames_game(game.game_id, state=state)
+            else:
+                state[_CARD_VIA_KEY] = poster.via
+                await self.db.update_codenames_game(game.game_id, message_id=message.id, state=state)
+                game.message_id = message.id
+            game.state = state
+        self._messages[key] = message
+        self._signatures[key] = signature
         return message
 
     async def _board_attachment(self, game: CodenamesGame) -> tuple[str, bytes] | None:
@@ -588,23 +609,29 @@ class CodenamesMonitor:
             return None
         return BOARD_FILENAME, png
 
-    async def _card_message(self, channel: discord.abc.Messageable, game: CodenamesGame) -> discord.Message | None:
-        cached = self._messages.get(game.game_id)
+    async def _card_message(
+        self, channel: discord.abc.Messageable, game: CodenamesGame, *, copy: bool = False
+    ) -> discord.Message | None:
+        key = (game.game_id, copy)
+        cached = self._messages.get(key)
         if cached is not None:
             return cached
-        if game.message_id is None:
+        message_id = game.state.get(THREAD_CARD_KEY) if copy else game.message_id
+        if not message_id or not str(message_id).isdecimal():
             return None
-        poster = await self.posters.for_message(channel, game.state.get(_CARD_VIA_KEY, VIA_BOT))
+        poster = await self.posters.for_message(
+            channel, game.state.get(_THREAD_CARD_VIA_KEY if copy else _CARD_VIA_KEY, VIA_BOT)
+        )
         if poster is None:
             return None
         try:
             message = await self._call(
-                "fetch_codenames_card", game.match_id, lambda: poster.fetch(game.message_id), channel, kind="read"
+                "fetch_codenames_card", game.match_id, lambda: poster.fetch(int(message_id)), channel, kind="read"
             )
         except discord.NotFound:
             return None
         if message is not None:
-            self._messages[game.game_id] = message
+            self._messages[key] = message
         return message
 
     async def _retire_game(self, watch: CodenamesWatch, game: CodenamesGame) -> None:
@@ -694,6 +721,17 @@ class CodenamesMonitor:
             closed_note=note,
         )
         await self._send_or_edit_card(channel, game, data)
+        if game.state.get(THREAD_CARD_KEY) and watch.ping_thread_id:
+            thread = await self._channel_by_id(watch.ping_thread_id, watch.room_id)
+            if thread is not None:
+                await self._update_thread_card(watch, thread, game, data)
+
+    async def _update_thread_card(self, watch: CodenamesWatch, thread, game: CodenamesGame, data: cards.CardData) -> None:
+        """The copy of the card in the ping thread; the one in the channel matters more."""
+        try:
+            await self._send_or_edit_card(thread, game, data, copy=True)
+        except discord.DiscordException as exc:
+            LOGGER.warning("Codenames room %s: could not update the card in the ping thread: %s", watch.room_id, exc)
 
     async def _on_closed(self, room_id: str, reason: str) -> None:
         if reason == CLOSE_STOPPED:
@@ -752,15 +790,15 @@ class CodenamesMonitor:
                 return None
         return channel if callable(getattr(channel, "send", None)) else None
 
-    async def _ping_target(self, watch: CodenamesWatch, channel, user_ids=()):
-        """Where *watch*'s next ping goes: its ping thread when it has (or can open) one,
-        else *channel*. Adds the pinged users to a private thread so they can see it."""
-        thread = await self._ping_thread(watch, channel) if self.ping_threads else None
+    async def _ping_target(self, watch: CodenamesWatch, channel, user_ids=(), *, refresh: bool = True):
+        """Where *watch*'s pings go: its ping thread when it has (or can open) one, else
+        *channel*. Adds *user_ids* (the players) to a private thread so they can see it."""
+        thread = await self._ping_thread(watch, channel, refresh=refresh) if self.ping_threads else None
         if thread is None:
             return channel
         if thread.type == discord.ChannelType.private_thread:
             added = self._ping_thread_members.setdefault(thread.id, set())
-            for user_id in user_ids:
+            for user_id in dict.fromkeys(int(uid) for uid in user_ids):
                 if user_id in added:
                     continue
                 try:
@@ -776,7 +814,7 @@ class CodenamesMonitor:
                     LOGGER.warning("Codenames room %s: could not add %s to the ping thread: %s", watch.room_id, user_id, exc)
         return thread
 
-    async def _ping_thread(self, watch: CodenamesWatch, channel) -> discord.Thread | None:
+    async def _ping_thread(self, watch: CodenamesWatch, channel, *, refresh: bool = True) -> discord.Thread | None:
         """The watch's ping thread, opening one if the bot may (``None``: ping in the channel)."""
         if watch.ping_thread_id:
             thread = await self._channel_by_id(watch.ping_thread_id, watch.room_id)
@@ -825,7 +863,8 @@ class CodenamesMonitor:
             )
         except discord.DiscordException as exc:
             LOGGER.info("Codenames room %s: could not post the ping thread intro: %s", watch.room_id, exc)
-        await self.refresh_room(watch.room_id)  # the card now says where the pings are
+        if refresh:
+            await self.refresh_room(watch.room_id)  # the card now says where the pings are, and gets its copy
         return thread
 
     async def _send(self, operation: str, room_id: str, channel, poster, content=None, **kwargs):

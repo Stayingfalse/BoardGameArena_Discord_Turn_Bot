@@ -224,6 +224,12 @@ class CodenamesStore:
             row = self._connection.execute(
                 "SELECT * FROM codenames_games WHERE message_id = ?", (str(message_id),)
             ).fetchone()
+            if row is None:
+                # The copy of the card in the room's ping thread.
+                row = self._connection.execute(
+                    "SELECT * FROM codenames_games WHERE json_extract(state_json, '$.thread_card_message_id') = ?",
+                    (str(message_id),),
+                ).fetchone()
         return _row_to_game(row) if row is not None else None
 
     def get_latest_codenames_game(self, watch_id: int) -> CodenamesGame | None:
