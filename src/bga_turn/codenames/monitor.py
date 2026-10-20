@@ -67,10 +67,12 @@ def normalise_name(name: str | None) -> str:
     return "".join(ch for ch in (name or "").casefold() if ch.isalnum())
 
 
-def seat_links(players, view: GameView | None) -> dict[str, str]:
-    """Seat -> Discord user for claimed seats, plus each unclaimed seat that looks like a
-    claimed player on another device (see :func:`device_aliases`)."""
+def seat_links(players, view: GameView | None, devices: dict[str, str] | None = None) -> dict[str, str]:
+    """Seat -> Discord user for claimed seats, then seats a player said are another device
+    of theirs (*devices*), then unclaimed seats that look like one (see :func:`device_aliases`)."""
     links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+    holders = set(links.values())
+    links = {**{pid: u for pid, u in (devices or {}).items() if u in holders}, **links}
     return {**links, **device_aliases(view, links)} if view is not None else links
 
 
@@ -80,20 +82,40 @@ def _same_person_name(a: str, b: str) -> bool:
     return long.startswith(short) or long.endswith(short)
 
 
+def _first_word(name: str | None) -> str:
+    """The first run of letters and digits, lower-cased: "Potato PC" -> "potato"."""
+    word = ""
+    for ch in (name or "").casefold():
+        if ch.isalnum():
+            word += ch
+        elif word:
+            break
+    return word
+
+
 def device_aliases(view: GameView, links: dict[str, str]) -> dict[str, str]:
-    """Unclaimed seats whose name is a claimed player's name, or starts or ends one
-    ("Alliee - PC" next to "Alliee", "NOT Etreides" next to "Etreides"), taken to be that
-    player on a second device. A seat is only matched when it fits exactly one Discord
-    user; names under 3 letters never match."""
-    claimed = [(normalise_name(view.player_name(pid)), user_id) for pid, user_id in links.items()]
-    claimed = [(name, user_id) for name, user_id in claimed if len(name) >= 3]
-    seats = {pid for roles in view.rosters.values() for ids in roles.values() for pid in ids} | set(view.spectator_ids)
+    """Unclaimed seats taken to be a claimed player on a second device: the name is the
+    player's name, or starts or ends it ("Alliee - PC" next to "Alliee", "NOT Etreides"
+    next to "Etreides"), or the seat is in the player's team and role and the names
+    share their first word ("Potato PC" next to "Potato Phone"). A seat is only matched
+    when it fits exactly one Discord user; names and words under 3 letters never match."""
+    role_of_seat = {
+        pid: (team, role) for team, roles in view.rosters.items() for role, ids in roles.items() for pid in ids
+    }
+    claimed = [
+        (normalise_name(view.player_name(pid)), _first_word(view.player_name(pid)), role_of_seat.get(pid), user_id)
+        for pid, user_id in links.items()
+    ]
+    seats = set(role_of_seat) | set(view.spectator_ids)
     aliases: dict[str, str] = {}
     for pid in seats - set(links) - {view.bot_player_id}:
-        name = normalise_name(view.player_name(pid))
-        if len(name) < 3:
-            continue
-        users = {user_id for other, user_id in claimed if _same_person_name(name, other)}
+        name, word, seat = normalise_name(view.player_name(pid)), _first_word(view.player_name(pid)), role_of_seat.get(pid)
+        users = {
+            user_id
+            for other, other_word, other_seat, user_id in claimed
+            if (len(name) >= 3 and len(other) >= 3 and _same_person_name(name, other))
+            or (seat is not None and seat == other_seat and len(word) >= 3 and word == other_word)
+        }
         if len(users) == 1:
             aliases[pid] = users.pop()
     return aliases
@@ -298,13 +320,18 @@ class CodenamesMonitor:
             players = await self.db.list_codenames_players(room_id)
             for watch in await self.db.list_codenames_watches(room_id):
                 await self._auto_claim_invited(watch, players)
-            links = seat_links(await self.db.list_codenames_players(room_id), view)
+            links = await self.seat_links(room_id, view)
             for watch in await self.db.list_codenames_watches(room_id):
                 try:
                     lineup = await self._current_lineup(watch)
                     await self._update_watch(watch, view, game_number, links, lineup=lineup)
                 except Exception:
                     LOGGER.exception("Codenames room %s: update failed for watch %s", room_id, watch.watch_id)
+
+    async def seat_links(self, room_id: str, view: GameView | None) -> dict[str, str]:
+        """Seat -> Discord user for everyone in *room_id* (see :func:`seat_links`)."""
+        players = await self.db.list_codenames_players(room_id)
+        return seat_links(players, view, await self.db.list_codenames_devices(room_id))
 
     async def _auto_claim_invited(self, watch: CodenamesWatch, players) -> None:
         """Give invited members the seat that is clearly theirs.
@@ -545,7 +572,7 @@ class CodenamesMonitor:
             if view.phase != "in_progress" or not view.turn_key:
                 continue
             async with self._locks.setdefault(room_id, asyncio.Lock()):
-                links = seat_links(await self.db.list_codenames_players(room_id), view)
+                links = await self.seat_links(room_id, view)
                 for watch in await self.db.list_codenames_watches(room_id):
                     game = await self.db.get_latest_codenames_game(watch.watch_id)
                     if game is None or game.match_id != view.match_id or game.turn_key != view.turn_key:
@@ -757,7 +784,7 @@ class CodenamesMonitor:
             game_number=shown_game_number(game),
             # The last known state of this game, if the room was still on it.
             view=view,
-            links=seat_links(await self.db.list_codenames_players(watch.room_id), view),
+            links=await self.seat_links(watch.room_id, view),
             closed_note=note,
         )
         await self._send_or_edit_card(channel, game, data)

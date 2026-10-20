@@ -366,9 +366,10 @@ async def test_seat_picker_marks_the_current_seat_and_offers_release():
 
     players = _players(("0", "Alice", None), ("1", "Bob", "111"))
     view = SeatPickerView(ROOM, players, "111", remembered="Alice")
-    [select] = [item for item in view.children if isinstance(item, discord.ui.Select)]
+    select, devices = [item for item in view.children if isinstance(item, discord.ui.Select)]
     assert not any(option.default for option in select.options)
     assert (select.options[0].label, select.options[0].description) == ("Bob", "That's you now")
+    assert [option.label for option in devices.options] == ["Alice"]  # "another device of mine"
     assert any(isinstance(item, discord.ui.Button) for item in view.children)
 
 
