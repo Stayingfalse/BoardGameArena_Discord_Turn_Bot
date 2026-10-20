@@ -65,6 +65,31 @@ def normalise_name(name: str | None) -> str:
     return "".join(ch for ch in (name or "").casefold() if ch.isalnum())
 
 
+def seat_links(players, view: GameView | None) -> dict[str, str]:
+    """Seat -> Discord user for claimed seats, plus each unclaimed seat that looks like a
+    claimed player on another device (see :func:`device_aliases`)."""
+    links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+    return {**links, **device_aliases(view, links)} if view is not None else links
+
+
+def device_aliases(view: GameView, links: dict[str, str]) -> dict[str, str]:
+    """Unclaimed seats whose name is a claimed player's name, or starts or ends one
+    ("Alliee" and "Alliee - PC"), taken to be that player on a second device. A seat is
+    only matched when it fits exactly one Discord user; names under 3 letters never match."""
+    claimed = [(normalise_name(view.player_name(pid)), user_id) for pid, user_id in links.items()]
+    claimed = [(name, user_id) for name, user_id in claimed if len(name) >= 3]
+    seats = {pid for roles in view.rosters.values() for ids in roles.values() for pid in ids} | set(view.spectator_ids)
+    aliases: dict[str, str] = {}
+    for pid in seats - set(links) - {view.bot_player_id}:
+        name = normalise_name(view.player_name(pid))
+        if len(name) < 3:
+            continue
+        users = {user_id for other, user_id in claimed if other.startswith(name) or name.startswith(other)}
+        if len(users) == 1:
+            aliases[pid] = users.pop()
+    return aliases
+
+
 # Told once per finished game: the watch, the game, the final view and seat -> Discord user links.
 GameFinishedListener = Callable[[CodenamesWatch, CodenamesGame, GameView, dict[str, str]], Awaitable[None]]
 
@@ -258,8 +283,7 @@ class CodenamesMonitor:
             players = await self.db.list_codenames_players(room_id)
             for watch in await self.db.list_codenames_watches(room_id):
                 await self._auto_claim_invited(watch, players)
-            players = await self.db.list_codenames_players(room_id)
-            links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+            links = seat_links(await self.db.list_codenames_players(room_id), view)
             for watch in await self.db.list_codenames_watches(room_id):
                 try:
                     lineup = await self._current_lineup(watch)
@@ -501,8 +525,7 @@ class CodenamesMonitor:
             if view.phase != "in_progress" or not view.turn_key:
                 continue
             async with self._locks.setdefault(room_id, asyncio.Lock()):
-                players = await self.db.list_codenames_players(room_id)
-                links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+                links = seat_links(await self.db.list_codenames_players(room_id), view)
                 for watch in await self.db.list_codenames_watches(room_id):
                     game = await self.db.get_latest_codenames_game(watch.watch_id)
                     if game is None or game.match_id != view.match_id or game.turn_key != view.turn_key:
@@ -707,15 +730,14 @@ class CodenamesMonitor:
         channel = await self._channel(watch)
         if channel is None:
             return
-        players = await self.db.list_codenames_players(watch.room_id)
-        links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
         view = self._views.get(watch.room_id)
+        view = view if view is not None and view.match_id == game.match_id else None
         data = cards.CardData(
             room_id=watch.room_id,
             game_number=game.game_number,
             # The last known state of this game, if the room was still on it.
-            view=view if view is not None and view.match_id == game.match_id else None,
-            links=links,
+            view=view,
+            links=seat_links(await self.db.list_codenames_players(watch.room_id), view),
             closed_note=note,
         )
         await self._send_or_edit_card(channel, game, data)

@@ -61,19 +61,22 @@ class LineupCheck:
 def check_lineup(view: GameView, lineup: Lineup, links: dict[str, str]) -> tuple[list[LineupCheck], list[tuple[str, str, list[str]]]]:
     """Each expected seat's state, plus seats holding players who shouldn't be there
     (``(team, role, seat IDs)``)."""
-    seat_of_user = {user_id: pid for pid, user_id in links.items()}
+    seats_of_user: dict[str, list[str]] = {}  # one user can be in the room on several devices
+    for pid, user_id in links.items():
+        seats_of_user.setdefault(user_id, []).append(pid)
     role_of_seat = {
         pid: (team, role) for team, roles in view.rosters.items() for role, ids in roles.items() for pid in ids
     }
     checks: list[LineupCheck] = []
     for team, role, user_id in lineup.seats:
-        pid = seat_of_user.get(user_id)
-        if pid is None:
+        pids = seats_of_user.get(user_id)
+        roles = [role_of_seat[pid] for pid in pids or () if pid in role_of_seat]
+        if not pids:
             checks.append(LineupCheck(team, role, user_id, "unclaimed"))
-        elif role_of_seat.get(pid) == (team, role):
+        elif (team, role) in roles:
             checks.append(LineupCheck(team, role, user_id, "ok"))
-        elif pid in role_of_seat:
-            checks.append(LineupCheck(team, role, user_id, "wrong_seat", role_of_seat[pid]))
+        elif roles:
+            checks.append(LineupCheck(team, role, user_id, "wrong_seat", roles[0]))
         else:
             checks.append(LineupCheck(team, role, user_id, "spectating"))
     expected = {(team, role): user_id for team, role, user_id in lineup.seats}
@@ -218,7 +221,8 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
     if view is not None:
         for team in TEAMS:
             items.append(discord.ui.TextDisplay(_team_block(view, team, data.links)))
-        others = [pid for pid in view.spectator_ids]
+        on_teams = {data.links.get(pid) for roles in view.rosters.values() for ids in roles.values() for pid in ids}
+        others = _one_seat_per_user([pid for pid in view.spectator_ids if data.links.get(pid) not in on_teams - {None}], data.links)
         if others:
             names = ", ".join(_player_label(view, pid, data.links) for pid in others)
             items.append(discord.ui.TextDisplay(f"👀 {tr('cn_label_not_on_team')}: {names}"))
@@ -334,11 +338,25 @@ def _team_block(view: GameView, team: str, links: dict[str, str]) -> str:
     lines = [f"**{team_label(team)}**"]
     for role in ROLES:
         ids = view.rosters.get(team, {}).get(role, [])
-        names = ", ".join(_player_label(view, pid, links) for pid in ids) if ids else f"_{tr('cn_role_needed')}_"
+        shown = _one_seat_per_user(ids, links)
+        names = ", ".join(_player_label(view, pid, links) for pid in shown) if shown else f"_{tr('cn_role_needed')}_"
         acting = view.active_team == team and view.active_role == role and view.phase == "in_progress"
         marker = "👉 " if acting else ""
         lines.append(f"{marker}{tr(_ROLE_KEYS[role])}: {names}")
     return "\n".join(lines)
+
+
+def _one_seat_per_user(ids: list[str], links: dict[str, str]) -> list[str]:
+    """*ids* without a player's other devices: the first seat of each Discord user is kept."""
+    seen: set[str] = set()
+    kept = []
+    for pid in ids:
+        user_id = links.get(pid)
+        if user_id is None or user_id not in seen:
+            kept.append(pid)
+        if user_id is not None:
+            seen.add(user_id)
+    return kept
 
 
 def _player_label(view: GameView, player_id: str, links: dict[str, str]) -> str:

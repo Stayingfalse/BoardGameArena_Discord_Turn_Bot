@@ -20,7 +20,7 @@ import aiohttp
 
 from ..codenames.links import build_room_url
 from ..codenames.models import CodenamesGame, CodenamesWatch
-from ..codenames.monitor import CodenamesMonitor
+from ..codenames.monitor import CodenamesMonitor, seat_links
 from ..codenames.state import ROLES, TEAMS, GameView
 from ..database import AsyncDatabase, Database
 from ..utils import utc_now_iso
@@ -161,13 +161,15 @@ class TournamentBridge:
             "players_in_room": len(view.connected_ids) if view is not None else 0,
         }
         if view is not None and view.phase == "in_progress":
-            players = await self.db.list_codenames_players(watch.room_id)
-            links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+            links = seat_links(await self.db.list_codenames_players(watch.room_id), view)
             status["active_team"] = view.active_team
             status["active_role"] = view.active_role
-            status["waiting_on"] = [
-                {"name": view.player_name(pid), "discord_user_id": links.get(pid)} for pid in view.players_to_act()
-            ]
+            waiting: list[dict] = []
+            for pid in view.players_to_act():
+                user_id = links.get(pid)
+                if user_id is None or all(w["discord_user_id"] != user_id for w in waiting):  # one entry per person
+                    waiting.append({"name": view.player_name(pid), "discord_user_id": user_id})
+            status["waiting_on"] = waiting
             started = (game.state or {}).get("turn_started_at") if game else None
             if isinstance(started, (int, float)):
                 status["turn_started_at"] = datetime.fromtimestamp(started, timezone.utc).isoformat()
