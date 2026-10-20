@@ -20,7 +20,7 @@ import aiohttp
 
 from ..codenames.links import build_room_url
 from ..codenames.models import CodenamesGame, CodenamesWatch
-from ..codenames.monitor import CodenamesMonitor, seat_links
+from ..codenames.monitor import CodenamesMonitor
 from ..codenames.state import ROLES, TEAMS, GameView
 from ..database import AsyncDatabase, Database
 from ..utils import utc_now_iso
@@ -161,7 +161,7 @@ class TournamentBridge:
             "players_in_room": len(view.connected_ids) if view is not None else 0,
         }
         if view is not None and view.phase == "in_progress":
-            links = seat_links(await self.db.list_codenames_players(watch.room_id), view)
+            links = await self.monitor.seat_links(watch.room_id, view)
             status["active_team"] = view.active_team
             status["active_role"] = view.active_role
             waiting: list[dict] = []

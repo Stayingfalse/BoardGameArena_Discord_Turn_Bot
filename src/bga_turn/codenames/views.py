@@ -96,6 +96,9 @@ class SeatPickerView(discord.ui.View):
             )
         self.add_item(_SeatSelect(options))
         if mine is not None:
+            others = [p for p in players if p.discord_user_id is None][:_MAX_OPTIONS]
+            if others:
+                self.add_item(_DeviceSelect(others))
             self.add_item(_ReleaseButton())
 
 
@@ -115,6 +118,27 @@ class _SeatSelect(discord.ui.Select["SeatPickerView"]):
             return
         name = discord.utils.escape_markdown(player.display_name or player.player_id)
         await interaction.response.edit_message(content=tr("cn_claim_done", name=name), view=None)
+        await _refresh_room(interaction, room_id)
+
+
+class _DeviceSelect(discord.ui.Select["SeatPickerView"]):
+    """For a player already in a seat: another name in the room that is also them."""
+
+    def __init__(self, players: list[CodenamesPlayer]) -> None:
+        options = [
+            discord.SelectOption(label=(p.display_name or p.player_id)[:100], value=p.player_id) for p in players
+        ]
+        super().__init__(placeholder=tr("cn_claim_device_placeholder"), options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        room_id = self.view.room_id
+        db = _db(interaction)
+        await db.add_codenames_device(room_id, self.values[0], str(interaction.user.id))
+        name = next((o.label for o in self.options if o.value == self.values[0]), self.values[0])
+        await interaction.response.edit_message(
+            content=tr("cn_claim_device_done", name=discord.utils.escape_markdown(name)), view=None
+        )
         await _refresh_room(interaction, room_id)
 
 

@@ -458,6 +458,10 @@ class CodenamesStore:
                 "UPDATE codenames_players SET discord_user_id = NULL, updated_at = ? WHERE room_id = ? AND discord_user_id = ?",
                 (now, room_id, discord_user_id),
             )
+            # A claimed seat is that person's own, not someone's other device.
+            self._connection.execute(
+                "DELETE FROM codenames_devices WHERE room_id = ? AND player_id = ?", (room_id, player_id)
+            )
             self._connection.execute(
                 """
                 INSERT INTO codenames_players (room_id, player_id, discord_user_id, updated_at)
@@ -488,8 +492,31 @@ class CodenamesStore:
                 "UPDATE codenames_players SET discord_user_id = NULL, updated_at = ? WHERE room_id = ? AND discord_user_id = ?",
                 (utc_now_iso(), room_id, discord_user_id),
             )
+            self._connection.execute(
+                "DELETE FROM codenames_devices WHERE room_id = ? AND discord_user_id = ?", (room_id, discord_user_id)
+            )
             self._connection.commit()
         return cursor.rowcount > 0
+
+    def add_codenames_device(self, room_id: str, player_id: str, discord_user_id: str) -> None:
+        """Record *player_id* as another device of *discord_user_id* in the room."""
+        with self._lock:
+            self._connection.execute(
+                """
+                INSERT INTO codenames_devices (room_id, player_id, discord_user_id, updated_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(room_id, player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, updated_at = excluded.updated_at
+                """,
+                (room_id, player_id, discord_user_id, utc_now_iso()),
+            )
+            self._connection.commit()
+
+    def list_codenames_devices(self, room_id: str) -> dict[str, str]:
+        """Seat -> Discord user for seats players said are another device of theirs."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT player_id, discord_user_id FROM codenames_devices WHERE room_id = ?", (room_id,)
+            ).fetchall()
+        return {row["player_id"]: row["discord_user_id"] for row in rows}
 
     def get_codenames_remembered_name(self, discord_user_id: str) -> str | None:
         with self._lock:

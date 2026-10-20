@@ -285,3 +285,31 @@ async def test_a_second_device_in_the_same_seat_keeps_the_line_up_ready(database
     text = _text(channel.cards[0].view)
     assert "line-up" not in text  # nothing wrong, so nothing to show
     assert "Alice - phone" not in text  # shown once, as Alice
+
+
+def test_a_name_sharing_the_first_word_matches_only_in_the_same_seat():
+    from bga_turn.codenames.monitor import device_aliases
+
+    view = _in_progress(list(_replay()))
+    view = dataclasses.replace(view, player_names={**view.player_names, "0": "Potato Phone"})
+    links = {"0": "222", "1": "111"}  # "Potato Phone" is the red operative
+    assert device_aliases(_with_second_device(view, "Potato PC"), links) == {"9": "222"}
+    assert device_aliases(_with_second_device(view, "Potato PC", seat=("blue", "operatives")), links) == {}
+
+
+def test_a_seat_marked_as_another_device_counts_as_that_player(database):
+    from bga_turn.codenames.monitor import seat_links
+
+    view = _with_second_device(_in_progress(list(_replay())), "Laptop")
+    database.get_or_create_codenames_room(ROOM, bot_credentials="aaa-bbb-ccc", bot_name="🤖 Curious Cat")
+    database.claim_codenames_player(ROOM, "0", "222")
+    database.add_codenames_device(ROOM, "9", "222")
+    links = seat_links(database.list_codenames_players(ROOM), view, database.list_codenames_devices(ROOM))
+    assert links["9"] == "222"
+
+    # Claiming the seat makes it that person's own; releasing drops the player's devices.
+    database.claim_codenames_player(ROOM, "9", "333")
+    assert database.list_codenames_devices(ROOM) == {}
+    database.add_codenames_device(ROOM, "4", "222")
+    database.release_codenames_player(ROOM, "222")
+    assert database.list_codenames_devices(ROOM) == {}

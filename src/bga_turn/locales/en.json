@@ -269,6 +269,8 @@
   "cn_claim_taken": "That name is already claimed by {holder}. Ask them to press **I'm playing** → **I'm not playing** first.",
   "cn_claim_done": "You're **{name}** in this room. You'll be pinged when it's your turn.",
   "cn_claim_released": "OK, you won't be pinged for this room.",
+  "cn_claim_device_placeholder": "Another device of mine…",
+  "cn_claim_device_done": "Got it: **{name}** is you too, on another device.",
   "cn_command_group_description": "Codenames (codenames.game) turn tracking",
   "cn_command_players_description": "Ask members to play the Codenames room watched in this channel",
   "cn_command_status_description": "List the Codenames rooms watched in this server",

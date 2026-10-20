@@ -145,6 +145,17 @@ CREATE TABLE IF NOT EXISTS codenames_players (
     FOREIGN KEY (room_id) REFERENCES codenames_rooms(room_id) ON DELETE CASCADE
 );
 
+-- Seats a player said are another device of theirs ("That's also me"), on top of
+-- the one seat they claim in codenames_players.
+CREATE TABLE IF NOT EXISTS codenames_devices (
+    room_id TEXT NOT NULL,
+    player_id TEXT NOT NULL,
+    discord_user_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (room_id, player_id),
+    FOREIGN KEY (room_id) REFERENCES codenames_rooms(room_id) ON DELETE CASCADE
+);
+
 -- Discord members tagged as expected players for a watched room.
 CREATE TABLE IF NOT EXISTS codenames_watch_members (
     watch_id INTEGER NOT NULL,
