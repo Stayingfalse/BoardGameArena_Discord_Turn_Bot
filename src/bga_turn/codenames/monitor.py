@@ -74,10 +74,17 @@ def seat_links(players, view: GameView | None) -> dict[str, str]:
     return {**links, **device_aliases(view, links)} if view is not None else links
 
 
+def _same_person_name(a: str, b: str) -> bool:
+    """Whether one normalised name starts or ends the other ("alliee" / "allieepc", "notetreides" / "etreides")."""
+    short, long = sorted((a, b), key=len)
+    return long.startswith(short) or long.endswith(short)
+
+
 def device_aliases(view: GameView, links: dict[str, str]) -> dict[str, str]:
     """Unclaimed seats whose name is a claimed player's name, or starts or ends one
-    ("Alliee" and "Alliee - PC"), taken to be that player on a second device. A seat is
-    only matched when it fits exactly one Discord user; names under 3 letters never match."""
+    ("Alliee - PC" next to "Alliee", "NOT Etreides" next to "Etreides"), taken to be that
+    player on a second device. A seat is only matched when it fits exactly one Discord
+    user; names under 3 letters never match."""
     claimed = [(normalise_name(view.player_name(pid)), user_id) for pid, user_id in links.items()]
     claimed = [(name, user_id) for name, user_id in claimed if len(name) >= 3]
     seats = {pid for roles in view.rosters.values() for ids in roles.values() for pid in ids} | set(view.spectator_ids)
@@ -86,7 +93,7 @@ def device_aliases(view: GameView, links: dict[str, str]) -> dict[str, str]:
         name = normalise_name(view.player_name(pid))
         if len(name) < 3:
             continue
-        users = {user_id for other, user_id in claimed if other.startswith(name) or name.startswith(other)}
+        users = {user_id for other, user_id in claimed if _same_person_name(name, other)}
         if len(users) == 1:
             aliases[pid] = users.pop()
     return aliases
