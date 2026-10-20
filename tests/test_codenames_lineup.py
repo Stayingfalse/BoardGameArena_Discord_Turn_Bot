@@ -142,8 +142,10 @@ async def test_a_new_line_up_replaces_the_old_ping(database, channel):
 
 async def test_a_line_up_behind_the_reported_results_is_not_shown(database, channel):
     monitor = _monitor(database, channel)
+    _bind(database, RIGHT, last_event_id=None)
     # The bot reported a game the tournament hasn't processed yet: its line-up is stale.
     database.enqueue_bridge_result("room:m1", channel_id=str(CHANNEL), external_ref="R1M1", payload={})
+    # Re-sending the same line-up (say the deadline moved) doesn't make it fresh.
     _bind(database, RIGHT, last_event_id=None)
     views = await _watch_and_link(monitor, database)
     await _show(monitor, _all_players_lobby(views))
@@ -155,6 +157,34 @@ async def test_a_line_up_behind_the_reported_results_is_not_shown(database, chan
     await monitor.refresh_room(ROOM)
     await _show(monitor, _all_players_lobby(views))
     assert "Game 2 line-up" in _text(channel.cards[0].view)
+
+
+async def test_a_line_up_sent_after_an_unprocessed_result_is_shown(database, channel):
+    monitor = _monitor(database, channel)
+    _bind(database, RIGHT, last_event_id=None)
+    # Game 1's result never reached the tournament, so it was logged by hand there
+    # and the tournament moved on to Game 2 without knowing this result's event_id.
+    database.enqueue_bridge_result("room:m1", channel_id=str(CHANNEL), external_ref="R1M1", payload={})
+    _bind(database, SWAPPED_BLUE, game=2, last_event_id=None)
+
+    views = await _watch_and_link(monitor, database)
+    await _show(monitor, _all_players_lobby(views))
+    assert "Game 2 line-up" in _text(channel.cards[0].view)
+    assert [p for p in channel.pings if "Game 2" in p.content]
+
+
+async def test_bindings_stored_before_the_line_up_marker_fall_back_to_timestamps(database, channel):
+    database.enqueue_bridge_result("room:m1", channel_id=str(CHANNEL), external_ref="R1M1", payload={})
+    _bind(database, SWAPPED_BLUE, game=2, last_event_id=None)
+    binding = database.get_codenames_binding(str(CHANNEL))
+    [result] = database.list_bridge_results(str(CHANNEL))
+    legacy = dataclasses.replace(binding, lineup_after_outbox_id=None)
+    created = database._connection.execute(
+        "SELECT created_at FROM codenames_result_outbox WHERE outbox_id = ?", (result.outbox_id,)
+    ).fetchone()["created_at"]
+
+    assert database.codenames_lineup_is_current(dataclasses.replace(legacy, updated_at=created + "Z"))
+    assert not database.codenames_lineup_is_current(dataclasses.replace(legacy, updated_at=created))
 
 
 # ----------------------------------------------------------------------

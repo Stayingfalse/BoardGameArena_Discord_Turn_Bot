@@ -339,12 +339,10 @@ class CodenamesMonitor:
         return False
 
     async def _current_lineup(self, watch: CodenamesWatch) -> cards.Lineup | None:
-        """The seats a tournament expects in this channel, if it has caught up with every
-        result reported from here (otherwise its line-up is for a game already played)."""
+        """The seats a tournament expects in this channel, unless the line-up is older than
+        the last result reported from here (then it is for a game already played)."""
         binding = await self.db.get_codenames_binding(watch.channel_id)
-        if binding is None or not binding.lineup:
-            return None
-        if binding.lineup.get("last_event_id") != await self.db.latest_bridge_event_id(watch.channel_id):
+        if binding is None or not await self.db.codenames_lineup_is_current(binding):
             return None
         return cards.Lineup.from_binding(binding.lineup)
 

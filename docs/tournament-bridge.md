@@ -57,7 +57,7 @@ restart or an outage on either side loses nothing. Each game has a stable
 |---|---|
 | `BRIDGE_TOKEN` | Shared secret. Setting it turns the bridge on (Codenames must be enabled). Use the same value on both bots. |
 | `BRIDGE_HOST` / `BRIDGE_PORT` | Where the bridge API listens. Default `0.0.0.0:8081`. Not published on the host by default. |
-| `BRIDGE_CALLBACK_URLS` | Comma-separated result URLs, tried in order. Put the internal one first and the public HTTPS one as fallback. |
+| `BRIDGE_CALLBACK_URLS` | Comma-separated result URLs, tried in order. Put the internal one first and the public HTTPS one as fallback. Each is the full URL, ending in `/api/bridge/codenames/result`. Without it, results queue here and are never sent. (`BRIDGE_URLS` is the tournament's setting, not this bot's.) |
 
 | Tournament bot (`.env`) | Description |
 |---|---|
@@ -127,8 +127,11 @@ optional:
 ```
 
 `last_event_id` is the last result the tournament processed from this thread
-(`null` before the first). The line-up is only shown while it equals the last
-result this bot reported from the thread.
+(`null` before the first). The line-up is shown when it equals the last result
+this bot reported from the thread, or when the line-up changed after that
+result was reported (the tournament moved on without it, e.g. the game was
+logged by hand because the result never arrived). Re-sending an unchanged
+line-up doesn't count as a change.
 
 Each entry in `rooms` from `GET` looks like this:
 
