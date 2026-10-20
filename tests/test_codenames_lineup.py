@@ -261,6 +261,9 @@ def test_a_similar_unclaimed_name_is_the_same_player_on_another_device():
     assert device_aliases(_with_second_device(view, "Alice - phone"), links) == {"9": "222"}
     assert device_aliases(_with_second_device(view, "alice"), links) == {"9": "222"}
     assert device_aliases(_with_second_device(view, "Ali"), links) == {"9": "222"}
+    assert device_aliases(_with_second_device(view, "NOT Alice"), links) == {"9": "222"}
+    assert device_aliases(_with_second_device(view, "Malice"), links) == {"9": "222"}  # ends with it
+    assert device_aliases(_with_second_device(view, "Calicer"), links) == {}  # only in the middle
     assert device_aliases(_with_second_device(view, "Al"), links) == {}  # too short to tell
     assert device_aliases(_with_second_device(view, "Carol"), links) == {}
 
