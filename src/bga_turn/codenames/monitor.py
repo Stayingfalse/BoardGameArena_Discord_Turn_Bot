@@ -56,6 +56,8 @@ _CHANNEL_SUFFIX = "_channel"
 _PING_THREAD_RETRY_SECONDS = 600
 _TURN_STARTED_KEY = "turn_started_at"  # unix seconds
 _REMINDED_KEY = "reminded_at"  # unix seconds
+# The tournament's number for this game ("Game 2" of the match), shown instead of the room's own count.
+_MATCH_GAME_KEY = "match_game"
 
 ClientFactory = Callable[..., CodenamesRoomClient]
 
@@ -63,6 +65,37 @@ ClientFactory = Callable[..., CodenamesRoomClient]
 def normalise_name(name: str | None) -> str:
     """Lower-case letters and digits only: "🤖 Alice B." and "alice_b" both become "aliceb"."""
     return "".join(ch for ch in (name or "").casefold() if ch.isalnum())
+
+
+def seat_links(players, view: GameView | None) -> dict[str, str]:
+    """Seat -> Discord user for claimed seats, plus each unclaimed seat that looks like a
+    claimed player on another device (see :func:`device_aliases`)."""
+    links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+    return {**links, **device_aliases(view, links)} if view is not None else links
+
+
+def device_aliases(view: GameView, links: dict[str, str]) -> dict[str, str]:
+    """Unclaimed seats whose name is a claimed player's name, or starts or ends one
+    ("Alliee" and "Alliee - PC"), taken to be that player on a second device. A seat is
+    only matched when it fits exactly one Discord user; names under 3 letters never match."""
+    claimed = [(normalise_name(view.player_name(pid)), user_id) for pid, user_id in links.items()]
+    claimed = [(name, user_id) for name, user_id in claimed if len(name) >= 3]
+    seats = {pid for roles in view.rosters.values() for ids in roles.values() for pid in ids} | set(view.spectator_ids)
+    aliases: dict[str, str] = {}
+    for pid in seats - set(links) - {view.bot_player_id}:
+        name = normalise_name(view.player_name(pid))
+        if len(name) < 3:
+            continue
+        users = {user_id for other, user_id in claimed if other.startswith(name) or name.startswith(other)}
+        if len(users) == 1:
+            aliases[pid] = users.pop()
+    return aliases
+
+
+def shown_game_number(game: CodenamesGame) -> int:
+    """The number cards and pings call this game: the tournament's, when it has given one."""
+    number = game.state.get(_MATCH_GAME_KEY)
+    return number if isinstance(number, int) else game.game_number
 
 
 # Told once per finished game: the watch, the game, the final view and seat -> Discord user links.
@@ -258,8 +291,7 @@ class CodenamesMonitor:
             players = await self.db.list_codenames_players(room_id)
             for watch in await self.db.list_codenames_watches(room_id):
                 await self._auto_claim_invited(watch, players)
-            players = await self.db.list_codenames_players(room_id)
-            links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+            links = seat_links(await self.db.list_codenames_players(room_id), view)
             for watch in await self.db.list_codenames_watches(room_id):
                 try:
                     lineup = await self._current_lineup(watch)
@@ -376,9 +408,14 @@ class CodenamesMonitor:
             if watch.ping_thread_id or (players and view.phase != "finished"):
                 thread = await self._ping_target(watch, channel, players, refresh=False)
                 thread = thread if thread is not channel else None
+        if lineup is not None and view.phase != "finished" and game.state.get(_MATCH_GAME_KEY) != lineup.game:
+            # Fixed once the game ends, so the card doesn't move on with the tournament afterwards.
+            state = {**game.state, _MATCH_GAME_KEY: lineup.game}
+            await self.db.update_codenames_game(game.game_id, state=state)
+            game.state = state
         data = cards.CardData(
             room_id=watch.room_id,
-            game_number=game.game_number,
+            game_number=shown_game_number(game),
             view=view,
             links=links,
             invited=invited,
@@ -395,7 +432,7 @@ class CodenamesMonitor:
         if view.phase == "finished" and view.board and _BOARD_KEY not in game.state:
             # Keep the final board with the game so its image survives restarts and "play again".
             state = dict(game.state)
-            state[_BOARD_KEY] = BoardSnapshot.from_view(view, game.game_number).to_dict()
+            state[_BOARD_KEY] = BoardSnapshot.from_view(view, shown_game_number(game)).to_dict()
             await self.db.update_codenames_game(game.game_id, state=state)
             game.state = state
 
@@ -442,12 +479,12 @@ class CodenamesMonitor:
         """Replace the game's turn ping with a new one (deleting the old one so the
         mention notifies again). Returns the game's new state, not yet saved."""
         await self._delete_ping(watch, game)
-        ping = cards.build_turn_ping(view, links, game.game_number) if view.turn_key else None
+        ping = cards.build_turn_ping(view, links, shown_game_number(game)) if view.turn_key else None
         target = await self._ping_target(watch, channel, ping[1] if ping is not None else ())
         poster = await self.posters.for_sending(target)
         ping_id = None
         if ping is not None:
-            text, user_ids = cards.build_turn_ping(view, links, game.game_number, branded=poster.via == VIA_BOT)
+            text, user_ids = cards.build_turn_ping(view, links, shown_game_number(game), branded=poster.via == VIA_BOT)
             if reminder:
                 text = f"{reminder}\n{text}"
             sent, poster = await self._send(
@@ -501,8 +538,7 @@ class CodenamesMonitor:
             if view.phase != "in_progress" or not view.turn_key:
                 continue
             async with self._locks.setdefault(room_id, asyncio.Lock()):
-                players = await self.db.list_codenames_players(room_id)
-                links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
+                links = seat_links(await self.db.list_codenames_players(room_id), view)
                 for watch in await self.db.list_codenames_watches(room_id):
                     game = await self.db.get_latest_codenames_game(watch.watch_id)
                     if game is None or game.match_id != view.match_id or game.turn_key != view.turn_key:
@@ -707,15 +743,14 @@ class CodenamesMonitor:
         channel = await self._channel(watch)
         if channel is None:
             return
-        players = await self.db.list_codenames_players(watch.room_id)
-        links = {p.player_id: p.discord_user_id for p in players if p.discord_user_id}
         view = self._views.get(watch.room_id)
+        view = view if view is not None and view.match_id == game.match_id else None
         data = cards.CardData(
             room_id=watch.room_id,
-            game_number=game.game_number,
+            game_number=shown_game_number(game),
             # The last known state of this game, if the room was still on it.
-            view=view if view is not None and view.match_id == game.match_id else None,
-            links=links,
+            view=view,
+            links=seat_links(await self.db.list_codenames_players(watch.room_id), view),
             closed_note=note,
         )
         await self._send_or_edit_card(channel, game, data)

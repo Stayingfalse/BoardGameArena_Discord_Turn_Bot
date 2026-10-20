@@ -80,12 +80,25 @@ def _in_progress(views):
     return next(v for v in views if v.phase == "in_progress")
 
 
-async def test_the_card_confirms_a_correct_line_up(database, channel):
+async def test_the_card_confirms_a_correct_line_up_in_the_lobby(database, channel):
     monitor = _monitor(database, channel)
     _bind(database, RIGHT)
     views = await _watch_and_link(monitor, database)
-    await _show(monitor, _in_progress(views))
+    lobby = _all_players_lobby(views)
+    await _show(monitor, dataclasses.replace(lobby, rosters=_in_progress(views).rosters))
     assert "Game 1 line-up** ✅" in _text(channel.cards[0].view)
+
+
+async def test_a_correct_line_up_is_not_repeated_during_the_game(database, channel):
+    monitor = _monitor(database, channel)
+    _bind(database, RIGHT, game=2)
+    views = await _watch_and_link(monitor, database)
+    await _show(monitor, _in_progress(views))
+
+    text = _text(channel.cards[0].view)
+    assert "line-up" not in text
+    assert "Game 2" in text  # the tournament's number, not the room's
+    assert "🔴 👉🧠 Bob · 🔎 Alice" in text
 
 
 async def test_the_card_flags_players_in_the_wrong_seat(database, channel):
@@ -225,3 +238,47 @@ async def test_ambiguous_names_are_left_alone(database, channel):
     monitor = _monitor(database, channel, members={"222": "Alice", "555": "alice"})
     seats = await _lobby_with_invites(database, monitor, ["222", "555"])
     assert seats["0"] is None
+
+
+# ----------------------------------------------------------------------
+# A player on a second device
+# ----------------------------------------------------------------------
+
+
+def _with_second_device(view, name="Alice - phone", seat=("red", "operatives")):
+    """The view with seat "9" called *name* added to *seat* (Alice, 222, is a red operative)."""
+    team, role = seat
+    rosters = {t: {r: list(ids) for r, ids in roles.items()} for t, roles in view.rosters.items()}
+    rosters[team][role].append("9")
+    return dataclasses.replace(view, rosters=rosters, player_names={**view.player_names, "9": name})
+
+
+def test_a_similar_unclaimed_name_is_the_same_player_on_another_device():
+    from bga_turn.codenames.monitor import device_aliases
+
+    view = _in_progress(list(_replay()))
+    links = {"0": "222", "1": "111"}  # Alice and Bob
+    assert device_aliases(_with_second_device(view, "Alice - phone"), links) == {"9": "222"}
+    assert device_aliases(_with_second_device(view, "alice"), links) == {"9": "222"}
+    assert device_aliases(_with_second_device(view, "Ali"), links) == {"9": "222"}
+    assert device_aliases(_with_second_device(view, "Al"), links) == {}  # too short to tell
+    assert device_aliases(_with_second_device(view, "Carol"), links) == {}
+
+
+def test_a_name_that_fits_two_players_is_left_alone():
+    from bga_turn.codenames.monitor import device_aliases
+
+    view = _in_progress(list(_replay()))
+    view = dataclasses.replace(view, player_names={**view.player_names, "1": "Alice B"})
+    assert device_aliases(_with_second_device(view, "Alice"), {"0": "222", "1": "111"}) == {}
+
+
+async def test_a_second_device_in_the_same_seat_keeps_the_line_up_ready(database, channel):
+    monitor = _monitor(database, channel)
+    _bind(database, RIGHT)
+    views = await _watch_and_link(monitor, database)
+    await _show(monitor, _with_second_device(_in_progress(views)))
+
+    text = _text(channel.cards[0].view)
+    assert "line-up" not in text  # nothing wrong, so nothing to show
+    assert "Alice - phone" not in text  # shown once, as Alice
