@@ -20,6 +20,7 @@ CARD_EMOJI = {"red": "🟥", "blue": "🟦", "neutral": "⬜", "black": "⬛"}
 TEAM_COLOR = {"red": discord.Color.red(), "blue": discord.Color.blue()}
 _TEAM_KEYS = {"red": "cn_team_red", "blue": "cn_team_blue"}
 _ROLE_KEYS = {"spymasters": "cn_role_spymasters", "operatives": "cn_role_operatives"}
+_ROLE_EMOJI = {"spymasters": "🧠", "operatives": "🔎"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,23 +193,10 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
     header = f"🕵️ **{tr('cn_title')}** · {tr('cn_game_number', number=data.game_number)}\n{_status_line(data)}"
     items: list[discord.ui.Item] = [discord.ui.TextDisplay(header)]
 
+    # What the card shows depends on the phase: where to sit in the lobby, whose turn it
+    # is and the score during the game, the result and the board once it's over.
     if view is not None and view.phase != "lobby":
-        score = tr(
-            "cn_score",
-            red=f"{TEAM_EMOJI['red']} {view.remaining.get('red', 0)}",
-            blue=f"{TEAM_EMOJI['blue']} {view.remaining.get('blue', 0)}",
-        )
-        lines = [score]
-        if view.last_guess is not None and view.phase == "in_progress":
-            lines.append(
-                tr(
-                    "cn_last_guess",
-                    player=_escape(view.last_guess.player_name or tr("value_unknown")),
-                    word=_escape(view.last_guess.word),
-                    card=CARD_EMOJI.get(view.last_guess.card_color or "", "❔"),
-                )
-            )
-        items.append(discord.ui.TextDisplay("\n".join(lines)))
+        items.append(discord.ui.TextDisplay(_score_line(view)))
 
     if data.board_image:
         items.append(
@@ -217,23 +205,30 @@ def build_card(data: CardData) -> discord.ui.LayoutView:
             )
         )
 
+    open_game = data.closed_note is None and view is not None and view.phase != "finished"
+    lineup_shown = data.lineup is not None and open_game
     items.append(discord.ui.Separator())
-    if view is not None:
-        for team in TEAMS:
-            items.append(discord.ui.TextDisplay(_team_block(view, team, data.links)))
-        on_teams = {data.links.get(pid) for roles in view.rosters.values() for ids in roles.values() for pid in ids}
-        others = _one_seat_per_user([pid for pid in view.spectator_ids if data.links.get(pid) not in on_teams - {None}], data.links)
-        if others:
-            names = ", ".join(_player_label(view, pid, data.links) for pid in others)
-            items.append(discord.ui.TextDisplay(f"👀 {tr('cn_label_not_on_team')}: {names}"))
-    elif data.closed_note is None:
-        items.append(discord.ui.TextDisplay(tr("cn_connecting")))
+    if view is None:
+        if data.closed_note is None:
+            items.append(discord.ui.TextDisplay(tr("cn_connecting")))
+    elif view.phase == "lobby":
+        if lineup_shown:
+            items.append(discord.ui.TextDisplay(_lineup_block(view, data.lineup, data.links)))
+        else:
+            for team in TEAMS:
+                items.append(discord.ui.TextDisplay(_team_block(view, team, data.links)))
+    else:
+        items.append(discord.ui.TextDisplay(_compact_teams(view, data.links)))
+        if lineup_shown and not lineup_ready(view, data.lineup, data.links):
+            items.append(discord.ui.TextDisplay(_lineup_block(view, data.lineup, data.links)))
 
-    if data.lineup is not None and view is not None and view.phase != "finished" and data.closed_note is None:
-        items.append(discord.ui.Separator())
-        items.append(discord.ui.TextDisplay(_lineup_block(view, data.lineup, data.links)))
+    if view is not None and open_game:
+        watching = _watching(view, data.links)
+        if watching:
+            items.append(discord.ui.TextDisplay(tr("cn_watching", count=watching)))
 
-    if data.invited and data.closed_note is None and (view is None or view.phase != "finished"):
+    lobby = view is None or view.phase == "lobby"
+    if data.invited and lobby and data.closed_note is None:
         mentions = " ".join(f"<@{user_id}>" for user_id in data.invited)
         items.append(discord.ui.TextDisplay(tr("cn_invited", mentions=mentions)))
 
@@ -323,15 +318,52 @@ def _status_line(data: CardData) -> str:
             loser = next((team for team in TEAMS if team != view.winner_team), None)
             line += "\n" + tr("cn_reason_assassin", team=team_label(loser))
         return line
-    team = team_label(view.active_team)
+    team = TEAM_EMOJI.get(view.active_team or "", "")
+    names = _acting_names(view, data.links) or team_label(view.active_team)
     if view.active_role == "spymasters":
-        return tr("cn_status_clue", team=team)
+        return tr("cn_status_clue", team=team, names=names)
     if view.clue is not None:
-        line = tr("cn_status_guessing", team=team, word=_escape(view.clue.word), count=view.clue.number)
+        line = tr("cn_status_guessing", team=team, names=names, word=_escape(view.clue.word), count=view.clue.number)
         if view.guesses_left is not None:
             line += " · " + tr("cn_guesses_left", count=view.guesses_left)
         return line
     return tr("cn_status_guessing_no_clue", team=team)
+
+
+def _score_line(view: GameView) -> str:
+    line = f"{TEAM_EMOJI['red']} {view.remaining.get('red', 0)} · {TEAM_EMOJI['blue']} {view.remaining.get('blue', 0)}"
+    if view.last_guess is not None and view.phase == "in_progress":
+        line += " · " + tr(
+            "cn_last_guess",
+            player=_escape(view.last_guess.player_name or tr("value_unknown")),
+            word=_escape(view.last_guess.word),
+            card=CARD_EMOJI.get(view.last_guess.card_color or "", "❔"),
+        )
+    return line
+
+
+def _compact_teams(view: GameView, links: dict[str, str]) -> str:
+    """One line per team, names only: "🔴 🧠 Jojo · 🔎 Morgan"."""
+    lines = []
+    for team in TEAMS:
+        parts = []
+        for role in ROLES:
+            shown = _one_seat_per_user(view.rosters.get(team, {}).get(role, []), links)
+            names = ", ".join(_escape(view.player_name(pid)) for pid in shown) or f"_{tr('cn_role_needed')}_"
+            acting = view.active_team == team and view.active_role == role and view.phase == "in_progress"
+            parts.append(f"{'👉' if acting else ''}{_ROLE_EMOJI[role]} {names}")
+        lines.append(f"{TEAM_EMOJI[team]} " + " · ".join(parts))
+    return "\n".join(lines)
+
+
+def _watching(view: GameView, links: dict[str, str]) -> int:
+    """People in the room, not on a team and not linked to a player (players, and their
+    other devices, are shown elsewhere on the card)."""
+    return sum(1 for pid in view.spectator_ids if pid not in links)
+
+
+def _acting_names(view: GameView, links: dict[str, str]) -> str:
+    return ", ".join(_escape(view.player_name(pid)) for pid in _one_seat_per_user(view.players_to_act(), links))
 
 
 def _team_block(view: GameView, team: str, links: dict[str, str]) -> str:

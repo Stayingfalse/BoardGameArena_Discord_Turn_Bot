@@ -80,12 +80,25 @@ def _in_progress(views):
     return next(v for v in views if v.phase == "in_progress")
 
 
-async def test_the_card_confirms_a_correct_line_up(database, channel):
+async def test_the_card_confirms_a_correct_line_up_in_the_lobby(database, channel):
     monitor = _monitor(database, channel)
     _bind(database, RIGHT)
     views = await _watch_and_link(monitor, database)
-    await _show(monitor, _in_progress(views))
+    lobby = _all_players_lobby(views)
+    await _show(monitor, dataclasses.replace(lobby, rosters=_in_progress(views).rosters))
     assert "Game 1 line-up** ✅" in _text(channel.cards[0].view)
+
+
+async def test_a_correct_line_up_is_not_repeated_during_the_game(database, channel):
+    monitor = _monitor(database, channel)
+    _bind(database, RIGHT, game=2)
+    views = await _watch_and_link(monitor, database)
+    await _show(monitor, _in_progress(views))
+
+    text = _text(channel.cards[0].view)
+    assert "line-up" not in text
+    assert "Game 2" in text  # the tournament's number, not the room's
+    assert "🔴 👉🧠 Bob · 🔎 Alice" in text
 
 
 async def test_the_card_flags_players_in_the_wrong_seat(database, channel):
@@ -267,5 +280,5 @@ async def test_a_second_device_in_the_same_seat_keeps_the_line_up_ready(database
     await _show(monitor, _with_second_device(_in_progress(views)))
 
     text = _text(channel.cards[0].view)
-    assert "Game 1 line-up** ✅" in text
+    assert "line-up" not in text  # nothing wrong, so nothing to show
     assert "Alice - phone" not in text  # shown once, as Alice

@@ -22,9 +22,12 @@ Codenames watcher.
      with the same Discord ID. Anyone left over presses
      **🙋 I'm playing**, or an admin runs `/codenames seats` in the thread and
      picks each player's name for them;
-   - the card shows the **line-up for the current game**: each expected seat
-     with ✅, "sitting as …" or "hasn't pressed I'm playing", plus anyone in a
-     seat they shouldn't be in. In the lobby the players get one ping saying
+   - in the lobby, the card shows the **line-up for the current game**: each
+     expected seat with ✅, "sitting as …" or "hasn't pressed I'm playing",
+     plus anyone in a seat they shouldn't be in. During the game the card is
+     just whose turn it is, the score and one line per team; the line-up only
+     comes back if someone is in the wrong seat. Cards and pings use the
+     tournament's game number. In the lobby the players get one ping saying
      where to sit. Each time the line-up changes (after every game) there's a
      new ping, and it's deleted once the game starts. The tournament only
      sends a line-up after it has processed the last result from the thread,
