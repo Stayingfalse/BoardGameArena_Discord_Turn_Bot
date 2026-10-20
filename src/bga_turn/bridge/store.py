@@ -27,6 +27,10 @@ class CodenamesBinding:
     lineup: dict | None = None
     # Unix seconds when the tournament round ends, if it has a deadline.
     deadline: int | None = None
+    # The newest outbox_id in this channel when the line-up last changed: a line-up
+    # sent after a result was queued is newer than that result, even if the
+    # tournament never received it (None for bindings stored before this was kept).
+    lineup_after_outbox_id: int | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -69,8 +73,20 @@ class BridgeStore:
         deadline: int | None = None,
     ) -> CodenamesBinding:
         now = utc_now_iso()
-        details = json_dumps({"player_names": player_names or {}, "lineup": lineup, "deadline": deadline})
         with self._lock:
+            previous = self.get_codenames_binding(channel_id)
+            if previous is not None and previous.lineup == lineup:
+                lineup_after = previous.lineup_after_outbox_id
+            else:
+                lineup_after = self._latest_outbox_id(channel_id)
+            details = json_dumps(
+                {
+                    "player_names": player_names or {},
+                    "lineup": lineup,
+                    "deadline": deadline,
+                    "lineup_after_outbox_id": lineup_after,
+                }
+            )
             self._connection.execute(
                 """
                 INSERT INTO codenames_bindings
@@ -170,6 +186,36 @@ class BridgeStore:
             ).fetchone()
         return row["event_id"] if row is not None else None
 
+    def _latest_outbox_id(self, channel_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT MAX(outbox_id) AS latest FROM codenames_result_outbox WHERE channel_id = ?", (channel_id,)
+        ).fetchone()
+        return row["latest"] or 0
+
+    def codenames_lineup_is_current(self, binding: CodenamesBinding) -> bool:
+        """Whether *binding*'s line-up is for the game after the last result reported from its channel.
+
+        True when the tournament says it processed that result, or when the line-up
+        changed after the result was queued: the tournament moved on without it (a
+        result logged by hand, or one it never received)."""
+        if not binding.lineup:
+            return False
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT outbox_id, event_id, created_at FROM codenames_result_outbox
+                WHERE channel_id = ? ORDER BY outbox_id DESC LIMIT 1
+                """,
+                (binding.channel_id,),
+            ).fetchone()
+        if row is None:
+            return True
+        if binding.lineup.get("last_event_id") == row["event_id"]:
+            return True
+        if binding.lineup_after_outbox_id is not None:
+            return binding.lineup_after_outbox_id >= row["outbox_id"]
+        return binding.updated_at > row["created_at"]
+
     def list_bridge_results(self, channel_id: str) -> list[OutboxEntry]:
         with self._lock:
             rows = self._connection.execute(
@@ -187,6 +233,7 @@ def _row_to_binding(row: sqlite3.Row) -> CodenamesBinding:
         details = {}
     names = details.get("player_names")
     lineup = details.get("lineup")
+    lineup_after = details.get("lineup_after_outbox_id")
     return CodenamesBinding(
         channel_id=row["channel_id"],
         guild_id=row["guild_id"],
@@ -195,6 +242,7 @@ def _row_to_binding(row: sqlite3.Row) -> CodenamesBinding:
         player_names={str(k): str(v) for k, v in names.items()} if isinstance(names, dict) else {},
         lineup=lineup if isinstance(lineup, dict) else None,
         deadline=details.get("deadline") if isinstance(details.get("deadline"), int) else None,
+        lineup_after_outbox_id=lineup_after if isinstance(lineup_after, int) else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
