@@ -16,7 +16,10 @@ Codenames watcher.
    - the four players are listed on the card as invited. Each one's seat is
      matched automatically by the name they used before, or by their Discord
      or tournament name (ignoring case, spaces, punctuation and emoji), as
-     long as exactly one seat matches. Anyone left over presses
+     long as exactly one seat matches. An unclaimed seat whose name matches,
+     starts or ends a claimed player's name ("Alliee" next to "Alliee - PC") is
+     taken to be that player on a second device: it is shown once and reported
+     with the same Discord ID. Anyone left over presses
      **🙋 I'm playing**, or an admin runs `/codenames seats` in the thread and
      picks each player's name for them;
    - the card shows the **line-up for the current game**: each expected seat
