@@ -177,6 +177,21 @@ class BridgeStore:
             )
             self._connection.commit()
 
+    def requeue_bridge_results(self, channel_id: str) -> int:
+        """Send every result reported from *channel_id* again (the tournament ignores
+        ones it has; it can fill in what it was missing). Returns how many."""
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                UPDATE codenames_result_outbox
+                SET status = 'pending', attempts = 0, next_attempt_at = 0, last_error = NULL, updated_at = ?
+                WHERE channel_id = ? AND status != 'pending'
+                """,
+                (utc_now_iso(), channel_id),
+            )
+            self._connection.commit()
+        return cursor.rowcount
+
     def latest_bridge_event_id(self, channel_id: str) -> str | None:
         """The last finished game reported from *channel_id*, or ``None``."""
         with self._lock:
