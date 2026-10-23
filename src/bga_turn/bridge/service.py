@@ -195,6 +195,14 @@ class TournamentBridge:
             LOGGER.info("Bridge: queued %s for %s", payload["event_id"], binding.external_ref)
             self._wake.set()
 
+    async def redeliver(self, channel_id: str) -> int:
+        """Queue every result already reported from *channel_id* to be sent again."""
+        count = await self.db.requeue_bridge_results(channel_id)
+        if count:
+            LOGGER.info("Bridge: re-sending %d result(s) from channel %s", count, channel_id)
+            self._wake.set()
+        return count
+
     async def _delivery_loop(self) -> None:
         while True:
             try:

@@ -34,6 +34,7 @@ def register_bridge_routes(app: web.Application, bridge: TournamentBridge, *, to
     app.router.add_get(PREFIX + "/codenames/bindings/{channel_id}", _get_binding)
     app.router.add_put(PREFIX + "/codenames/bindings/{channel_id}", _put_binding)
     app.router.add_delete(PREFIX + "/codenames/bindings/{channel_id}", _delete_binding)
+    app.router.add_post(PREFIX + "/codenames/bindings/{channel_id}/redeliver", _redeliver)
 
 
 def create_bridge_app(bridge: TournamentBridge, *, token: str) -> web.Application:
@@ -89,6 +90,15 @@ async def _get_binding(request: web.Request) -> web.Response:
     if binding is None:
         return _error(404, "not bound")
     return web.json_response(await bridge.describe(binding))
+
+
+async def _redeliver(request: web.Request) -> web.Response:
+    if not _authorized(request):
+        return _error(401, "unauthorized")
+    channel_id = _channel_id(request)
+    if channel_id is None:
+        return _error(400, "channel_id must be a Discord snowflake")
+    return web.json_response({"requeued": await request.app[_BRIDGE_KEY].redeliver(channel_id)})
 
 
 async def _put_binding(request: web.Request) -> web.Response:

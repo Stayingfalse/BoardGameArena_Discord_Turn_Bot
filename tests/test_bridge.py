@@ -248,6 +248,21 @@ async def test_an_outage_is_retried_later(database, monitor):
     assert (entry.status, entry.attempts) == ("delivered", 2)
 
 
+async def test_delivered_results_can_be_sent_again(database, monitor):
+    session = FakeSession({PRIMARY: [200, 200]})
+    bridge = await _queued(database, monitor, session)
+    await bridge.deliver_due()
+
+    assert await bridge.redeliver(str(CHANNEL)) == 1
+    assert await bridge.redeliver(str(CHANNEL)) == 0  # already queued
+    await bridge.deliver_due()
+
+    first, second = session.calls
+    assert first[1] == second[1]  # the same result, unchanged
+    [entry] = database.list_bridge_results(str(CHANNEL))
+    assert (entry.status, entry.attempts) == ("delivered", 1)
+
+
 # ----------------------------------------------------------------------
 # HTTP API
 # ----------------------------------------------------------------------
@@ -278,6 +293,13 @@ async def test_api_binds_reads_and_unbinds_a_thread(api, database):
     response = await api.delete(path, headers=AUTH)
     assert (await response.json()) == {"removed": True}
     assert (await api.get(path, headers=AUTH)).status == 404
+
+
+async def test_api_queues_a_thread_s_results_again(api):
+    path = f"/api/bridge/codenames/bindings/{CHANNEL}/redeliver"
+    assert (await api.post(path)).status == 401
+    response = await api.post(path, headers=AUTH)
+    assert (await response.json()) == {"requeued": 0}
 
 
 @pytest.mark.parametrize(

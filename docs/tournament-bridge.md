@@ -120,6 +120,7 @@ All requests carry `Authorization: Bearer <BRIDGE_TOKEN>`. All bodies are JSON.
 | `PUT /api/bridge/codenames/bindings/{channel_id}` | `{"guild_id", "external_ref", "players": [discord ids], "player_names": {id: name}, "lineup": {...} \| null}` | The binding. Idempotent: the tournament re-sends it whenever it changes. |
 | `GET /api/bridge/codenames/bindings/{channel_id}` | — | The binding, each watched room's live status (below), and each result's delivery status. |
 | `DELETE /api/bridge/codenames/bindings/{channel_id}[?keep_watching=1]` | — | `{"removed": bool}`. Also stops watching the thread's rooms unless `keep_watching`. |
+| `POST /api/bridge/codenames/bindings/{channel_id}/redeliver` | — | `{"requeued": n}`. Sends every result already reported from the thread again, unchanged (same `event_id`). The tournament uses this to fill in clue history for games it logged by hand. |
 
 `external_ref` is at most 100 characters; `players` is at most 10 IDs.
 `player_names`, `lineup` and `deadline` (unix seconds when the round ends) are
